@@ -23,7 +23,12 @@ class TransmissionClient:
     """Client for the Transmission RPC API."""
 
     def __init__(
-        self, base_url: str, username: str = "", password: str = "", timeout: int = 30
+        self,
+        base_url: str,
+        username: str = "",
+        # empty default = unauthenticated local daemon
+        password: str = "",  # nosec B107
+        timeout: int = 30,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.username = username
@@ -64,7 +69,7 @@ class TransmissionClient:
         try:
             await self._rpc("session-get")
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_session(self) -> dict[str, Any]:
@@ -94,14 +99,14 @@ class TransmissionClient:
         try:
             await self._rpc("torrent-stop", {"ids": [torrent_id]})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def resume_torrent(self, torrent_id: int) -> bool:
         try:
             await self._rpc("torrent-start", {"ids": [torrent_id]})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def set_speed_limit_down(self, kbps: int) -> bool:
@@ -115,7 +120,7 @@ class TransmissionClient:
                 },
             )
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def set_speed_limit_up(self, kbps: int) -> bool:
@@ -129,7 +134,7 @@ class TransmissionClient:
                 },
             )
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def delete_torrent(self, torrent_id: int, delete_local_data: bool = False) -> bool:
@@ -142,7 +147,7 @@ class TransmissionClient:
                 },
             )
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def set_bandwidth_priority(self, torrent_id: int, priority: int) -> bool:
@@ -150,7 +155,7 @@ class TransmissionClient:
         try:
             await self._rpc("torrent-set", {"ids": [torrent_id], "bandwidthPriority": priority})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def add_url(self, url: str, paused: bool = False) -> bool:
@@ -158,7 +163,7 @@ class TransmissionClient:
         try:
             await self._rpc("torrent-add", {"filename": url, "paused": paused})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_item_files(self, torrent_id: int) -> list[dict[str, Any]]:

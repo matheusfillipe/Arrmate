@@ -1,7 +1,5 @@
 """Test core models."""
 
-import pytest
-
 from arrmate.core.models import ActionType, Intent, MediaType
 
 

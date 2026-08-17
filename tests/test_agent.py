@@ -1,4 +1,5 @@
 """Tests for the agent layer: store, deps, tools."""
+
 import pytest
 
 from arrmate.agent.deps import AgentDeps
@@ -49,13 +50,8 @@ class TestDeps:
 
 class TestStore:
     @pytest.fixture(autouse=True)
-    def db(self, tmp_path, monkeypatch):
-        import arrmate.agent.store as store
-
-        monkeypatch.setattr(store, "_db_path", lambda: tmp_path / "chat.db")
-        store.init_db()
-        self.store = store
-        yield
+    def db(self, tmp_chat_db):
+        self.store = tmp_chat_db
 
     def test_thread_lifecycle(self):
         s = self.store

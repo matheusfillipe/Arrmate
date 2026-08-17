@@ -1,6 +1,6 @@
 """Tool/function calling schemas for LLM providers."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # Tool schema for parsing media commands
 PARSE_MEDIA_COMMAND_SCHEMA = {
@@ -174,12 +174,12 @@ PARSE_MEDIA_COMMAND_SCHEMA = {
 }
 
 
-def get_tool_schemas() -> List[Dict[str, Any]]:
+def get_tool_schemas() -> list[dict[str, Any]]:
     """Get all available tool schemas for LLM function calling."""
     return [PARSE_MEDIA_COMMAND_SCHEMA]
 
 
-def get_system_prompt(available_services: Optional[List[str]] = None) -> str:
+def get_system_prompt(available_services: list[str] | None = None) -> str:
     """Get the system prompt for command parsing.
 
     Args:
@@ -365,7 +365,7 @@ Topic/thematic search examples (use keywords, no title):
 Always use the parse_media_command function to return structured data."""
 
 
-def _build_service_context(available_services: Optional[List[str]]) -> str:
+def _build_service_context(available_services: list[str] | None) -> str:
     """Build the service-awareness section of the system prompt.
 
     Args:

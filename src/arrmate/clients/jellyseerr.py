@@ -49,7 +49,7 @@ class JellyseerrClient:
         try:
             await self._get("/settings/status")
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_requests(self, status: str = "", page_size: int = 50) -> dict[str, Any]:

@@ -43,7 +43,7 @@ class NZBgetClient:
         try:
             data = await self._rpc("version")
             return bool(data.get("result"))
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_status(self) -> Any:
@@ -58,14 +58,14 @@ class NZBgetClient:
         try:
             result = await self._rpc("pausedownload")
             return result.get("result", False)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def resume(self) -> bool:
         try:
             result = await self._rpc("resumedownload")
             return result.get("result", False)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def set_speed_limit(self, kbps: int) -> bool:
@@ -73,14 +73,14 @@ class NZBgetClient:
         try:
             result = await self._rpc("rate", [kbps])
             return result.get("result", False)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def delete_item(self, nzo_id: int) -> bool:
         try:
             result = await self._rpc("editqueue", ["GroupDelete", "", [nzo_id]])
             return result.get("result", False)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def set_priority(self, nzo_id: int, priority: int) -> bool:
@@ -88,7 +88,7 @@ class NZBgetClient:
         try:
             result = await self._rpc("editqueue", ["GroupSetPriority", str(priority), [nzo_id]])
             return result.get("result", False)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def pause_item(self, nzo_id: int) -> bool:
@@ -96,7 +96,7 @@ class NZBgetClient:
         try:
             result = await self._rpc("editqueue", ["GroupPause", "", [nzo_id]])
             return result.get("result", False)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def resume_item(self, nzo_id: int) -> bool:
@@ -104,7 +104,7 @@ class NZBgetClient:
         try:
             result = await self._rpc("editqueue", ["GroupResume", "", [nzo_id]])
             return result.get("result", False)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def move_item(self, nzo_id: int, offset: int) -> bool:
@@ -112,7 +112,7 @@ class NZBgetClient:
         try:
             result = await self._rpc("editqueue", ["GroupMoveOffset", str(offset), [nzo_id]])
             return result.get("result", False)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def add_url(self, url: str, priority: int = 0, category: str = "") -> bool:
@@ -123,10 +123,10 @@ class NZBgetClient:
                 "appendurl", [filename, category, priority, False, url, "", 0, "SCORE", []]
             )
             return result.get("result", False)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
-    async def get_item_files(self, nzo_id: int) -> list[Dict[str, Any]]:
+    async def get_item_files(self, nzo_id: int) -> list[dict[str, Any]]:
         """List the files inside an NZB group.
 
         Args:

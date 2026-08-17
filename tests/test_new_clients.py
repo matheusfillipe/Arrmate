@@ -1,4 +1,5 @@
 """Tests for Cleanuparr, Jellyfin, and Jellyseerr clients (step 3/4)."""
+
 import httpx
 import pytest
 

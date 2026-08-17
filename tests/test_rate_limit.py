@@ -1,11 +1,12 @@
 """Tests for the in-memory rate limiter."""
-import asyncio
+
 import pytest
 
 
 @pytest.mark.asyncio
 async def test_allows_calls_within_limit():
     from arrmate.auth.rate_limit import RateLimiter
+
     limiter = RateLimiter(max_calls=3, window_seconds=60)
     for _ in range(3):
         allowed, retry_after = await limiter.check("127.0.0.1")
@@ -16,6 +17,7 @@ async def test_allows_calls_within_limit():
 @pytest.mark.asyncio
 async def test_blocks_call_exceeding_limit():
     from arrmate.auth.rate_limit import RateLimiter
+
     limiter = RateLimiter(max_calls=3, window_seconds=60)
     for _ in range(3):
         await limiter.check("127.0.0.1")
@@ -27,6 +29,7 @@ async def test_blocks_call_exceeding_limit():
 @pytest.mark.asyncio
 async def test_different_ips_are_independent():
     from arrmate.auth.rate_limit import RateLimiter
+
     limiter = RateLimiter(max_calls=1, window_seconds=60)
     allowed_a, _ = await limiter.check("1.1.1.1")
     assert allowed_a
@@ -40,8 +43,9 @@ async def test_different_ips_are_independent():
 @pytest.mark.asyncio
 async def test_window_resets_after_expiry():
     """After the window expires the counter resets and calls are allowed again."""
-    from arrmate.auth.rate_limit import RateLimiter
     import time
+
+    from arrmate.auth.rate_limit import RateLimiter
 
     limiter = RateLimiter(max_calls=1, window_seconds=1)
     await limiter.check("10.0.0.1")  # use up the quota
@@ -55,15 +59,27 @@ async def test_window_resets_after_expiry():
     assert allowed
 
 
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("AUTH_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "testsecret")
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+
+    from arrmate.interfaces.api.app import app
+
+    return TestClient(app, raise_server_exceptions=False)
+
+
 def test_login_endpoint_returns_429_after_limit(client):
     """POST /web/login returns 429 after rate limit is exhausted."""
-    from arrmate.auth.rate_limit import login_limiter, RateLimiter
     import unittest.mock as mock
 
+    from arrmate.auth.rate_limit import login_limiter
+
     # Patch the shared limiter to always deny
-    with mock.patch.object(
-        login_limiter, "check", new=mock.AsyncMock(return_value=(False, 30))
-    ):
+    with mock.patch.object(login_limiter, "check", new=mock.AsyncMock(return_value=(False, 30))):
         resp = client.post(
             "/web/login",
             data={"username": "admin", "password": "wrong", "next": "/web/"},
@@ -74,15 +90,15 @@ def test_login_endpoint_returns_429_after_limit(client):
 
 def test_api_token_endpoint_returns_429_after_limit():
     """POST /api/v1/auth/token returns 429 when rate limited."""
-    from arrmate.interfaces.api.app import app
-    from arrmate.auth.rate_limit import login_limiter
-    from fastapi.testclient import TestClient
     import unittest.mock as mock
 
+    from fastapi.testclient import TestClient
+
+    from arrmate.auth.rate_limit import login_limiter
+    from arrmate.interfaces.api.app import app
+
     test_client = TestClient(app, raise_server_exceptions=False)
-    with mock.patch.object(
-        login_limiter, "check", new=mock.AsyncMock(return_value=(False, 30))
-    ):
+    with mock.patch.object(login_limiter, "check", new=mock.AsyncMock(return_value=(False, 30))):
         resp = test_client.post(
             "/api/v1/auth/token",
             json={"username": "admin", "password": "wrong"},

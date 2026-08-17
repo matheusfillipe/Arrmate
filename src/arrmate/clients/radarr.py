@@ -2,69 +2,22 @@
 
 from typing import Any
 
-from .base import BaseMediaClient
+from .base_arr import BaseArrClient
 
 
-class RadarrClient(BaseMediaClient):
-    """Client for Radarr v3 API."""
+class RadarrClient(BaseArrClient):
+    """Client for Radarr v3 API (Movies)."""
 
-    async def test_connection(self) -> bool:
-        """Test connection to Radarr.
+    entity = "movie"
+    api_prefix = "api/v3"
+    search_command = "MoviesSearch"
 
-        Returns:
-            True if connection successful
-        """
-        try:
-            await self.get_system_status()
-            return True
-        except Exception:
-            return False
-
-    async def search(self, query: str) -> list[dict[str, Any]]:
-        """Search for movies.
-
-        Args:
-            query: Movie title to search for
-
-        Returns:
-            List of matching movies from lookup
-        """
-        return await self._get("api/v3/movie/lookup", params={"term": query})
-
-    async def get_item(self, item_id: int) -> dict[str, Any]:
-        """Get movie details by ID.
-
-        Args:
-            item_id: Movie ID
-
-        Returns:
-            Movie details
-        """
-        return await self._get(f"api/v3/movie/{item_id}")
-
-    async def delete_item(self, item_id: int, delete_files: bool = False) -> bool:
-        """Delete a movie.
-
-        Args:
-            item_id: Movie ID
-            delete_files: Whether to delete all files
-
-        Returns:
-            True if successful
-        """
-        params = {"deleteFiles": str(delete_files).lower()}
-        await self._delete(
-            f"api/v3/movie/{item_id}?{'&'.join(f'{k}={v}' for k, v in params.items())}"
+    async def trigger_item_search(self, movie_id: int) -> dict[str, Any]:
+        """Trigger a search for a movie (Radarr takes a list of movie IDs)."""
+        return await self._post(
+            "api/v3/command",
+            data={"name": "MoviesSearch", "movieIds": [movie_id]},
         )
-        return True
-
-    async def get_all_movies(self) -> list[dict[str, Any]]:
-        """Get all movies in the library.
-
-        Returns:
-            List of all movies
-        """
-        return await self._get("api/v3/movie")
 
     async def add_movie(
         self,
@@ -75,19 +28,7 @@ class RadarrClient(BaseMediaClient):
         monitored: bool = True,
         search_for_movie: bool = True,
     ) -> dict[str, Any]:
-        """Add a new movie to the library.
-
-        Args:
-            tmdb_id: TMDB ID of the movie
-            title: Movie title
-            quality_profile_id: Quality profile ID
-            root_folder_path: Root folder path
-            monitored: Whether to monitor the movie
-            search_for_movie: Whether to search for the movie
-
-        Returns:
-            Added movie details
-        """
+        """Add a new movie to the library."""
         data = {
             "tmdbId": tmdb_id,
             "title": title,
@@ -99,115 +40,37 @@ class RadarrClient(BaseMediaClient):
         return await self._post("api/v3/movie", data=data)
 
     async def get_movie_file(self, movie_id: int) -> dict[str, Any]:
-        """Get movie file details.
-
-        Args:
-            movie_id: Movie ID
-
-        Returns:
-            Movie file details
-        """
+        """Get the file details of a movie."""
         files = await self._get("api/v3/moviefile", params={"movieId": movie_id})
         return files[0] if files else {}
 
     async def delete_movie_file(self, file_id: int) -> bool:
-        """Delete a movie file.
-
-        Args:
-            file_id: Movie file ID
-
-        Returns:
-            True if successful
-        """
+        """Delete a movie file."""
         await self._delete(f"api/v3/moviefile/{file_id}")
         return True
 
-    async def trigger_movie_search(self, movie_id: int) -> dict[str, Any]:
-        """Trigger a search for a movie.
-
-        Args:
-            movie_id: Movie ID
-
-        Returns:
-            Command response
-        """
-        return await self._post(
-            "api/v3/command",
-            data={"name": "MoviesSearch", "movieIds": [movie_id]},
-        )
-
-    async def get_quality_profiles(self) -> list[dict[str, Any]]:
-        """Get available quality profiles.
-
-        Returns:
-            List of quality profiles
-        """
-        return await self._get("api/v3/qualityprofile")
-
-    async def get_root_folders(self) -> list[dict[str, Any]]:
-        """Get available root folders.
-
-        Returns:
-            List of root folders
-        """
-        return await self._get("api/v3/rootfolder")
-
     async def set_movie_monitored(self, movie_id: int, monitored: bool) -> dict[str, Any]:
-        """Update the monitored status of a movie.
-
-        Args:
-            movie_id: Movie ID
-            monitored: True to monitor, False to unmonitor
-
-        Returns:
-            Updated movie dict
-        """
+        """Update the monitored status of a movie."""
         movie = await self._get(f"api/v3/movie/{movie_id}")
         movie["monitored"] = monitored
         return await self._put(f"api/v3/movie/{movie_id}", data=movie)
 
     async def get_all_movies_with_files(self) -> list[dict[str, Any]]:
-        """Get all movies including nested movieFile with mediaInfo.
-
-        Returns:
-            List of movies with file details
-        """
+        """Get all movies including nested movieFile with mediaInfo."""
         return await self._get("api/v3/movie")
 
     async def get_calendar(self, start: str, end: str) -> list[dict[str, Any]]:
-        """Get movies releasing between start and end dates.
-
-        Args:
-            start: ISO date string e.g. "2024-01-01"
-            end: ISO date string e.g. "2024-01-08"
-
-        Returns:
-            List of movie dicts with release date fields
-        """
+        """Get movies releasing between start and end dates."""
         params: dict[str, Any] = {"start": start, "end": end}
         return await self._get("api/v3/calendar", params=params)
 
     async def get_queue(self, page_size: int = 50) -> dict[str, Any]:
-        """Get the current download queue.
-
-        Args:
-            page_size: Number of items to return
-
-        Returns:
-            Paginated queue response with records array
-        """
+        """Get the current download queue."""
         params: dict[str, Any] = {"pageSize": page_size, "includeMovie": "true"}
         return await self._get("api/v3/queue", params=params)
 
     async def get_history(self, page_size: int = 25) -> dict[str, Any]:
-        """Get recent download history.
-
-        Args:
-            page_size: Number of items to return
-
-        Returns:
-            Paginated history response
-        """
+        """Get recent download history, newest first."""
         params: dict[str, Any] = {
             "pageSize": page_size,
             "includeMovie": "true",
@@ -217,14 +80,7 @@ class RadarrClient(BaseMediaClient):
         return await self._get("api/v3/history", params=params)
 
     async def get_wanted_cutoff(self, page_size: int = 50) -> dict[str, Any]:
-        """Get monitored movies below quality cutoff.
-
-        Args:
-            page_size: Number of items to return
-
-        Returns:
-            Paginated cutoff movies response
-        """
+        """Get monitored movies below quality cutoff."""
         params: dict[str, Any] = {
             "pageSize": page_size,
             "sortKey": "title",
@@ -233,145 +89,33 @@ class RadarrClient(BaseMediaClient):
         return await self._get("api/v3/wanted/cutoff", params=params)
 
     async def trigger_rename_movie(self, movie_id: int) -> dict[str, Any]:
-        """Trigger a rename of all files for a movie.
-
-        Args:
-            movie_id: Movie ID
-
-        Returns:
-            Command response
-        """
+        """Trigger a rename of all files for a movie."""
         files = await self._get("api/v3/moviefile", params={"movieId": movie_id})
-        file_ids = [f["id"] for f in files if f.get("id")]
+        file_ids = [file["id"] for file in files if file.get("id")]
         return await self._post(
             "api/v3/command",
             data={"name": "RenameFiles", "movieIds": [movie_id], "files": file_ids},
         )
 
     async def rescan_movie(self, movie_id: int) -> dict[str, Any]:
-        """Trigger a disk rescan for a movie.
-
-        Args:
-            movie_id: Movie ID
-
-        Returns:
-            Command response
-        """
+        """Trigger a disk rescan for a movie."""
         return await self._post(
             "api/v3/command",
             data={"name": "RescanMovie", "movieId": movie_id},
         )
 
-    async def get_tags(self) -> list[dict[str, Any]]:
-        """Get all tags defined in Radarr."""
-        return await self._get("api/v3/tag")
-
-    async def create_tag(self, label: str) -> dict[str, Any]:
-        """Create a new tag.
-
-        Args:
-            label: Tag name
-
-        Returns:
-            Created tag dict with id and label
-        """
-        return await self._post("api/v3/tag", data={"label": label})
-
-    async def delete_tag(self, tag_id: int) -> bool:
-        """Delete a tag.
-
-        Args:
-            tag_id: Tag ID to delete
-
-        Returns:
-            True if successful
-        """
-        await self._delete(f"api/v3/tag/{tag_id}")
-        return True
-
-    async def add_tag_to_movie(self, movie_id: int, tag_id: int) -> dict[str, Any]:
-        """Add a tag to a movie (no-op if already present).
-
-        Args:
-            movie_id: Movie ID
-            tag_id: Tag ID to add
-
-        Returns:
-            Updated movie dict
-        """
-        movie = await self.get_item(movie_id)
-        existing = movie.get("tags", [])
-        if tag_id not in existing:
-            movie["tags"] = existing + [tag_id]
-            return await self._put(f"api/v3/movie/{movie_id}", data=movie)
-        return movie
-
-    async def remove_tag_from_movie(self, movie_id: int, tag_id: int) -> dict[str, Any]:
-        """Remove a tag from a movie.
-
-        Args:
-            movie_id: Movie ID
-            tag_id: Tag ID to remove
-
-        Returns:
-            Updated movie dict
-        """
-        movie = await self.get_item(movie_id)
-        movie["tags"] = [t for t in movie.get("tags", []) if t != tag_id]
-        return await self._put(f"api/v3/movie/{movie_id}", data=movie)
-
     async def interactive_search(self, movie_id: int) -> list[dict[str, Any]]:
         """Run a live interactive indexer search for a movie.
 
         Queries every indexer in real time; can take 30-180 seconds. Rejected
-        releases are included by Radarr with a ``rejections`` array — callers
+        releases are included by Radarr with a ``rejections`` array; callers
         must preserve it, since "Release is blocklisted" on top-seeded results
         is a diagnostic signal, not noise.
-
-        Args:
-            movie_id: Movie ID
-
-        Returns:
-            List of release dicts (accepted and rejected)
         """
         return await self._get_with_timeout("api/v3/release", params={"movieId": movie_id})
 
-    async def push_release(self, release: dict[str, Any]) -> dict[str, Any]:
-        """Grab a specific release found by interactive search.
-
-        Args:
-            release: The full release dict as returned by interactive_search;
-                Radarr identifies it by its ``guid`` and indexerId
-
-        Returns:
-            The queued release
-        """
-        return await self._post("api/v3/release", data=release)
-
-    async def get_blocklist(self, page_size: int = 50) -> dict[str, Any]:
-        """Get blocklisted releases.
-
-        Args:
-            page_size: Number of items to return
-
-        Returns:
-            Paginated blocklist response with records array
-        """
-        return await self._get(
-            "api/v3/blocklist",
-            params={"pageSize": page_size, "sortKey": "date", "sortDirection": "descending"},
-        )
-
     async def get_movie_history(self, movie_id: int, page_size: int = 50) -> dict[str, Any]:
-        """Get history events for one movie.
-
-        Args:
-            movie_id: Movie ID
-            page_size: Number of events to return
-
-        Returns:
-            Paginated history response filtered to the movie
-        """
+        """Get history events for one movie, newest first."""
         return await self._get(
             "api/v3/history",
             params={

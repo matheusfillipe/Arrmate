@@ -126,7 +126,7 @@ See the full [LLM Providers](#llm-providers) section for all options.
 
 ```bash
 # Download the compose file and example config
-curl -O https://raw.githubusercontent.com/TechButton/Arrmate/main/docker-compose.prod.yml
+curl -O https://raw.githubusercontent.com/TechButton/Arrmate/main/compose.prod.yaml
 curl -O https://raw.githubusercontent.com/TechButton/Arrmate/main/.env.example
 cp .env.example .env
 ```
@@ -134,7 +134,7 @@ cp .env.example .env
 Edit `.env` with your details (see Step 3), then start:
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d
+docker compose -f compose.prod.yaml up -d
 ```
 
 Open `http://your-server-ip:8000` in a browser.
@@ -330,7 +330,7 @@ v2.0.0 introduced a non-root container user (`arrmate`) for security. However, d
 
 **What changed:**
 - `docker/entrypoint.sh` now uses `chown -R` (recursive) instead of `chown`, so it fixes ownership on all files inside `/data` at every container start, not just the directory itself.
-- Both `docker-compose.yml` and `docker-compose.prod.yml` now include an `arrmate-init` service that runs before arrmate and ensures `/data` is fully owned by the `arrmate` user. This covers users on older images where the entrypoint did not do a recursive chown.
+- Both `compose.yaml` and `compose.prod.yaml` now include an `arrmate-init` service that runs before arrmate and ensures `/data` is fully owned by the `arrmate` user. This covers users on older images where the entrypoint did not do a recursive chown.
 
 **If you were affected:** Pull the new image and recreate the container — the init service will fix ownership automatically. No manual intervention needed.
 
@@ -573,16 +573,16 @@ curl -u username:password http://localhost:8000/api/v1/services
 ```bash
 git clone https://github.com/TechButton/Arrmate.git
 cd Arrmate
-pip install -e ".[dev]"
+make install
 cp .env.example .env
 # edit .env
-python -m arrmate.interfaces.api.app
+make run
 ```
 
 Full local stack with Sonarr + Radarr + Ollama:
 
 ```bash
-docker compose -f docker-compose.full.yml up -d
+docker compose -f compose.full.yaml up -d
 ```
 
 ---

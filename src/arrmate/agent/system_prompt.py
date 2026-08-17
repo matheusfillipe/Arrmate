@@ -1,7 +1,9 @@
 """System prompt for the chat agent."""
 
-from ..clients.discovery import discover_services
-from ..config import instances
+import httpx
+
+from arrmate.clients.discovery import discover_services
+from arrmate.config import instances
 
 _PROMPT = """\
 You are the Arrmate chat agent, a media-library operations assistant for the \
@@ -33,7 +35,7 @@ you did in one or two plain sentences.
 async def _services_summary() -> str:
     try:
         services = await discover_services()
-    except Exception:
+    except (httpx.HTTPError, ValueError):
         return "- service discovery unavailable"
     lines = []
     for name, info in services.items():

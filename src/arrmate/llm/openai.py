@@ -1,7 +1,7 @@
 """OpenAI LLM provider implementation."""
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, cast
 
 from openai import AsyncOpenAI
 
@@ -14,8 +14,8 @@ class OpenAIProvider(BaseLLMProvider):
     def __init__(
         self,
         model: str = "gpt-4-turbo-preview",
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
     ) -> None:
         """Initialize OpenAI provider.
 
@@ -32,8 +32,8 @@ class OpenAIProvider(BaseLLMProvider):
         return True
 
     async def parse_command(
-        self, user_input: str, tools: List[Dict[str, Any]], system_prompt: str
-    ) -> Dict[str, Any]:
+        self, user_input: str, tools: list[dict[str, Any]], system_prompt: str
+    ) -> dict[str, Any]:
         """Parse command using OpenAI with function calling.
 
         Args:
@@ -52,12 +52,12 @@ class OpenAIProvider(BaseLLMProvider):
             openai_tools = [{"type": "function", "function": tool} for tool in tools]
 
             response = await self.client.chat.completions.create(
-                model=self.model,
+                model=self.model or "gpt-4-turbo-preview",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_input},
                 ],
-                tools=openai_tools,
+                tools=cast("list[Any]", openai_tools),
                 tool_choice="auto",
             )
 
@@ -68,58 +68,18 @@ class OpenAIProvider(BaseLLMProvider):
 
             # Get the first tool call
             tool_call = message.tool_calls[0]
+            if not hasattr(tool_call, "function"):
+                raise ValueError("LLM returned a custom tool call; function call required")
             function_args = json.loads(tool_call.function.arguments)
 
             if not function_args:
                 raise ValueError("No arguments returned from function call")
 
-            return function_args
+            args: dict[str, Any] = function_args
+            return args
 
         except Exception as e:
-            raise ValueError(f"Failed to parse command with OpenAI: {str(e)}") from e
-
-    async def generate_response(
-        self, prompt: str, context: Optional[Dict[str, Any]] = None
-    ) -> str:
-        """Generate a response using OpenAI.
-
-        Args:
-            prompt: The prompt to respond to
-            context: Optional context (execution result, error details, etc.)
-
-        Returns:
-            Generated response
-        """
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful media server assistant. "
-                    "Report the outcome of media library actions in plain English. "
-                    "Be concise (1-3 sentences). "
-                    "If successful, confirm what was done. "
-                    "If an error occurred, explain it clearly and suggest what the user can check. "
-                    "Never include raw JSON, internal IDs, or technical stack traces in your response."
-                ),
-            }
-        ]
-
-        if context:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": f"Action result: {json.dumps(context)}",
-                }
-            )
-
-        messages.append({"role": "user", "content": prompt})
-
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-        )
-
-        return response.choices[0].message.content or ""
+            raise ValueError(f"Failed to parse command with OpenAI: {e!s}") from e
 
     async def close(self) -> None:
         """Close the OpenAI client."""

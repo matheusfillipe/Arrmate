@@ -50,7 +50,7 @@ class SABnzbdClient:
         try:
             data = await self._get("version")
             return bool(data)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_status(self) -> dict[str, Any]:
@@ -65,14 +65,14 @@ class SABnzbdClient:
         try:
             await self._get("pause")
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def resume(self) -> bool:
         try:
             await self._get("resume")
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def set_speed_limit(self, kbps: int) -> bool:
@@ -83,7 +83,7 @@ class SABnzbdClient:
                 "config", {"section": "misc", "keyword": "bandwidth_limit", "value": value}
             )
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def delete_item(self, nzo_id: str, delete_files: bool = False) -> bool:
@@ -92,7 +92,7 @@ class SABnzbdClient:
                 "queue", {"name": "delete", "value": nzo_id, "del_files": 1 if delete_files else 0}
             )
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def set_priority(self, nzo_id: str, priority: int) -> bool:
@@ -100,7 +100,7 @@ class SABnzbdClient:
         try:
             await self._get("queue", {"name": "priority", "value": nzo_id, "extra": priority})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def move_item(self, nzo_id: str, new_slot: int) -> bool:
@@ -108,7 +108,7 @@ class SABnzbdClient:
         try:
             await self._get("queue", {"name": "move", "value": nzo_id, "extra": new_slot})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def pause_item(self, nzo_id: str) -> bool:
@@ -116,7 +116,7 @@ class SABnzbdClient:
         try:
             await self._get("queue", {"name": "pause", "value": nzo_id})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def resume_item(self, nzo_id: str) -> bool:
@@ -124,7 +124,7 @@ class SABnzbdClient:
         try:
             await self._get("queue", {"name": "resume", "value": nzo_id})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def add_url(self, url: str, priority: int = 0, category: str = "") -> bool:
@@ -132,7 +132,7 @@ class SABnzbdClient:
         try:
             await self._get("addurl", {"name": url, "priority": priority, "cat": category})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_item_files(self, nzo_id: str) -> list[dict[str, Any]]:

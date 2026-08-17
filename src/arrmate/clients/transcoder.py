@@ -12,7 +12,7 @@ Requires:
 import asyncio
 import logging
 import shutil
-import subprocess
+import subprocess  # nosec B404
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 
-from ..config.settings import settings
+from arrmate.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,7 @@ def _already_h265(codec: str) -> bool:
     return codec.strip().lower() in _H265_CODECS
 
 
-def _format_bytes(n: int) -> str:
+def _format_bytes(n: float) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if abs(n) < 1024:
             return f"{n:.1f} {unit}"
@@ -181,7 +181,7 @@ async def _get_sonarr_files(title_filter: str | None) -> list[dict[str, Any]]:
                                 }
                             )
                     return items
-                except Exception as e:
+                except (httpx.HTTPError, KeyError, ValueError) as e:
                     logger.warning("Failed to get files for %s: %s", series.get("title"), e)
                     return []
 
@@ -213,9 +213,9 @@ async def scan_for_transcode(
         return []
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    files = []
+    files: list[dict[str, Any]] = []
     for r in results:
-        if isinstance(r, Exception):
+        if isinstance(r, BaseException):
             logger.error("Error scanning library: %s", r)
         else:
             files.extend(r)
@@ -262,7 +262,7 @@ def _transcode_sync(file_path: str, crf: int, preset: str) -> tuple[bool, str]:
             "-y",
             str(tmp),
         ]
-        proc = subprocess.run(
+        proc = subprocess.run(  # nosec B603
             cmd,
             capture_output=True,
             text=True,
@@ -281,12 +281,12 @@ def _transcode_sync(file_path: str, crf: int, preset: str) -> tuple[bool, str]:
         if tmp.exists():
             tmp.unlink()
         return False, "Timed out after 4 hours"
-    except Exception as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         if tmp.exists():
             try:
                 tmp.unlink()
             except OSError:
-                pass
+                logger.debug("temp transcode file already gone", exc_info=True)
         return False, str(exc)
 
 
@@ -356,7 +356,7 @@ async def run_transcode_job(job_id: str, files: list[dict[str, Any]]) -> None:
                 job["failed"] += 1
                 job["errors"].append(f"{file_info['title']}: {error}")
 
-        except Exception as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             job["failed"] += 1
             job["errors"].append(f"{file_info['title']}: {exc}")
 

@@ -1,17 +1,17 @@
 """CLI interface for Arrmate."""
 
 import asyncio
-from typing import Optional
 
+import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from ...clients.discovery import discover_services
-from ...config.settings import settings
-from ...core.command_parser import CommandParser
-from ...core.executor import Executor
-from ...core.intent_engine import IntentEngine
+from arrmate.clients.discovery import discover_services
+from arrmate.config.settings import settings
+from arrmate.core.command_parser import CommandParser
+from arrmate.core.executor import Executor
+from arrmate.core.intent_engine import IntentEngine
 
 app = typer.Typer(
     name="arrmate",
@@ -49,7 +49,7 @@ async def _execute_command(command: str, dry_run: bool) -> None:
         with console.status("[bold yellow]Parsing command..."):
             intent = await parser.parse(command)
 
-        console.print(f"[bold green]✓[/bold green] Parsed intent:")
+        console.print("[bold green]✓[/bold green] Parsed intent:")
         console.print(f"  Action: [cyan]{intent.action}[/cyan]")
         console.print(f"  Media Type: [cyan]{intent.media_type}[/cyan]")
         if intent.title:
@@ -84,21 +84,21 @@ async def _execute_command(command: str, dry_run: bool) -> None:
 
         # Display result
         if result.success:
-            console.print(f"\n[bold green]✓ Success![/bold green]")
+            console.print("\n[bold green]✓ Success![/bold green]")
             console.print(f"{result.message}\n")
             if result.data:
                 console.print("[dim]Additional details:[/dim]")
                 console.print(result.data)
         else:
-            console.print(f"\n[bold red]✗ Failed[/bold red]")
+            console.print("\n[bold red]✗ Failed[/bold red]")
             console.print(f"{result.message}\n")
             if result.errors:
                 console.print("[bold red]Errors:[/bold red]")
                 for error in result.errors:
                     console.print(f"  • {error}")
 
-    except Exception as e:
-        console.print(f"\n[bold red]Error:[/bold red] {str(e)}")
+    except (httpx.HTTPError, KeyError, ValueError, OSError) as e:
+        console.print(f"\n[bold red]Error:[/bold red] {e!s}")
     finally:
         await parser.close()
 
@@ -185,10 +185,16 @@ def config() -> None:
         table.add_row("Ollama Model", settings.ollama_model)
     elif settings.llm_provider == "openai":
         table.add_row("OpenAI Model", settings.openai_model)
-        table.add_row("OpenAI API Key", "***" + (settings.openai_api_key[-4:] if settings.openai_api_key else ""))
+        table.add_row(
+            "OpenAI API Key",
+            "***" + (settings.openai_api_key[-4:] if settings.openai_api_key else ""),
+        )
     elif settings.llm_provider == "anthropic":
         table.add_row("Anthropic Model", settings.anthropic_model)
-        table.add_row("Anthropic API Key", "***" + (settings.anthropic_api_key[-4:] if settings.anthropic_api_key else ""))
+        table.add_row(
+            "Anthropic API Key",
+            "***" + (settings.anthropic_api_key[-4:] if settings.anthropic_api_key else ""),
+        )
 
     console.print(table)
     console.print()

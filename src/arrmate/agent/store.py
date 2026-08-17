@@ -15,7 +15,7 @@ _THREAD_HISTORY_MAX = 60
 
 
 def _db_path() -> Path:
-    from ..config.settings import settings
+    from arrmate.config.settings import settings
 
     return Path(settings.auth_data_dir) / "chat.db"
 
@@ -24,6 +24,7 @@ def _db_path() -> Path:
 def _get_conn() -> Generator[sqlite3.Connection, None, None]:
     conn = sqlite3.connect(str(_db_path()))
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn
     finally:

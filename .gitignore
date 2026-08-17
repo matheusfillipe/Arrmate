@@ -70,3 +70,4 @@ config/*.json
 # Claude Code
 .claude/
 CLAUDE.md
+.venv/

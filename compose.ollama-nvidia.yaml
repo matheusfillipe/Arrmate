@@ -1,0 +1,25 @@
+# Arrmate — compose.ollama-nvidia.yaml
+#
+# NVIDIA GPU override for Ollama. Merge via COMPOSE_FILE in .env:
+#   COMPOSE_FILE=compose.yaml:compose.ollama-nvidia.yaml
+#   (or use compose.prod.yaml / compose.full.yaml as the base)
+#
+# REQUIREMENTS:
+#   - NVIDIA GPU with CUDA support
+#   - nvidia-container-toolkit on the host
+#     https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+#   - Docker daemon configured with the nvidia runtime
+#     (nvidia-ctk runtime configure --runtime=docker && systemctl restart docker)
+#
+# VERIFY GPU ACCESS:
+#   docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
+
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all # count: 1 to limit to one GPU
+              capabilities: [gpu]

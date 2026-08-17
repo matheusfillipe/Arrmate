@@ -1,29 +1,18 @@
 """Factory for creating LLM provider instances."""
 
-from typing import Dict, Type
+from arrmate.config.settings import settings
 
-from ..config.settings import settings
 from .anthropic import AnthropicProvider
 from .base import BaseLLMProvider
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 
 # Provider registry
-_PROVIDERS: Dict[str, Type[BaseLLMProvider]] = {
+_PROVIDERS: dict[str, type[BaseLLMProvider]] = {
     "ollama": OllamaProvider,
     "openai": OpenAIProvider,
     "anthropic": AnthropicProvider,
 }
-
-
-def register_provider(name: str, provider_class: Type[BaseLLMProvider]) -> None:
-    """Register a custom LLM provider.
-
-    Args:
-        name: Provider name (used in configuration)
-        provider_class: Provider class (must inherit from BaseLLMProvider)
-    """
-    _PROVIDERS[name] = provider_class
 
 
 def create_llm_provider(provider_name: str | None = None) -> BaseLLMProvider:
@@ -42,9 +31,7 @@ def create_llm_provider(provider_name: str | None = None) -> BaseLLMProvider:
 
     if provider_name not in _PROVIDERS:
         available = ", ".join(_PROVIDERS.keys())
-        raise ValueError(
-            f"Unsupported LLM provider: {provider_name}. Available: {available}"
-        )
+        raise ValueError(f"Unsupported LLM provider: {provider_name}. Available: {available}")
 
     provider_class = _PROVIDERS[provider_name]
 
@@ -55,7 +42,7 @@ def create_llm_provider(provider_name: str | None = None) -> BaseLLMProvider:
             base_url=settings.ollama_base_url,
             api_key=settings.ollama_api_key,
         )
-    elif provider_name == "openai":
+    if provider_name == "openai":
         if not settings.openai_api_key:
             raise ValueError("OPENAI_API_KEY is required for OpenAI provider")
         return OpenAIProvider(
@@ -63,13 +50,12 @@ def create_llm_provider(provider_name: str | None = None) -> BaseLLMProvider:
             api_key=settings.openai_api_key,
             base_url=settings.openai_base_url,
         )
-    elif provider_name == "anthropic":
+    if provider_name == "anthropic":
         if not settings.anthropic_api_key:
             raise ValueError("ANTHROPIC_API_KEY is required for Anthropic provider")
         return AnthropicProvider(
             model=settings.anthropic_model,
             api_key=settings.anthropic_api_key,
         )
-    else:
-        # Custom provider - try to instantiate with default constructor
-        return provider_class()
+    # Custom provider - try to instantiate with default constructor
+    return provider_class()

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import bcrypt as _bcrypt
 
-from ..config.settings import settings
+from arrmate.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,8 @@ class AuthManager:
         if not self._auth_file.exists():
             return {}
         try:
-            return json.loads(self._auth_file.read_text())
+            data: dict = json.loads(self._auth_file.read_text())
+            return data
         except (json.JSONDecodeError, OSError):
             logger.warning("Failed to read auth file, treating as empty")
             return {}
@@ -46,7 +47,7 @@ class AuthManager:
             try:
                 os.unlink(tmp_path)
             except OSError:
-                pass
+                logger.debug("temp credential file already gone", exc_info=True)
             raise
 
     def has_credentials(self) -> bool:
@@ -109,7 +110,7 @@ class AuthManager:
     def is_enabled(self) -> bool:
         """Check if auth is enabled (may be disabled even with credentials)."""
         data = self._read()
-        return data.get("enabled", False)
+        return bool(data.get("enabled", False))
 
     def get_secret_key(self) -> str:
         """Get secret key for session signing. Auto-generates if not configured."""

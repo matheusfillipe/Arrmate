@@ -49,7 +49,7 @@ class TMDBClient:
         try:
             await self._get("configuration")
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     # ── Movies ────────────────────────────────────────────────────────────────

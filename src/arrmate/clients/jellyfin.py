@@ -50,7 +50,7 @@ class JellyfinClient:
         try:
             info = await self._get("/System/Info")
             return bool(info.get("Version"))
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_system_info(self) -> dict[str, Any]:

@@ -51,7 +51,7 @@ class CleanuparrClient:
         try:
             await self._get("/api/health")
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_health(self) -> dict[str, Any]:

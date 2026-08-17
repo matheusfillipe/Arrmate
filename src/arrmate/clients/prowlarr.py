@@ -41,7 +41,7 @@ class ProwlarrClient:
         try:
             data = await self._get("api/v1/system/status")
             return bool(data)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_system_status(self) -> dict[str, Any]:

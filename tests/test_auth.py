@@ -1,9 +1,9 @@
 """Tests for authentication session management and user database."""
+
 import logging
 from unittest.mock import MagicMock
 
-from arrmate.auth.session import SESSION_COOKIE, set_session_cookie
-
+from arrmate.auth.session import set_session_cookie
 
 # ── Session cookie flags ───────────────────────────────────────────────────────
 
@@ -52,10 +52,11 @@ def test_default_admin_creation_does_not_log_password(tmp_path, caplog, monkeypa
 def test_minimum_password_length_is_at_least_eight():
     """Password minimum must be >= 8 characters (NIST SP 800-63B)."""
     import inspect
-    from arrmate.interfaces.web import routes as _routes
+
+    from arrmate.interfaces.web.routes import auth as _routes
 
     source = inspect.getsource(_routes)
-    assert "len(password) < 4" not in source, \
-        "Found 4-character minimum — must be at least 8"
-    assert any(f"len(password) < {n}" in source for n in range(8, 20)), \
+    assert "len(password) < 4" not in source, "Found 4-character minimum — must be at least 8"
+    assert any(f"len(password) < {n}" in source for n in range(8, 20)), (
         "Expected minimum password length >= 8 not found in routes source"
+    )

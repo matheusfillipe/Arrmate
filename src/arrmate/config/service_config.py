@@ -12,8 +12,13 @@ When the UI saves a value it is applied to the running settings object immediate
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
+
+import pydantic
+
+from arrmate.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -29,26 +34,44 @@ CONFIGURABLE_FIELDS: set[str] = {
     "anthropic_api_key",
     "anthropic_model",
     # Media services
-    "sonarr_url", "sonarr_api_key",
-    "radarr_url", "radarr_api_key",
-    "lidarr_url", "lidarr_api_key",
-    "bazarr_url", "bazarr_api_key",
-    "plex_url", "plex_token",
-    "audiobookshelf_url", "audiobookshelf_api_key",
-    "lazylibrarian_url", "lazylibrarian_api_key",
-    "readmeabook_url", "readmeabook_api_key",
+    "sonarr_url",
+    "sonarr_api_key",
+    "radarr_url",
+    "radarr_api_key",
+    "lidarr_url",
+    "lidarr_api_key",
+    "bazarr_url",
+    "bazarr_api_key",
+    "plex_url",
+    "plex_token",
+    "audiobookshelf_url",
+    "audiobookshelf_api_key",
+    "lazylibrarian_url",
+    "lazylibrarian_api_key",
+    "readmeabook_url",
+    "readmeabook_api_key",
     # External APIs
     "tmdb_api_key",
     # Download clients
-    "sabnzbd_url", "sabnzbd_api_key",
-    "nzbget_url", "nzbget_username", "nzbget_password",
-    "qbittorrent_url", "qbittorrent_username", "qbittorrent_password",
-    "transmission_url", "transmission_username", "transmission_password",
+    "sabnzbd_url",
+    "sabnzbd_api_key",
+    "nzbget_url",
+    "nzbget_username",
+    "nzbget_password",
+    "qbittorrent_url",
+    "qbittorrent_username",
+    "qbittorrent_password",
+    "transmission_url",
+    "transmission_username",
+    "transmission_password",
     # Cleanuparr (experimental)
-    "cleanuparr_url", "cleanuparr_api_key",
+    "cleanuparr_url",
+    "cleanuparr_api_key",
     # Jellyfin / Jellyseerr
-    "jellyfin_url", "jellyfin_api_key",
-    "jellyseerr_url", "jellyseerr_api_key",
+    "jellyfin_url",
+    "jellyfin_api_key",
+    "jellyseerr_url",
+    "jellyseerr_api_key",
     # Notification webhooks
     "slack_webhook_url",
     "discord_webhook_url",
@@ -63,7 +86,7 @@ CONFIGURABLE_FIELDS: set[str] = {
 
 
 def _config_path() -> Path:
-    from .settings import settings
+
     return Path(settings.auth_data_dir) / "services.json"
 
 
@@ -71,8 +94,9 @@ def _load_json() -> dict:
     path = _config_path()
     if path.exists():
         try:
-            return json.loads(path.read_text())
-        except Exception as e:
+            data: dict[str, Any] = json.loads(path.read_text())
+            return data
+        except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"Could not read services.json: {e}")
     return {}
 
@@ -82,7 +106,6 @@ def apply_saved_config() -> None:
 
     Call once at startup, after Pydantic has already loaded env vars.
     """
-    from .settings import settings
 
     saved = _load_json()
     for key, value in saved.items():
@@ -92,8 +115,8 @@ def apply_saved_config() -> None:
         if not getattr(settings, key, None) and value:
             try:
                 setattr(settings, key, value)
-            except Exception:
-                pass
+            except pydantic.ValidationError:
+                logger.debug("setting %s rejected update", key)
 
 
 def save_service_config(updates: dict[str, Any]) -> None:
@@ -101,7 +124,6 @@ def save_service_config(updates: dict[str, Any]) -> None:
 
     Empty strings are treated as None (field cleared).
     """
-    from .settings import settings
 
     path = _config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,8 +148,8 @@ def save_service_config(updates: dict[str, Any]) -> None:
         if hasattr(settings, key):
             try:
                 setattr(settings, key, normalized)
-            except Exception:
-                pass
+            except pydantic.ValidationError:
+                logger.debug("setting %s rejected update", key)
 
     # Second pass: bool fields absent from form → False (unchecked checkbox)
     for key in _BOOL_FIELDS:
@@ -136,14 +158,14 @@ def save_service_config(updates: dict[str, Any]) -> None:
             if hasattr(settings, key):
                 try:
                     setattr(settings, key, False)
-                except Exception:
-                    pass
+                except pydantic.ValidationError:
+                    logger.debug("setting %s rejected update", key)
 
     path.write_text(json.dumps(existing, indent=2))
+    os.chmod(path, 0o600)
 
 
 def get_service_config() -> dict[str, Any]:
     """Return current settings values for all configurable fields."""
-    from .settings import settings
 
     return {field: getattr(settings, field, None) for field in CONFIGURABLE_FIELDS}

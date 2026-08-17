@@ -7,7 +7,7 @@ rather than managing media directly. Examples include:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -124,4 +124,5 @@ class BaseCompanionClient(ABC):
         Returns:
             System status information
         """
-        return await self._get("api/system/status")
+        status = await self._get("api/system/status")
+        return cast("dict[str, Any]", status)

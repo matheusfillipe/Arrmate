@@ -1,12 +1,12 @@
 """Core data models for Arrmate."""
 
-from enum import Enum
-from typing import Any, Dict, List, Optional
+from enum import StrEnum
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
 
-class MediaType(str, Enum):
+class MediaType(StrEnum):
     """Type of media being managed."""
 
     TV = "tv"
@@ -16,7 +16,7 @@ class MediaType(str, Enum):
     BOOK = "book"
 
 
-class ActionType(str, Enum):
+class ActionType(StrEnum):
     """Type of action to perform on media."""
 
     REMOVE = "remove"
@@ -40,30 +40,30 @@ class ActionType(str, Enum):
     RESCAN = "rescan"
 
 
+USER_BLOCKED_ACTIONS = {ActionType.REMOVE, ActionType.DELETE, ActionType.TRANSCODE}
+DESTRUCTIVE_ACTIONS = {ActionType.REMOVE, ActionType.DELETE}
+
+
 class Intent(BaseModel):
     """Structured representation of user intent extracted from natural language."""
 
     action: ActionType = Field(description="The action to perform")
     media_type: MediaType = Field(description="Type of media (TV, movie, music, etc.)")
-    title: Optional[str] = Field(default=None, description="Title of the media item")
-    season: Optional[int] = Field(default=None, description="Season number (TV shows only)")
-    episodes: Optional[List[int]] = Field(
-        default=None, description="Episode numbers (TV shows only)"
-    )
-    criteria: Optional[Dict[str, Any]] = Field(
+    title: str | None = Field(default=None, description="Title of the media item")
+    season: int | None = Field(default=None, description="Season number (TV shows only)")
+    episodes: list[int] | None = Field(default=None, description="Episode numbers (TV shows only)")
+    criteria: dict[str, Any] | None = Field(
         default=None,
         description="Search/filter criteria (language, quality, etc.)",
     )
-    keywords: List[str] = Field(
+    keywords: list[str] = Field(
         default_factory=list,
         description="Thematic keywords for topic-based searches (e.g. ['christmas', 'holiday'])",
     )
-    item_id: Optional[int] = Field(
+    item_id: int | None = Field(
         default=None, description="Internal ID of the media item (populated during enrichment)"
     )
-    series_id: Optional[int] = Field(
-        default=None, description="Internal series ID (TV shows only)"
-    )
+    series_id: int | None = Field(default=None, description="Internal series ID (TV shows only)")
 
     class Config:
         """Pydantic config."""
@@ -76,15 +76,15 @@ class ExecutionResult(BaseModel):
 
     success: bool = Field(description="Whether the execution was successful")
     message: str = Field(description="Human-readable message about the result")
-    data: Optional[Dict[str, Any]] = Field(
+    data: dict[str, Any] | None = Field(
         default=None, description="Additional data returned from execution"
     )
-    errors: Optional[List[str]] = Field(default=None, description="List of errors if any")
+    errors: list[str] | None = Field(default=None, description="List of errors if any")
 
     class Config:
         """Pydantic config."""
 
-        json_schema_extra = {
+        json_schema_extra: ClassVar[dict[str, Any]] = {
             "example": {
                 "success": True,
                 "message": "Successfully removed 2 episodes from Angel Season 1",
@@ -94,7 +94,7 @@ class ExecutionResult(BaseModel):
         }
 
 
-class ImplementationStatus(str, Enum):
+class ImplementationStatus(StrEnum):
     """Implementation status of a service."""
 
     COMPLETE = "complete"
@@ -118,9 +118,9 @@ class ServiceInfo(BaseModel):
 
     name: str = Field(description="Service name (sonarr, radarr, lidarr)")
     url: str = Field(description="Base URL of the service")
-    api_key: Optional[str] = Field(default=None, description="API key (masked)")
+    api_key: str | None = Field(default=None, description="API key (masked)")
     available: bool = Field(description="Whether the service is reachable")
-    version: Optional[str] = Field(default=None, description="Service version")
+    version: str | None = Field(default=None, description="Service version")
 
 
 class EnhancedServiceInfo(ServiceInfo):
@@ -130,13 +130,7 @@ class EnhancedServiceInfo(ServiceInfo):
         description="Implementation status of this service"
     )
     api_version: str = Field(description="API version (v1, v3, custom)")
-    capabilities: ServiceCapability = Field(
-        description="Features supported by this service"
-    )
+    capabilities: ServiceCapability = Field(description="Features supported by this service")
     media_type: str = Field(description="Type of media managed (TV, Movie, Music, etc.)")
-    is_deprecated: bool = Field(
-        default=False, description="Whether this service is deprecated"
-    )
-    deprecation_message: Optional[str] = Field(
-        default=None, description="Deprecation warning message"
-    )
+    is_deprecated: bool = Field(default=False, description="Whether this service is deprecated")
+    deprecation_message: str | None = Field(default=None, description="Deprecation warning message")

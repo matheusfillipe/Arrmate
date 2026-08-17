@@ -47,7 +47,7 @@ class QBittorrentClient:
         resp.raise_for_status()
         try:
             return resp.json()
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return resp.text
 
     async def _post(self, path: str, data: dict | None = None) -> Any:
@@ -56,14 +56,14 @@ class QBittorrentClient:
         resp.raise_for_status()
         try:
             return resp.json()
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return resp.text
 
     async def test_connection(self) -> bool:
         try:
             await self._get("/api/v2/app/version")
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_transfer_info(self) -> dict[str, Any]:
@@ -79,14 +79,14 @@ class QBittorrentClient:
         try:
             await self._post("/api/v2/torrents/pause", {"hashes": torrent_hash})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def resume_torrent(self, torrent_hash: str) -> bool:
         try:
             await self._post("/api/v2/torrents/resume", {"hashes": torrent_hash})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def set_download_limit(self, limit_bps: int) -> bool:
@@ -94,7 +94,7 @@ class QBittorrentClient:
         try:
             await self._post("/api/v2/transfer/downloadLimit", {"limit": limit_bps})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def set_upload_limit(self, limit_bps: int) -> bool:
@@ -102,7 +102,7 @@ class QBittorrentClient:
         try:
             await self._post("/api/v2/transfer/uploadLimit", {"limit": limit_bps})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def delete_torrent(self, torrent_hash: str, delete_files: bool = False) -> bool:
@@ -115,7 +115,7 @@ class QBittorrentClient:
                 },
             )
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def set_priority(self, torrent_hash: str, action: str) -> bool:
@@ -132,7 +132,7 @@ class QBittorrentClient:
                 return False
             await self._post(ep, {"hashes": torrent_hash})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def add_url(self, url: str, category: str = "", paused: bool = False) -> bool:
@@ -147,7 +147,7 @@ class QBittorrentClient:
                 },
             )
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_item_files(self, torrent_hash: str) -> list[dict[str, Any]]:
@@ -171,7 +171,7 @@ class QBittorrentClient:
         try:
             await self._post("/api/v2/torrents/recheck", {"hashes": torrent_hash})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def reannounce_torrent(self, torrent_hash: str) -> bool:
@@ -179,5 +179,5 @@ class QBittorrentClient:
         try:
             await self._post("/api/v2/torrents/reannounce", {"hashes": torrent_hash})
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False

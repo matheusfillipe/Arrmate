@@ -1,7 +1,6 @@
 """Tests for transcoder path validation."""
-import pytest
-from unittest.mock import patch, MagicMock
-from pathlib import Path
+
+from unittest.mock import patch
 
 
 def test_allowed_roots_empty_skips_validation(tmp_path):
@@ -12,7 +11,7 @@ def test_allowed_roots_empty_skips_validation(tmp_path):
     dummy_file.touch()
 
     with patch("arrmate.clients.transcoder._transcode_sync", return_value=(True, "")) as mock_sync:
-        success, error = _transcode_sync_validated(str(dummy_file), 28, "medium", [])
+        success, _error = _transcode_sync_validated(str(dummy_file), 28, "medium", [])
 
     mock_sync.assert_called_once_with(str(dummy_file), 28, "medium")
     assert success is True
@@ -48,9 +47,7 @@ def test_allowed_roots_permits_path_inside_roots(tmp_path):
     ok_file.touch()
 
     with patch("arrmate.clients.transcoder._transcode_sync", return_value=(True, "")) as mock_sync:
-        success, error = _transcode_sync_validated(
-            str(ok_file), 28, "medium", [str(media_dir)]
-        )
+        success, _error = _transcode_sync_validated(str(ok_file), 28, "medium", [str(media_dir)])
 
     mock_sync.assert_called_once()
     assert success is True
@@ -66,7 +63,7 @@ def test_allowed_roots_blocks_path_traversal(tmp_path):
     traversal_path = str(allowed_dir) + "/../../etc/passwd"
 
     with patch("arrmate.clients.transcoder._transcode_sync") as mock_sync:
-        success, error = _transcode_sync_validated(
+        success, _error = _transcode_sync_validated(
             traversal_path, 28, "medium", [str(allowed_dir)]
         )
 

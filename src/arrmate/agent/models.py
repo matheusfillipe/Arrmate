@@ -13,7 +13,8 @@ from pydantic_ai.providers.ollama import OllamaProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
 
-from ..config.settings import settings
+from arrmate.config.settings import settings
+
 from .deps import AgentDeps
 from .playbooks import register_playbook_tools
 from .system_prompt import build_system_prompt
@@ -32,10 +33,16 @@ def _build_model() -> Model:
     provider = settings.llm_provider
 
     if provider == "ollama":
-        kwargs: dict = {"base_url": settings.ollama_base_url}
-        if settings.ollama_api_key:
-            kwargs["headers"] = {"Authorization": f"Bearer {settings.ollama_api_key}"}
-        return OllamaModel(settings.ollama_model, provider=OllamaProvider(**kwargs))
+        # pydantic-ai's OllamaProvider rides on the OpenAI client, which
+        # appends /chat/completions itself; Ollama's compat endpoint lives
+        # under /v1, so the base URL must end with it.
+        base_url = settings.ollama_base_url.rstrip("/")
+        if not base_url.endswith("/v1"):
+            base_url += "/v1"
+        return OllamaModel(
+            settings.ollama_model,
+            provider=OllamaProvider(base_url=base_url, api_key=settings.ollama_api_key or None),
+        )
 
     if provider == "anthropic":
         if not settings.anthropic_api_key:

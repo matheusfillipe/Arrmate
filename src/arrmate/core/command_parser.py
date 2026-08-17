@@ -1,10 +1,9 @@
 """Natural language command parser using LLM."""
 
-from typing import Dict, List, Optional
+from arrmate.llm.base import BaseLLMProvider
+from arrmate.llm.factory import create_llm_provider
+from arrmate.llm.schemas import get_system_prompt, get_tool_schemas
 
-from ..llm.base import BaseLLMProvider
-from ..llm.factory import create_llm_provider
-from ..llm.schemas import get_system_prompt, get_tool_schemas
 from .models import Intent
 
 
@@ -13,8 +12,8 @@ class CommandParser:
 
     def __init__(
         self,
-        llm_provider: Optional[BaseLLMProvider] = None,
-        available_services: Optional[List[str]] = None,
+        llm_provider: BaseLLMProvider | None = None,
+        available_services: list[str] | None = None,
     ) -> None:
         """Initialize the command parser.
 
@@ -43,16 +42,14 @@ class CommandParser:
         system_prompt = get_system_prompt(self.available_services)
 
         try:
-            parsed_data = await self.llm_provider.parse_command(
-                user_input, tools, system_prompt
-            )
+            parsed_data = await self.llm_provider.parse_command(user_input, tools, system_prompt)
         except Exception as e:
-            raise ValueError(f"Failed to parse command: {str(e)}") from e
+            raise ValueError(f"Failed to parse command: {e!s}") from e
 
         try:
             intent = Intent(**parsed_data)
         except Exception as e:
-            raise ValueError(f"Invalid intent extracted: {str(e)}") from e
+            raise ValueError(f"Invalid intent extracted: {e!s}") from e
 
         return intent
 

@@ -7,7 +7,10 @@ Not persisted across restarts, which is acceptable for brute-force throttling.
 import asyncio
 import time
 from collections import defaultdict
-from typing import Tuple
+
+from fastapi import Request
+
+from arrmate.config.settings import settings
 
 
 class RateLimiter:
@@ -25,7 +28,7 @@ class RateLimiter:
         self._counters: dict = defaultdict(lambda: [0, 0.0])
         self._lock = asyncio.Lock()
 
-    async def check(self, key: str) -> Tuple[bool, int]:
+    async def check(self, key: str) -> tuple[bool, int]:
         """Check whether *key* is within the rate limit.
 
         Returns:
@@ -46,10 +49,10 @@ class RateLimiter:
             retry_after = int(self.window_seconds - (now - window_start)) + 1
             return False, retry_after
 
-    def _get_client_ip(self, request) -> str:
+    def _get_client_ip(self, request: Request) -> str:
         """Extract the best-effort client IP from a FastAPI Request."""
         forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
+        if forwarded_for and settings.trust_proxy_headers:
             return forwarded_for.split(",")[0].strip()
         return request.client.host if request.client else "unknown"
 

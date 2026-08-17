@@ -1,90 +1,130 @@
-[build-system]
-requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "arrmate"
 version = "2.2.2"
-description = "🤝 Your AI companion for Sonarr, Radarr, and Lidarr - manage your media library with natural language"
+description = "Your AI companion for Sonarr, Radarr, and Lidarr: manage your media library with natural language"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
     {name = "Arrmate Contributors", email = "arrmate@example.com"},
-    {name = "Claude Sonnet 4.5", email = "noreply@anthropic.com"}
 ]
 license = {text = "MIT"}
 keywords = ["sonarr", "radarr", "lidarr", "media-management", "natural-language", "llm", "ai"]
 classifiers = [
-    "Development Status :: 4 - Beta",
     "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Video",
 ]
-
 dependencies = [
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
     "httpx>=0.25.0",
-    "typer[all]>=0.9.0",
+    "typer>=0.9.0",
     "fastapi>=0.108.0",
     "uvicorn[standard]>=0.25.0",
     "ollama>=0.1.0",
     "openai>=1.6.0",
     "anthropic>=0.8.0",
-    "pydantic-ai-slim[openai,anthropic,ollama]>=2.31.0",
+    "pydantic-ai-slim[openai,anthropic]>=2.31.0",
     "rich>=13.7.0",
     "python-dotenv>=1.0.0",
     "jinja2>=3.1.0",
     "python-multipart>=0.0.6",
     "bcrypt>=4.0.0",
     "itsdangerous>=2.1.0",
-    # Security pins for transitive deps (keep in sync with requirements.txt)
+    # Security pins for transitive deps
     "h11>=0.16.0",
     "anyio>=4.4.0",
     "zipp>=3.19.1",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.1.0",
-    "pytest-httpx>=0.21.0",
-    "black>=23.12.0",
-    "ruff>=0.1.8",
-    "mypy>=1.7.0",
+    "ruff>=0.16.0",
+    "mypy>=2.3.0",
+    "pytest>=9.0.0",
+    "pytest-asyncio>=1.0.0",
+    "pytest-httpx>=0.24.0",
+    "vulture>=2.16",
+    "deptry>=0.25.0",
+    "bandit>=1.9.0",
+    "pip-audit>=2.10.0",
+    "pre-commit>=4.6.0",
 ]
-web = [
-    "streamlit>=1.29.0",
-]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/arrmate"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["tests", "docs"]
+
+[tool.uv]
+package = true
 
 [project.scripts]
 arrmate = "arrmate.interfaces.cli.main:app"
 
-[project.urls]
-Homepage = "https://github.com/techbutton/arrmate"
-Documentation = "https://github.com/techbutton/arrmate#readme"
-Repository = "https://github.com/techbutton/arrmate"
-Issues = "https://github.com/techbutton/arrmate/issues"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.black]
-line-length = 100
-target-version = ['py311']
-
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PIE", "RET", "RUF", "TID", "BLE", "S110"]
+fixable = ["ALL"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+# prompt/schema literals legitimately exceed the line limit
+"src/arrmate/llm/schemas.py" = ["E501"]
+"src/arrmate/interfaces/**" = ["B008"]
+
+[tool.ruff.format]
+quote-style = "double"
 
 [tool.mypy]
 python_version = "3.11"
+disallow_untyped_defs = true
 warn_return_any = true
 warn_unused_configs = true
-disallow_untyped_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+files = ["src/arrmate"]
+
+# Technical-debt ledger. These overrides relax specific checks for specific
+# modules; shrink them to zero over time and never add new entries.
+[[tool.mypy.overrides]]
+# Service clients sit on dynamically-shaped JSON; each method documents the
+# expected shape in its signature and docstring.
+module = ["arrmate.clients.audiobookshelf", "arrmate.clients.bazarr", "arrmate.clients.cleanuparr", "arrmate.clients.jellyfin", "arrmate.clients.jellyseerr", "arrmate.clients.lazylibrarian", "arrmate.clients.lastfm", "arrmate.clients.lidarr", "arrmate.clients.nzbget", "arrmate.clients.openlibrary", "arrmate.clients.plex", "arrmate.clients.plex_tv", "arrmate.clients.prowlarr", "arrmate.clients.qbittorrent", "arrmate.clients.radarr", "arrmate.clients.readarr", "arrmate.clients.readmeabook", "arrmate.clients.sabnzbd", "arrmate.clients.sonarr", "arrmate.clients.tmdb", "arrmate.clients.transcoder", "arrmate.clients.transmission"]
+disable_error_code = ["no-any-return"]
+
+[[tool.mypy.overrides]]
+# HTMX route handlers are the presentation boundary.
+module = ["arrmate.interfaces.web.routes.*"]
+disable_error_code = ["no-any-return", "no-untyped-def"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.vulture]
+min_confidence = 80
+
+[tool.deptry]
+known_first_party = ["arrmate"]
+# runtime-only deps: loaded by pydantic-settings, FastAPI templating/forms,
+# plus the documented security pins for transitive deps
+per_rule_ignores = { "DEP002" = ["python-dotenv", "jinja2", "python-multipart", "h11", "anyio", "zipp"] }
+
+[tool.bandit]
+exclude_dirs = ["tests"]

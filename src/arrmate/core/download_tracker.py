@@ -15,6 +15,14 @@ Polling interval: POLL_INTERVAL seconds (default 5 minutes).
 import asyncio
 import logging
 
+import httpx
+
+from arrmate.auth import user_db
+from arrmate.auth.notifications import send_discord, send_slack
+from arrmate.clients.radarr import RadarrClient
+from arrmate.clients.sonarr import SonarrClient
+from arrmate.config.settings import Settings, settings
+
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = 300  # 5 minutes
@@ -32,10 +40,7 @@ async def run_tracker() -> None:
 
 
 async def _poll_once() -> None:
-    from ..auth.user_db import get_trackable_requests
-    from ..config.settings import settings
-
-    requests = get_trackable_requests()
+    requests = user_db.get_trackable_requests()
     if not requests:
         return
 
@@ -52,15 +57,15 @@ async def _poll_once() -> None:
         await _check_service("radarr", by_title, settings)
 
 
-async def _check_service(service: str, by_title: dict, settings_obj) -> None:
+async def _check_service(service: str, by_title: dict, settings_obj: Settings) -> None:
     """Check one service's queue and history, firing notifications as needed."""
     try:
         if service == "sonarr":
-            from ..clients.sonarr import SonarrClient
-            client = SonarrClient(settings_obj.sonarr_url, settings_obj.sonarr_api_key)
+            client: SonarrClient | RadarrClient = SonarrClient(
+                str(settings_obj.sonarr_url), str(settings_obj.sonarr_api_key)
+            )
         else:
-            from ..clients.radarr import RadarrClient
-            client = RadarrClient(settings_obj.radarr_url, settings_obj.radarr_api_key)
+            client = RadarrClient(str(settings_obj.radarr_url), str(settings_obj.radarr_api_key))
 
         try:
             queue_data = await client.get_queue(page_size=100)
@@ -68,8 +73,8 @@ async def _check_service(service: str, by_title: dict, settings_obj) -> None:
         finally:
             await client.close()
 
-    except Exception as e:
-        logger.warning("Download tracker: %s unreachable — %s", service, e)
+    except (httpx.HTTPError, KeyError, ValueError) as e:
+        logger.warning("Download tracker: %s unreachable - %s", service, e)
         return
 
     # ── Queue check (downloading) ──────────────────────────────────────────
@@ -79,7 +84,7 @@ async def _check_service(service: str, by_title: dict, settings_obj) -> None:
             continue
         for req in by_title.get(title.lower().strip(), []):
             if not req.get("notified_queued"):
-                _fire_queued_notification(req, title, settings_obj)
+                await _fire_queued_notification(req, title, settings_obj)
 
     # ── History check (imported) ───────────────────────────────────────────
     for record in history_data.get("records", []):
@@ -90,7 +95,7 @@ async def _check_service(service: str, by_title: dict, settings_obj) -> None:
             continue
         for req in by_title.get(title.lower().strip(), []):
             if not req.get("notified_imported"):
-                _fire_imported_notification(req, title, settings_obj)
+                await _fire_imported_notification(req, title, settings_obj)
                 # Mark in-memory so we don't double-notify in the same poll
                 req["notified_imported"] = True
 
@@ -99,51 +104,46 @@ def _extract_title(record: dict, service: str) -> str:
     """Pull the series/movie title out of a Sonarr or Radarr API record."""
     if service == "sonarr":
         return (record.get("series") or {}).get("title") or ""
-    else:
-        return (record.get("movie") or {}).get("title") or ""
+    return (record.get("movie") or {}).get("title") or ""
 
 
-def _fire_queued_notification(req: dict, title: str, settings_obj) -> None:
+async def _fire_queued_notification(req: dict, title: str, settings_obj: Settings) -> None:
     """Send 'download started' notification and mark request as queued."""
-    from ..auth.user_db import mark_request_queued, create_notification
-    from ..auth.notifications import send_slack, send_discord
 
-    if not mark_request_queued(req["id"]):
+    if not user_db.mark_request_queued(req["id"]):
         return  # Another process already marked it
 
     message = f"⬇️ '{title}' has started downloading."
     notif_title = "Download Started"
 
-    create_notification(req["requested_by"], message, type="info", request_id=req["id"])
+    user_db.create_notification(req["requested_by"], message, type="info", request_id=req["id"])
 
     slack_url = getattr(settings_obj, "slack_webhook_url", None)
     discord_url = getattr(settings_obj, "discord_webhook_url", None)
     if slack_url:
-        send_slack(slack_url, message, title=notif_title, color="#0ea5e9")
+        await send_slack(slack_url, message, title=notif_title, color="#0ea5e9")
     if discord_url:
-        send_discord(discord_url, message, title=notif_title)
+        await send_discord(discord_url, message, title=notif_title)
 
     logger.info("Queued notification sent for request %s (%s)", req["id"], title)
 
 
-def _fire_imported_notification(req: dict, title: str, settings_obj) -> None:
+async def _fire_imported_notification(req: dict, title: str, settings_obj: Settings) -> None:
     """Send 'ready in library' notification and close the request."""
-    from ..auth.user_db import mark_request_imported, create_notification
-    from ..auth.notifications import send_slack, send_discord
 
-    if not mark_request_imported(req["id"]):
+    if not user_db.mark_request_imported(req["id"]):
         return  # Another process already marked it
 
     message = f"🎉 '{title}' is now available in your library!"
     notif_title = "Media Ready"
 
-    create_notification(req["requested_by"], message, type="success", request_id=req["id"])
+    user_db.create_notification(req["requested_by"], message, type="success", request_id=req["id"])
 
     slack_url = getattr(settings_obj, "slack_webhook_url", None)
     discord_url = getattr(settings_obj, "discord_webhook_url", None)
     if slack_url:
-        send_slack(slack_url, message, title=notif_title, color="#22c55e")
+        await send_slack(slack_url, message, title=notif_title, color="#22c55e")
     if discord_url:
-        send_discord(discord_url, message, title=notif_title, color=0x22C55E)
+        await send_discord(discord_url, message, title=notif_title, color=0x22C55E)
 
     logger.info("Imported notification sent for request %s (%s)", req["id"], title)

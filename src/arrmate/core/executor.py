@@ -2,20 +2,31 @@
 
 import asyncio
 import logging
-from typing import List
+from typing import cast
 
-from ..clients.base import BaseMediaClient
-from ..clients.discovery import get_client_for_media_type
-from ..clients.lidarr import LidarrClient
-from ..clients.radarr import RadarrClient
-from ..clients.readarr import ReadarrClient
-from ..clients.sonarr import SonarrClient
-from ..clients.plex import PlexClient
-from ..clients.transcoder import create_job, ffmpeg_available, run_transcode_job, scan_for_transcode
-from ..config.settings import settings
+import httpx
+
+from arrmate.clients.base_arr import BaseArrClient
+from arrmate.clients.discovery import get_client_for_media_type
+from arrmate.clients.lidarr import LidarrClient
+from arrmate.clients.plex import PlexClient
+from arrmate.clients.radarr import RadarrClient
+from arrmate.clients.readarr import ReadarrClient
+from arrmate.clients.readmeabook import ReadMeABookClient
+from arrmate.clients.sonarr import SonarrClient
+from arrmate.clients.transcoder import (
+    create_job,
+    ffmpeg_available,
+    run_transcode_job,
+    scan_for_transcode,
+)
+from arrmate.config.settings import settings
+
 from .models import ActionType, ExecutionResult, Intent
 
 logger = logging.getLogger(__name__)
+
+_background_tasks: set[asyncio.Task[None]] = set()
 
 
 class Executor:
@@ -52,42 +63,39 @@ class Executor:
                 # Route to appropriate handler based on action
                 if intent.action == ActionType.REMOVE or intent.action == ActionType.DELETE:
                     return await self._execute_remove(intent, client)
-                elif intent.action == ActionType.SEARCH:
+                if intent.action == ActionType.SEARCH:
                     return await self._execute_search(intent, client)
-                elif intent.action == ActionType.UPGRADE:
+                if intent.action == ActionType.UPGRADE:
                     return await self._execute_upgrade(intent, client)
-                elif intent.action == ActionType.ADD:
+                if intent.action == ActionType.ADD:
                     return await self._execute_add(intent, client)
-                elif intent.action == ActionType.LIST:
+                if intent.action == ActionType.LIST:
                     return await self._execute_list(intent, client)
-                elif intent.action == ActionType.INFO:
+                if intent.action == ActionType.INFO:
                     return await self._execute_info(intent, client)
-                elif intent.action == ActionType.MONITOR:
+                if intent.action == ActionType.MONITOR:
                     return await self._execute_monitor(intent, client, monitored=True)
-                elif intent.action == ActionType.UNMONITOR:
+                if intent.action == ActionType.UNMONITOR:
                     return await self._execute_monitor(intent, client, monitored=False)
-                elif intent.action == ActionType.RENAME:
+                if intent.action == ActionType.RENAME:
                     return await self._execute_rename(intent, client)
-                elif intent.action == ActionType.RESCAN:
+                if intent.action == ActionType.RESCAN:
                     return await self._execute_rescan(intent, client)
-                else:
-                    return ExecutionResult(
-                        success=False,
-                        message=f"Action '{intent.action}' not yet implemented",
-                    )
+                return ExecutionResult(
+                    success=False,
+                    message=f"Action '{intent.action}' not yet implemented",
+                )
             finally:
                 await client.close()
 
-        except Exception as e:
+        except (httpx.HTTPError, KeyError, ValueError) as e:
             return ExecutionResult(
                 success=False,
-                message=f"Execution failed: {str(e)}",
+                message=f"Execution failed: {e!s}",
                 errors=[str(e)],
             )
 
-    async def _execute_remove(
-        self, intent: Intent, client: BaseMediaClient
-    ) -> ExecutionResult:
+    async def _execute_remove(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
         """Execute a remove/delete action.
 
         Args:
@@ -98,22 +106,19 @@ class Executor:
             Execution result
         """
         if intent.media_type == "tv":
-            return await self._remove_tv_content(intent, client)
-        elif intent.media_type == "movie":
-            return await self._remove_movie(intent, client)
-        elif intent.media_type == "music":
-            return await self._remove_music_content(intent, client)
-        elif intent.media_type in ("audiobook", "book"):
-            return await self._remove_book_content(intent, client)
-        else:
-            return ExecutionResult(
-                success=False,
-                message=f"Remove not yet implemented for {intent.media_type}",
-            )
+            return await self._remove_tv_content(intent, cast(SonarrClient, client))
+        if intent.media_type == "movie":
+            return await self._remove_movie(intent, cast(RadarrClient, client))
+        if intent.media_type == "music":
+            return await self._remove_music_content(intent, cast(LidarrClient, client))
+        if intent.media_type in ("audiobook", "book"):
+            return await self._remove_book_content(intent, cast(ReadarrClient, client))
+        return ExecutionResult(
+            success=False,
+            message=f"Remove not yet implemented for {intent.media_type}",
+        )
 
-    async def _remove_tv_content(
-        self, intent: Intent, client: SonarrClient
-    ) -> ExecutionResult:
+    async def _remove_tv_content(self, intent: Intent, client: SonarrClient) -> ExecutionResult:
         """Remove TV show episodes or entire series.
 
         Args:
@@ -132,9 +137,7 @@ class Executor:
         # If specific episodes are mentioned, delete those files
         if intent.episodes and intent.season is not None:
             # Get all episodes for the series
-            all_episodes = await client.get_episodes(
-                intent.series_id, season_number=intent.season
-            )
+            all_episodes = await client.get_episodes(intent.series_id, season_number=intent.season)
 
             # Filter to the requested episodes
             target_episodes = [
@@ -164,21 +167,18 @@ class Executor:
 
             return ExecutionResult(
                 success=True,
-                message=f"Removed {deleted_count} episode file(s) from {intent.title} Season {intent.season}",
+                message=(
+                    f"Removed {deleted_count} episode file(s) from "
+                    f"{intent.title} Season {intent.season}"
+                ),
                 data={"deleted_count": deleted_count, "file_ids": file_ids},
             )
 
         # If season is mentioned but no episodes, delete entire season
-        elif intent.season is not None:
-            all_episodes = await client.get_episodes(
-                intent.series_id, season_number=intent.season
-            )
+        if intent.season is not None:
+            all_episodes = await client.get_episodes(intent.series_id, season_number=intent.season)
 
-            file_ids = [
-                ep["episodeFileId"]
-                for ep in all_episodes
-                if ep.get("episodeFileId")
-            ]
+            file_ids = [ep["episodeFileId"] for ep in all_episodes if ep.get("episodeFileId")]
 
             if not file_ids:
                 return ExecutionResult(
@@ -190,21 +190,21 @@ class Executor:
 
             return ExecutionResult(
                 success=True,
-                message=f"Removed {deleted_count} episode file(s) from {intent.title} Season {intent.season}",
+                message=(
+                    f"Removed {deleted_count} episode file(s) from "
+                    f"{intent.title} Season {intent.season}"
+                ),
                 data={"deleted_count": deleted_count},
             )
 
         # Otherwise, delete entire series
-        else:
-            await client.delete_item(intent.series_id, delete_files=True)
-            return ExecutionResult(
-                success=True,
-                message=f"Removed series '{intent.title}' and all files",
-            )
+        await client.delete_item(intent.series_id, delete_files=True)
+        return ExecutionResult(
+            success=True,
+            message=f"Removed series '{intent.title}' and all files",
+        )
 
-    async def _remove_movie(
-        self, intent: Intent, client: RadarrClient
-    ) -> ExecutionResult:
+    async def _remove_movie(self, intent: Intent, client: RadarrClient) -> ExecutionResult:
         """Remove a movie.
 
         Args:
@@ -227,9 +227,7 @@ class Executor:
             message=f"Removed movie '{intent.title}' and all files",
         )
 
-    async def _remove_music_content(
-        self, intent: Intent, client: LidarrClient
-    ) -> ExecutionResult:
+    async def _remove_music_content(self, intent: Intent, client: LidarrClient) -> ExecutionResult:
         """Remove music (artist).
 
         Args:
@@ -252,9 +250,7 @@ class Executor:
             message=f"Removed artist '{intent.title}' and all files",
         )
 
-    async def _remove_book_content(
-        self, intent: Intent, client: ReadarrClient
-    ) -> ExecutionResult:
+    async def _remove_book_content(self, intent: Intent, client: ReadarrClient) -> ExecutionResult:
         """Remove book/audiobook (author).
 
         Args:
@@ -279,23 +275,20 @@ class Executor:
             message=f"Removed author '{intent.title}' and all files",
         )
 
-    async def _execute_upgrade(
-        self, intent: Intent, client: BaseMediaClient
-    ) -> ExecutionResult:
+    async def _execute_upgrade(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
         """Execute an upgrade action — search Sonarr/Radarr for a better version.
 
         Routes to episode-, season-, or series-level search depending on specificity.
         """
         if intent.media_type == "tv" and intent.series_id:
+            sonarr = cast(SonarrClient, client)
             if intent.episodes and intent.season is not None:
                 # Specific episode(s): fetch Sonarr episode IDs and run EpisodeSearch
-                all_episodes = await client.get_episodes(
+                all_episodes = await sonarr.get_episodes(
                     intent.series_id, season_number=intent.season
                 )
                 episode_ids = [
-                    ep["id"]
-                    for ep in all_episodes
-                    if ep.get("episodeNumber") in intent.episodes
+                    ep["id"] for ep in all_episodes if ep.get("episodeNumber") in intent.episodes
                 ]
                 if not episode_ids:
                     ep_str = ", ".join(str(e) for e in intent.episodes)
@@ -306,45 +299,41 @@ class Executor:
                             f"Season {intent.season} of '{intent.title}'"
                         ),
                     )
-                await client.trigger_episode_search(episode_ids)
+                await sonarr.trigger_episode_search(episode_ids)
                 ep_str = ", ".join(str(e) for e in intent.episodes)
                 return ExecutionResult(
                     success=True,
                     message=f"Triggered search for '{intent.title}' S{intent.season:02d}E{ep_str}",
                     data={"task": "EpisodeSearch"},
                 )
-            elif intent.season is not None:
+            if intent.season is not None:
                 # Whole season
-                await client.trigger_season_search(intent.series_id, intent.season)
+                await sonarr.trigger_season_search(intent.series_id, intent.season)
                 return ExecutionResult(
                     success=True,
                     message=f"Triggered search for '{intent.title}' Season {intent.season}",
                     data={"task": "SeasonSearch"},
                 )
-            else:
-                # Whole series
-                await client.trigger_series_search(intent.series_id)
-                return ExecutionResult(
-                    success=True,
-                    message=f"Triggered search for '{intent.title}'",
-                    data={"task": "SeriesSearch"},
-                )
-        elif intent.media_type == "movie" and intent.item_id:
-            await client.trigger_movie_search(intent.item_id)
+            # Whole series
+            await client.trigger_item_search(intent.series_id)
+            return ExecutionResult(
+                success=True,
+                message=f"Triggered search for '{intent.title}'",
+                data={"task": "SeriesSearch"},
+            )
+        if intent.media_type == "movie" and intent.item_id:
+            await client.trigger_item_search(intent.item_id)
             return ExecutionResult(
                 success=True,
                 message=f"Triggered search for '{intent.title}'",
                 data={"task": "MovieSearch"},
             )
-        else:
-            return ExecutionResult(
-                success=False,
-                message=f"Could not find '{intent.title}' in library to upgrade",
-            )
+        return ExecutionResult(
+            success=False,
+            message=f"Could not find '{intent.title}' in library to upgrade",
+        )
 
-    async def _execute_search(
-        self, intent: Intent, client: BaseMediaClient
-    ) -> ExecutionResult:
+    async def _execute_search(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
         """Execute a search action.
 
         Args:
@@ -356,34 +345,34 @@ class Executor:
         """
         # For items already in library, trigger a search
         if intent.series_id and intent.media_type == "tv":
-            await client.trigger_series_search(intent.series_id)
+            await client.trigger_item_search(intent.series_id)
             return ExecutionResult(
                 success=True,
                 message=f"Triggered search for '{intent.title}'",
                 data={"task": "SeriesSearch"},
             )
-        elif intent.item_id and intent.media_type == "movie":
-            await client.trigger_movie_search(intent.item_id)
+        if intent.item_id and intent.media_type == "movie":
+            await client.trigger_item_search(intent.item_id)
             return ExecutionResult(
                 success=True,
                 message=f"Triggered search for '{intent.title}'",
                 data={"task": "MovieSearch"},
             )
-        elif intent.item_id and intent.media_type == "music":
-            await client.trigger_artist_search(intent.item_id)
+        if intent.item_id and intent.media_type == "music":
+            await client.trigger_item_search(intent.item_id)
             return ExecutionResult(
                 success=True,
                 message=f"Triggered search for '{intent.title}'",
                 data={"task": "ArtistSearch"},
             )
-        elif intent.item_id and intent.media_type in ("audiobook", "book"):
-            await client.trigger_author_search(intent.item_id)
+        if intent.item_id and intent.media_type in ("audiobook", "book"):
+            await client.trigger_item_search(intent.item_id)
             return ExecutionResult(
                 success=True,
                 message=f"Triggered search for '{intent.title}'",
                 data={"task": "AuthorSearch"},
             )
-        elif intent.keywords and not intent.title:
+        if intent.keywords and not intent.title:
             # Topic/thematic search — search each keyword and deduplicate
             seen: set = set()
             all_results: list = []
@@ -400,18 +389,15 @@ class Executor:
                 message=f"Found {len(all_results)} result(s) for topic '{topic}'",
                 data={"results": all_results[:10]},
             )
-        else:
-            # Search external sources by title
-            results = await client.search(intent.title or "")
-            return ExecutionResult(
-                success=True,
-                message=f"Found {len(results)} result(s) for '{intent.title}'",
-                data={"results": results[:5]},  # Limit to 5 results
-            )
+        # Search external sources by title
+        results = await client.search(intent.title or "")
+        return ExecutionResult(
+            success=True,
+            message=f"Found {len(results)} result(s) for '{intent.title}'",
+            data={"results": results[:5]},  # Limit to 5 results
+        )
 
-    async def _execute_add(
-        self, intent: Intent, client: BaseMediaClient
-    ) -> ExecutionResult:
+    async def _execute_add(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
         """Execute an add action.
 
         Args:
@@ -458,12 +444,12 @@ class Executor:
             # Add the first result using full lookup object so all required fields are present
             show = results[0]
             try:
-                added = await client.add_series_from_lookup(
+                added = await cast(SonarrClient, client).add_series_from_lookup(
                     lookup_result=show,
                     quality_profile_id=profile_id,
                     root_folder_path=root_folder,
                 )
-            except Exception as add_err:
+            except (httpx.HTTPError, KeyError, ValueError) as add_err:
                 msg = _extract_arr_error(add_err)
                 if "already" in msg.lower():
                     return ExecutionResult(
@@ -478,9 +464,9 @@ class Executor:
                 data=added,
             )
 
-        elif intent.media_type == "movie":
+        if intent.media_type == "movie":
             # Search for the movie first
-            results = await client.search(intent.title)
+            results = await client.search(intent.title or "")
             if not results:
                 return ExecutionResult(
                     success=False,
@@ -490,13 +476,13 @@ class Executor:
             # Add the first result
             movie = results[0]
             try:
-                added = await client.add_movie(
+                added = await cast(RadarrClient, client).add_movie(
                     tmdb_id=movie["tmdbId"],
                     title=movie["title"],
                     quality_profile_id=profile_id,
                     root_folder_path=root_folder,
                 )
-            except Exception as add_err:
+            except (httpx.HTTPError, KeyError, ValueError) as add_err:
                 msg = _extract_arr_error(add_err)
                 if "already" in msg.lower():
                     return ExecutionResult(
@@ -511,7 +497,7 @@ class Executor:
                 data=added,
             )
 
-        elif intent.media_type == "music":
+        if intent.media_type == "music":
             results = await client.search(intent.title or "")
             if not results:
                 return ExecutionResult(
@@ -520,22 +506,24 @@ class Executor:
                 )
 
             artist = results[0]
-            metadata_profiles = await client.get_metadata_profiles()
+            metadata_profiles = await cast(LidarrClient, client).get_metadata_profiles()
             metadata_profile_id = metadata_profiles[0]["id"] if metadata_profiles else 1
             try:
-                added = await client.add_artist(
+                added = await cast(LidarrClient, client).add_artist(
                     foreign_artist_id=artist["foreignArtistId"],
                     artist_name=artist.get("artistName", intent.title or ""),
                     quality_profile_id=profile_id,
                     metadata_profile_id=metadata_profile_id,
                     root_folder_path=root_folder,
                 )
-            except Exception as add_err:
+            except (httpx.HTTPError, KeyError, ValueError) as add_err:
                 msg = _extract_arr_error(add_err)
                 if "already" in msg.lower():
                     return ExecutionResult(
                         success=False,
-                        message=f"'{artist.get('artistName', intent.title)}' is already in your library",
+                        message=(
+                            f"'{artist.get('artistName', intent.title)}' is already in your library"
+                        ),
                     )
                 raise
 
@@ -545,10 +533,9 @@ class Executor:
                 data=added,
             )
 
-        elif intent.media_type in ("audiobook", "book"):
+        if intent.media_type in ("audiobook", "book"):
             # Prefer ReadMeABook (request workflow) if configured; fall back to Readarr
             if settings.readmeabook_url and settings.readmeabook_api_key:
-                from ..clients.readmeabook import ReadMeABookClient
                 rmab = ReadMeABookClient(settings.readmeabook_url, settings.readmeabook_api_key)
                 try:
                     results = await rmab.search(intent.title or "")
@@ -577,7 +564,7 @@ class Executor:
                     if not asin:
                         return ExecutionResult(
                             success=False,
-                            message=f"Could not determine ASIN for '{title}' — try a more specific search",
+                            message=f"Could not determine ASIN for '{title}'; be more specific",
                         )
 
                     await rmab.create_request(asin=asin, title=title, author=author)
@@ -597,10 +584,10 @@ class Executor:
                         message=f"Could not find '{intent.title}' to add",
                     )
                 author = results[0]
-                metadata_profiles = await client.get_metadata_profiles()
+                metadata_profiles = await cast(LidarrClient, client).get_metadata_profiles()
                 metadata_profile_id = metadata_profiles[0]["id"] if metadata_profiles else 1
                 try:
-                    added = await client.add_author(
+                    added = await cast(ReadarrClient, client).add_author(
                         foreign_author_id=author["foreignAuthorId"],
                         author_name=author.get("authorName", intent.title or ""),
                         quality_profile_id=profile_id,
@@ -612,7 +599,9 @@ class Executor:
                     if "already" in msg.lower():
                         return ExecutionResult(
                             success=False,
-                            message=f"'{author.get('authorName', intent.title)}' is already in your library",
+                            message=(
+                                f"'{author.get('authorName', intent.title)}' is already in library"
+                            ),
                         )
                     raise
                 return ExecutionResult(
@@ -627,9 +616,7 @@ class Executor:
                 message=f"Add not yet implemented for {intent.media_type}",
             )
 
-    async def _execute_list(
-        self, intent: Intent, client: BaseMediaClient
-    ) -> ExecutionResult:
+    async def _execute_list(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
         """Execute a list action.
 
         Args:
@@ -640,47 +627,44 @@ class Executor:
             Execution result
         """
         if intent.media_type == "tv":
-            items = await client.get_all_series()
+            items = await client.get_all_items()
             titles = [item["title"] for item in items]
             return ExecutionResult(
                 success=True,
                 message=f"Found {len(items)} TV show(s)",
                 data={"titles": titles, "count": len(items)},
             )
-        elif intent.media_type == "movie":
-            items = await client.get_all_movies()
+        if intent.media_type == "movie":
+            items = await client.get_all_items()
             titles = [item["title"] for item in items]
             return ExecutionResult(
                 success=True,
                 message=f"Found {len(items)} movie(s)",
                 data={"titles": titles, "count": len(items)},
             )
-        elif intent.media_type == "music":
-            items = await client.get_all_artists()
+        if intent.media_type == "music":
+            items = await client.get_all_items()
             titles = [item.get("artistName", item.get("title", "Unknown")) for item in items]
             return ExecutionResult(
                 success=True,
                 message=f"Found {len(items)} artist(s)",
                 data={"titles": titles, "count": len(items)},
             )
-        elif intent.media_type in ("audiobook", "book"):
+        if intent.media_type in ("audiobook", "book"):
             logger.warning("Using deprecated Readarr client for listing")
-            items = await client.get_all_authors()
+            items = await client.get_all_items()
             titles = [item.get("authorName", item.get("title", "Unknown")) for item in items]
             return ExecutionResult(
                 success=True,
                 message=f"Found {len(items)} author(s)",
                 data={"titles": titles, "count": len(items)},
             )
-        else:
-            return ExecutionResult(
-                success=False,
-                message=f"List not yet implemented for {intent.media_type}",
-            )
+        return ExecutionResult(
+            success=False,
+            message=f"List not yet implemented for {intent.media_type}",
+        )
 
-    async def _execute_info(
-        self, intent: Intent, client: BaseMediaClient
-    ) -> ExecutionResult:
+    async def _execute_info(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
         """Execute an info action.
 
         Args:
@@ -716,7 +700,7 @@ class Executor:
         if not ffmpeg_available():
             return ExecutionResult(
                 success=False,
-                message="ffmpeg is not installed. Add ffmpeg to your Dockerfile or install it on the host.",
+                message="ffmpeg is not installed on the host or in the image.",
             )
 
         media_type = intent.media_type or "movie"
@@ -724,7 +708,7 @@ class Executor:
 
         try:
             files = await scan_for_transcode(media_type=media_type, title=title)
-        except Exception as exc:
+        except (OSError, ValueError) as exc:
             return ExecutionResult(
                 success=False,
                 message=f"Failed to scan library: {exc}",
@@ -739,7 +723,9 @@ class Executor:
             )
 
         job_id = create_job(files, media_type=media_type, title=title)
-        asyncio.create_task(run_transcode_job(job_id, files))
+        task = asyncio.create_task(run_transcode_job(job_id, files))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
         scope = f"'{title}'" if title else f"your {media_type} library"
         total_size = sum(f.get("size", 0) for f in files)
@@ -760,7 +746,6 @@ class Executor:
                 "title_filter": title,
             },
         )
-
 
     async def _execute_rate(self, intent: Intent) -> ExecutionResult:
         """Rate a Plex item using natural language (e.g. 'rate The Matrix 5 stars').
@@ -819,62 +804,65 @@ class Executor:
                     message=f"Started Plex maintenance task: {task}",
                     data={"task": task},
                 )
-            return ExecutionResult(
-                success=False, message=f"Failed to start Plex task: {task}"
-            )
+            return ExecutionResult(success=False, message=f"Failed to start Plex task: {task}")
         finally:
             await client.close()
 
-
     async def _execute_queue(self, intent: Intent) -> ExecutionResult:
         """Show what is currently downloading in Sonarr and/or Radarr."""
-        import time as _time
-        items: List[dict] = []
-        sources: List[str] = []
+        items: list[dict] = []
+        sources: list[str] = []
 
-        if intent.media_type in ("tv", "tv_show") or intent.media_type == "tv":
-            if settings.sonarr_url and settings.sonarr_api_key:
-                try:
-                    from ..clients.sonarr import SonarrClient
-                    c = SonarrClient(settings.sonarr_url, settings.sonarr_api_key)
-                    resp = await c.get_queue()
-                    await c.close()
-                    for r in (resp.get("records") or []):
-                        series = r.get("series") or {}
-                        ep = r.get("episode") or {}
-                        size = r.get("size", 0)
-                        size_left = r.get("sizeleft", 0)
-                        pct = int((size - size_left) / size * 100) if size else 0
-                        eta = r.get("estimatedCompletionTime", "")
-                        items.append({
+        if intent.media_type in ("tv", "tv_show") or (
+            intent.media_type == "tv" and settings.sonarr_url and settings.sonarr_api_key
+        ):
+            try:
+                c = SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
+                resp = await c.get_queue()
+                await c.close()
+                for r in resp.get("records") or []:
+                    series = r.get("series") or {}
+                    ep = r.get("episode") or {}
+                    size = r.get("size", 0)
+                    size_left = r.get("sizeleft", 0)
+                    pct = int((size - size_left) / size * 100) if size else 0
+                    eta = r.get("estimatedCompletionTime", "")
+                    items.append(
+                        {
                             "kind": "tv",
                             "show": series.get("title", ""),
-                            "episode": f"S{ep.get('seasonNumber',0):02d}E{ep.get('episodeNumber',0):02d}" if ep else "",
+                            "episode": (
+                                f"S{ep.get('seasonNumber', 0):02d}E{ep.get('episodeNumber', 0):02d}"
+                            )
+                            if ep
+                            else "",
                             "title": r.get("title", ""),
                             "status": r.get("status", ""),
                             "progress": pct,
                             "eta": eta[:16] if eta else "",
                             "protocol": r.get("protocol", ""),
                             "quality": (r.get("quality") or {}).get("quality", {}).get("name", ""),
-                        })
-                    sources.append("Sonarr")
-                except Exception:
-                    pass
+                        }
+                    )
+                sources.append("Sonarr")
+            except (httpx.HTTPError, KeyError, ValueError):
+                logger.debug("calendar enrichment via Sonarr failed", exc_info=True)
 
-        if intent.media_type == "movie" or intent.media_type == "tv":
-            if settings.radarr_url and settings.radarr_api_key:
-                try:
-                    from ..clients.radarr import RadarrClient
-                    c = RadarrClient(settings.radarr_url, settings.radarr_api_key)
-                    resp = await c.get_queue()
-                    await c.close()
-                    for r in (resp.get("records") or []):
-                        movie = r.get("movie") or {}
-                        size = r.get("size", 0)
-                        size_left = r.get("sizeleft", 0)
-                        pct = int((size - size_left) / size * 100) if size else 0
-                        eta = r.get("estimatedCompletionTime", "")
-                        items.append({
+        if intent.media_type == "movie" or (
+            intent.media_type == "tv" and settings.radarr_url and settings.radarr_api_key
+        ):
+            try:
+                radarr = RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
+                resp = await radarr.get_queue()
+                await radarr.close()
+                for r in resp.get("records") or []:
+                    movie = r.get("movie") or {}
+                    size = r.get("size", 0)
+                    size_left = r.get("sizeleft", 0)
+                    pct = int((size - size_left) / size * 100) if size else 0
+                    eta = r.get("estimatedCompletionTime", "")
+                    items.append(
+                        {
                             "kind": "movie",
                             "show": "",
                             "episode": "",
@@ -884,11 +872,12 @@ class Executor:
                             "eta": eta[:16] if eta else "",
                             "protocol": r.get("protocol", ""),
                             "quality": (r.get("quality") or {}).get("quality", {}).get("name", ""),
-                        })
-                    if "Radarr" not in sources:
-                        sources.append("Radarr")
-                except Exception:
-                    pass
+                        }
+                    )
+                if "Radarr" not in sources:
+                    sources.append("Radarr")
+            except (httpx.HTTPError, KeyError, ValueError):
+                logger.debug("calendar enrichment failed", exc_info=True)
 
         if not items:
             return ExecutionResult(
@@ -913,50 +902,58 @@ class Executor:
             "episodeFileRenamed": "Renamed",
             "downloadIgnored": "Ignored",
         }
-        items: List[dict] = []
+        items: list[dict] = []
 
-        if intent.media_type != "movie":
-            if settings.sonarr_url and settings.sonarr_api_key:
-                try:
-                    from ..clients.sonarr import SonarrClient
-                    c = SonarrClient(settings.sonarr_url, settings.sonarr_api_key)
-                    resp = await c.get_history(page_size=20)
-                    await c.close()
-                    for r in (resp.get("records") or []):
-                        series = r.get("series") or {}
-                        ep = r.get("episode") or {}
-                        items.append({
+        if intent.media_type != "movie" and settings.sonarr_url and settings.sonarr_api_key:
+            try:
+                c = SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
+                resp = await c.get_history(page_size=20)
+                await c.close()
+                for r in resp.get("records") or []:
+                    series = r.get("series") or {}
+                    ep = r.get("episode") or {}
+                    items.append(
+                        {
                             "kind": "tv",
                             "show": series.get("title", ""),
-                            "episode": f"S{ep.get('seasonNumber',0):02d}E{ep.get('episodeNumber',0):02d}" if ep else "",
+                            "episode": (
+                                f"S{ep.get('seasonNumber', 0):02d}E{ep.get('episodeNumber', 0):02d}"
+                            )
+                            if ep
+                            else "",
                             "title": r.get("sourceTitle", ""),
-                            "event": EVENT_LABELS.get(r.get("eventType", ""), r.get("eventType", "")),
+                            "event": EVENT_LABELS.get(
+                                r.get("eventType", ""), r.get("eventType", "")
+                            ),
                             "date": (r.get("date") or "")[:10],
                             "quality": (r.get("quality") or {}).get("quality", {}).get("name", ""),
-                        })
-                except Exception:
-                    pass
+                        }
+                    )
+            except (httpx.HTTPError, KeyError, ValueError):
+                logger.debug("calendar enrichment failed", exc_info=True)
 
-        if intent.media_type != "tv":
-            if settings.radarr_url and settings.radarr_api_key:
-                try:
-                    from ..clients.radarr import RadarrClient
-                    c = RadarrClient(settings.radarr_url, settings.radarr_api_key)
-                    resp = await c.get_history(page_size=20)
-                    await c.close()
-                    for r in (resp.get("records") or []):
-                        movie = r.get("movie") or {}
-                        items.append({
+        if intent.media_type != "tv" and settings.radarr_url and settings.radarr_api_key:
+            try:
+                radarr = RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
+                resp = await radarr.get_history(page_size=20)
+                await radarr.close()
+                for r in resp.get("records") or []:
+                    movie = r.get("movie") or {}
+                    items.append(
+                        {
                             "kind": "movie",
                             "show": "",
                             "episode": "",
                             "title": movie.get("title") or r.get("sourceTitle", ""),
-                            "event": EVENT_LABELS.get(r.get("eventType", ""), r.get("eventType", "")),
+                            "event": EVENT_LABELS.get(
+                                r.get("eventType", ""), r.get("eventType", "")
+                            ),
                             "date": (r.get("date") or "")[:10],
                             "quality": (r.get("quality") or {}).get("quality", {}).get("name", ""),
-                        })
-                except Exception:
-                    pass
+                        }
+                    )
+            except (httpx.HTTPError, KeyError, ValueError):
+                logger.debug("calendar enrichment failed", exc_info=True)
 
         # Sort combined results by date descending
         items.sort(key=lambda x: x.get("date", ""), reverse=True)
@@ -972,44 +969,46 @@ class Executor:
 
     async def _execute_wanted(self, intent: Intent) -> ExecutionResult:
         """Show monitored media that is missing or below quality cutoff."""
-        items: List[dict] = []
+        items: list[dict] = []
 
-        if intent.media_type != "movie":
-            if settings.sonarr_url and settings.sonarr_api_key:
-                try:
-                    from ..clients.sonarr import SonarrClient
-                    c = SonarrClient(settings.sonarr_url, settings.sonarr_api_key)
-                    resp = await c.get_wanted_missing(page_size=30)
-                    await c.close()
-                    for r in (resp.get("records") or []):
-                        series = r.get("series") or {}
-                        items.append({
+        if intent.media_type != "movie" and settings.sonarr_url and settings.sonarr_api_key:
+            try:
+                c = SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
+                resp = await c.get_wanted_missing(page_size=30)
+                await c.close()
+                for r in resp.get("records") or []:
+                    series = r.get("series") or {}
+                    items.append(
+                        {
                             "kind": "tv",
                             "show": series.get("title", ""),
-                            "episode": f"S{r.get('seasonNumber',0):02d}E{r.get('episodeNumber',0):02d}",
+                            "episode": (
+                                f"S{r.get('seasonNumber', 0):02d}E{r.get('episodeNumber', 0):02d}"
+                            ),
                             "title": r.get("title", ""),
                             "air_date": (r.get("airDate") or "")[:10],
-                        })
-                except Exception:
-                    pass
+                        }
+                    )
+            except (httpx.HTTPError, KeyError, ValueError):
+                logger.debug("calendar enrichment failed", exc_info=True)
 
-        if intent.media_type != "tv":
-            if settings.radarr_url and settings.radarr_api_key:
-                try:
-                    from ..clients.radarr import RadarrClient
-                    c = RadarrClient(settings.radarr_url, settings.radarr_api_key)
-                    resp = await c.get_wanted_cutoff(page_size=30)
-                    await c.close()
-                    for r in (resp.get("records") or []):
-                        items.append({
+        if intent.media_type != "tv" and settings.radarr_url and settings.radarr_api_key:
+            try:
+                radarr = RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
+                resp = await radarr.get_wanted_cutoff(page_size=30)
+                await c.close()
+                for r in resp.get("records") or []:
+                    items.append(
+                        {
                             "kind": "movie",
                             "show": "",
                             "episode": "",
                             "title": r.get("title", ""),
                             "air_date": (r.get("inCinemas") or r.get("physicalRelease") or "")[:10],
-                        })
-                except Exception:
-                    pass
+                        }
+                    )
+            except (httpx.HTTPError, KeyError, ValueError):
+                logger.debug("calendar enrichment failed", exc_info=True)
 
         if not items:
             return ExecutionResult(success=True, message="Nothing is missing — great!")
@@ -1020,7 +1019,7 @@ class Executor:
         )
 
     async def _execute_monitor(
-        self, intent: Intent, client: BaseMediaClient, monitored: bool
+        self, intent: Intent, client: BaseArrClient, monitored: bool
     ) -> ExecutionResult:
         """Monitor or unmonitor a series/movie/season."""
         verb = "Monitoring" if monitored else "Unmonitoring"
@@ -1035,52 +1034,42 @@ class Executor:
                 for s in series.get("seasons", []):
                     if s.get("seasonNumber") == intent.season:
                         s["monitored"] = monitored
-                from ..clients.sonarr import SonarrClient
                 await client._put(f"api/v3/series/{intent.series_id}", data=series)
                 return ExecutionResult(
                     success=True,
                     message=f"{verb} '{intent.title}' Season {intent.season}",
                 )
-            else:
-                await client.set_series_monitored(intent.series_id, monitored)
-                return ExecutionResult(
-                    success=True, message=f"{verb} '{intent.title}'"
-                )
-        elif intent.media_type == "movie":
+            await cast(SonarrClient, client).set_series_monitored(intent.series_id, monitored)
+            return ExecutionResult(success=True, message=f"{verb} '{intent.title}'")
+        if intent.media_type == "movie":
             if not intent.item_id:
                 return ExecutionResult(
                     success=False, message=f"Could not find '{intent.title}' in Radarr"
                 )
-            await client.set_movie_monitored(intent.item_id, monitored)
-            return ExecutionResult(
-                success=True, message=f"{verb} '{intent.title}'"
-            )
+            await cast(RadarrClient, client).set_movie_monitored(intent.item_id, monitored)
+            return ExecutionResult(success=True, message=f"{verb} '{intent.title}'")
         return ExecutionResult(
             success=False, message=f"Monitor not supported for {intent.media_type}"
         )
 
-    async def _execute_rename(
-        self, intent: Intent, client: BaseMediaClient
-    ) -> ExecutionResult:
+    async def _execute_rename(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
         """Trigger file rename for a series or movie."""
         if intent.media_type == "tv":
             if not intent.series_id:
                 return ExecutionResult(
                     success=False, message=f"Could not find '{intent.title}' in Sonarr"
                 )
-            from ..clients.sonarr import SonarrClient
-            result = await client.trigger_rename_series(intent.series_id)
+            await cast(SonarrClient, client).trigger_rename_series(intent.series_id)
             return ExecutionResult(
                 success=True,
-                message=f"Rename triggered for '{intent.title}' — files will be renamed to match your naming convention",
+                message=f"Rename triggered for '{intent.title}'; naming convention applies",
             )
-        elif intent.media_type == "movie":
+        if intent.media_type == "movie":
             if not intent.item_id:
                 return ExecutionResult(
                     success=False, message=f"Could not find '{intent.title}' in Radarr"
                 )
-            from ..clients.radarr import RadarrClient
-            result = await client.trigger_rename_movie(intent.item_id)
+            await cast(RadarrClient, client).trigger_rename_movie(intent.item_id)
             return ExecutionResult(
                 success=True,
                 message=f"Rename triggered for '{intent.title}'",
@@ -1089,28 +1078,24 @@ class Executor:
             success=False, message=f"Rename not supported for {intent.media_type}"
         )
 
-    async def _execute_rescan(
-        self, intent: Intent, client: BaseMediaClient
-    ) -> ExecutionResult:
+    async def _execute_rescan(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
         """Trigger disk rescan for a series or movie."""
         if intent.media_type == "tv":
             if not intent.series_id:
                 return ExecutionResult(
                     success=False, message=f"Could not find '{intent.title}' in Sonarr"
                 )
-            from ..clients.sonarr import SonarrClient
-            await client.rescan_series(intent.series_id)
+            await cast(SonarrClient, client).rescan_series(intent.series_id)
             return ExecutionResult(
                 success=True,
                 message=f"Disk rescan started for '{intent.title}'",
             )
-        elif intent.media_type == "movie":
+        if intent.media_type == "movie":
             if not intent.item_id:
                 return ExecutionResult(
                     success=False, message=f"Could not find '{intent.title}' in Radarr"
                 )
-            from ..clients.radarr import RadarrClient
-            await client.rescan_movie(intent.item_id)
+            await cast(RadarrClient, client).rescan_movie(intent.item_id)
             return ExecutionResult(
                 success=True,
                 message=f"Disk rescan started for '{intent.title}'",
@@ -1120,7 +1105,7 @@ class Executor:
         )
 
 
-def _fmt_bytes(n: int) -> str:
+def _fmt_bytes(n: float) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if abs(n) < 1024:
             return f"{n:.1f} {unit}"
@@ -1138,6 +1123,6 @@ def _extract_arr_error(exc: Exception) -> str:
                 return body[0].get("errorMessage") or body[0].get("message") or str(exc)
             if isinstance(body, dict):
                 return body.get("message") or body.get("errorMessage") or str(exc)
-        except Exception:
+        except ValueError:
             pass
     return str(exc)

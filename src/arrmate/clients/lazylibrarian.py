@@ -8,6 +8,8 @@ metadata, and Calibre integration.
 from typing import Any
 from urllib.parse import quote_plus
 
+import httpx
+
 from .base import BaseMediaClient
 
 
@@ -27,7 +29,7 @@ class LazyLibrarianClient(BaseMediaClient):
         try:
             await self._api_call("getVersion")
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def _api_call(self, cmd: str, params: dict[str, Any] | None = None) -> Any:
@@ -169,7 +171,9 @@ class LazyLibrarianClient(BaseMediaClient):
             True if successful
         """
         result = await self._api_call("removeAuthor", {"id": str(item_id)})
-        return result == "OK" or (isinstance(result, dict) and result.get("success"))
+        if result == "OK":
+            return True
+        return bool(isinstance(result, dict) and result.get("success"))
 
     async def pause_author(self, author_id: str) -> dict[str, Any]:
         """Pause author monitoring.

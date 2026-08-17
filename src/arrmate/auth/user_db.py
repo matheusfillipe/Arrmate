@@ -5,10 +5,10 @@ import json
 import logging
 import secrets
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Generator
 
 import bcrypt as _bcrypt
 
@@ -18,12 +18,14 @@ VALID_ROLES = ("admin", "power_user", "user")
 
 
 def _db_path() -> Path:
-    from ..config.settings import settings
+    from arrmate.config.settings import settings
+
     return Path(settings.auth_data_dir) / "users.db"
 
 
 def _auth_json_path() -> Path:
-    from ..config.settings import settings
+    from arrmate.config.settings import settings
+
     return Path(settings.auth_data_dir) / "auth.json"
 
 
@@ -41,7 +43,7 @@ def _get_conn() -> Generator[sqlite3.Connection, None, None]:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _new_id() -> str:
@@ -144,8 +146,8 @@ def init_db() -> None:
             try:
                 conn.execute(_migration_sql)
                 conn.commit()
-            except Exception:
-                pass  # Column already exists
+            except sqlite3.OperationalError:
+                logger.debug("migration already applied: %s", _migration_sql)
 
         # Unique index for plex_id (only on non-NULL rows)
         try:
@@ -154,8 +156,8 @@ def init_db() -> None:
                 "ON users (plex_id) WHERE plex_id IS NOT NULL"
             )
             conn.commit()
-        except Exception:
-            pass
+        except sqlite3.OperationalError:
+            logger.debug("plex_id unique index already present")
 
         # Migrate from auth.json if no users exist
         count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
@@ -182,8 +184,10 @@ def _create_default_admin() -> None:
                 (_new_id(), password_hash, _now()),
             )
             conn.commit()
-        logger.info("Created default admin account (username: admin) — change password on first login")
-    except Exception as e:
+        logger.info(
+            "Created default admin account (username: admin) — change password on first login"
+        )
+    except sqlite3.Error as e:
         logger.warning("Failed to create default admin: %s", e)
 
 
@@ -208,7 +212,7 @@ def _migrate_from_auth_json() -> None:
             )
             conn.commit()
         logger.info("Migrated auth.json user '%s' as admin", username)
-    except Exception as e:
+    except (sqlite3.Error, OSError, ValueError) as e:
         logger.warning("Failed to migrate auth.json: %s", e)
 
 
@@ -253,9 +257,7 @@ def get_user_by_id(user_id: str) -> dict | None:
 
 def get_user_by_username(username: str) -> dict | None:
     with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM users WHERE username = ?", (username,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
         return dict(row) if row else None
 
 
@@ -273,20 +275,18 @@ def verify_user(username: str, password: str) -> dict | None:
     try:
         if _bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
             return user
-    except Exception:
-        pass
+    except ValueError:
+        logger.warning("stored password hash is invalid for user %s", user.get("id"))
     return None
 
 
 def list_users() -> list[dict]:
     with _get_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM users ORDER BY created_at"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM users ORDER BY created_at").fetchall()
         return [dict(r) for r in rows]
 
 
-def update_user(user_id: str, **kwargs) -> bool:
+def update_user(user_id: str, **kwargs: str | bool | None) -> bool:
     """Update user fields (role, enabled, email). Returns True if updated."""
     allowed = {"role", "enabled", "email"}
     updates = {k: v for k, v in kwargs.items() if k in allowed}
@@ -294,11 +294,12 @@ def update_user(user_id: str, **kwargs) -> bool:
         return False
     # Keys are filtered to the allowlist above before being interpolated.
     # Values are always passed as parameters — no injection risk.
-    set_clause = ", ".join(f"{k} = ?" for k in updates)  # nosec B608
-    values = list(updates.values()) + [user_id]
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    values = [*updates.values(), user_id]
     with _get_conn() as conn:
         cursor = conn.execute(
-            f"UPDATE users SET {set_clause} WHERE id = ?", values  # nosec B608
+            f"UPDATE users SET {set_clause} WHERE id = ?",  # nosec B608
+            values,
         )
         conn.commit()
         return cursor.rowcount > 0
@@ -329,9 +330,7 @@ def get_user_by_plex_id(plex_id: str) -> dict | None:
     """Look up a user by their Plex UUID. Returns None if not found."""
     _ensure_db()
     with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM users WHERE plex_id = ?", (plex_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM users WHERE plex_id = ?", (plex_id,)).fetchone()
         return dict(row) if row else None
 
 
@@ -364,8 +363,16 @@ def create_plex_user(
                    (id, username, email, password_hash, role, enabled, created_at,
                     plex_id, auth_provider)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'plex')""",
-                (user_id, username, email, placeholder_hash, role,
-                 1 if enabled else 0, _now(), plex_id),
+                (
+                    user_id,
+                    username,
+                    email,
+                    placeholder_hash,
+                    role,
+                    1 if enabled else 0,
+                    _now(),
+                    plex_id,
+                ),
             )
             conn.commit()
         return get_user_by_id(user_id)
@@ -377,22 +384,21 @@ def has_any_users() -> bool:
     try:
         _ensure_db()
         with _get_conn() as conn:
-            count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            count = int(conn.execute("SELECT COUNT(*) FROM users").fetchone()[0])
             return count > 0
-    except Exception:
+    except sqlite3.Error:
         return False
 
 
 # ===== Invites =====
+
 
 def create_invite(role: str, created_by: str, ttl_hours: int = 48) -> str:
     """Create an invite token. Returns the token string."""
     if role not in VALID_ROLES:
         role = "user"
     token = secrets.token_urlsafe(32)
-    expires_at = (
-        datetime.now(timezone.utc) + timedelta(hours=ttl_hours)
-    ).isoformat()
+    expires_at = (datetime.now(UTC) + timedelta(hours=ttl_hours)).isoformat()
     with _get_conn() as conn:
         conn.execute(
             """INSERT INTO invites
@@ -406,9 +412,7 @@ def create_invite(role: str, created_by: str, ttl_hours: int = 48) -> str:
 
 def get_invite(token: str) -> dict | None:
     with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM invites WHERE token = ?", (token,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM invites WHERE token = ?", (token,)).fetchone()
         return dict(row) if row else None
 
 
@@ -421,8 +425,8 @@ def validate_invite(token: str) -> dict | None:
         return None
     expires_at = datetime.fromisoformat(invite["expires_at"])
     if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if datetime.now(timezone.utc) > expires_at:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if datetime.now(UTC) > expires_at:
         return None
     return invite
 
@@ -433,7 +437,8 @@ def use_invite(token: str, username: str, password: str) -> dict | None:
     if not invite:
         return None
     user = create_user(
-        username, password,
+        username,
+        password,
         role=invite["role"],
         invited_by=invite["created_by"],
     )
@@ -451,9 +456,7 @@ def use_invite(token: str, username: str, password: str) -> dict | None:
 def list_invites(include_used: bool = False) -> list[dict]:
     with _get_conn() as conn:
         if include_used:
-            rows = conn.execute(
-                "SELECT * FROM invites ORDER BY created_at DESC"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM invites ORDER BY created_at DESC").fetchall()
         else:
             rows = conn.execute(
                 "SELECT * FROM invites WHERE used = 0 ORDER BY created_at DESC"
@@ -470,6 +473,7 @@ def delete_invite(token: str) -> bool:
 
 # ===== Media Requests =====
 
+
 def get_trackable_requests() -> list[dict]:
     """Return open requests that haven't been fully notified yet."""
     try:
@@ -482,7 +486,7 @@ def get_trackable_requests() -> list[dict]:
                    ORDER BY created_at DESC"""
             ).fetchall()
             return [dict(r) for r in rows]
-    except Exception:
+    except sqlite3.Error:
         return []
 
 
@@ -525,14 +529,15 @@ def create_request(
             (req_id, request_type, user_id, title, details, media_type, _now()),
         )
         conn.commit()
-    return get_request(req_id)
+    created = get_request(req_id)
+    if created is None:
+        raise sqlite3.IntegrityError(f"request {req_id} vanished after insert")
+    return created
 
 
 def get_request(req_id: str) -> dict | None:
     with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM media_requests WHERE id = ?", (req_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM media_requests WHERE id = ?", (req_id,)).fetchone()
         return dict(row) if row else None
 
 
@@ -573,6 +578,7 @@ def update_request(
 
 # ===== Notifications =====
 
+
 def create_notification(
     user_id: str,
     message: str,
@@ -588,9 +594,7 @@ def create_notification(
             (notif_id, user_id, message, type, request_id, _now()),
         )
         conn.commit()
-        row = conn.execute(
-            "SELECT * FROM notifications WHERE id = ?", (notif_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM notifications WHERE id = ?", (notif_id,)).fetchone()
         return dict(row) if row else {}
 
 
@@ -601,8 +605,8 @@ def get_unread_count(user_id: str) -> int:
                 "SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read = 0",
                 (user_id,),
             ).fetchone()
-            return row[0]
-    except Exception:
+            return int(row[0])
+    except sqlite3.Error:
         return 0
 
 
@@ -620,9 +624,7 @@ def get_notifications(user_id: str, limit: int = 20) -> list[dict]:
 
 def mark_notifications_read(user_id: str) -> None:
     with _get_conn() as conn:
-        conn.execute(
-            "UPDATE notifications SET read = 1 WHERE user_id = ?", (user_id,)
-        )
+        conn.execute("UPDATE notifications SET read = 1 WHERE user_id = ?", (user_id,))
         conn.commit()
 
 
@@ -634,11 +636,12 @@ def get_admin_and_power_user_ids() -> list[str]:
                 "SELECT id FROM users WHERE role IN ('admin', 'power_user') AND enabled = 1"
             ).fetchall()
             return [r[0] for r in rows]
-    except Exception:
+    except sqlite3.Error:
         return []
 
 
 # ===== API Tokens =====
+
 
 def _hash_token(plain_token: str) -> str:
     return hashlib.sha256(plain_token.encode()).hexdigest()
@@ -661,7 +664,7 @@ def create_api_token(
     token_id = _new_id()
     expires_at = None
     if expires_days:
-        expires_at = (datetime.now(timezone.utc) + timedelta(days=expires_days)).isoformat()
+        expires_at = (datetime.now(UTC) + timedelta(days=expires_days)).isoformat()
     with _get_conn() as conn:
         conn.execute(
             """INSERT INTO api_tokens
@@ -699,8 +702,8 @@ def validate_api_token(plain_token: str) -> dict | None:
             if row["expires_at"]:
                 exp = datetime.fromisoformat(row["expires_at"])
                 if exp.tzinfo is None:
-                    exp = exp.replace(tzinfo=timezone.utc)
-                if datetime.now(timezone.utc) > exp:
+                    exp = exp.replace(tzinfo=UTC)
+                if datetime.now(UTC) > exp:
                     return None
             conn.execute(
                 "UPDATE api_tokens SET last_used_at = ? WHERE id = ?",
@@ -713,7 +716,7 @@ def validate_api_token(plain_token: str) -> dict | None:
             "role": row["role"],
             "token_id": row["token_id"],
         }
-    except Exception:
+    except (sqlite3.Error, ValueError):
         return None
 
 
@@ -766,16 +769,15 @@ def list_all_api_tokens() -> list[dict]:
 
 # ===== App Settings (key-value store for application-wide flags) =====
 
+
 def get_app_setting(key: str, default: str | None = None) -> str | None:
     """Read a single application setting by key. Returns default if not set."""
     try:
         _ensure_db()
         with _get_conn() as conn:
-            row = conn.execute(
-                "SELECT value FROM app_settings WHERE key = ?", (key,)
-            ).fetchone()
+            row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
             return row[0] if row else default
-    except Exception:
+    except sqlite3.Error:
         return default
 
 

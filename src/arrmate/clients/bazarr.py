@@ -7,6 +7,8 @@ subtitle files for movies and TV shows.
 
 from typing import Any
 
+import httpx
+
 from .base_companion import BaseCompanionClient
 
 
@@ -26,7 +28,7 @@ class BazarrClient(BaseCompanionClient):
         try:
             await self.get_system_status()
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_system_status(self) -> dict[str, Any]:
@@ -48,10 +50,9 @@ class BazarrClient(BaseCompanionClient):
         """
         if service_type.lower() == "sonarr":
             return await self.get_episodes_with_missing_subtitles()
-        elif service_type.lower() == "radarr":
+        if service_type.lower() == "radarr":
             return await self.get_movies_with_missing_subtitles()
-        else:
-            raise ValueError(f"Unsupported service type: {service_type}")
+        raise ValueError(f"Unsupported service type: {service_type}")
 
     async def get_episodes(self) -> list[dict[str, Any]]:
         """Get all episodes tracked by Bazarr.
@@ -105,7 +106,7 @@ class BazarrClient(BaseCompanionClient):
         Returns:
             List of available subtitles
         """
-        params = {"episodeid": episode_id}
+        params: dict[str, int | str] = {"episodeid": episode_id}
         if language:
             params["language"] = language
         return await self._post("api/episodes/search", data=params)
@@ -122,7 +123,7 @@ class BazarrClient(BaseCompanionClient):
         Returns:
             List of available subtitles
         """
-        params = {"movieid": movie_id}
+        params: dict[str, int | str] = {"movieid": movie_id}
         if language:
             params["language"] = language
         return await self._post("api/movies/search", data=params)

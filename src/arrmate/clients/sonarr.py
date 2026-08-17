@@ -1,70 +1,19 @@
 """Sonarr API client implementation."""
 
+import logging
 from typing import Any
 
-from .base import BaseMediaClient
+import httpx
+
+from .base_arr import BaseArrClient
 
 
-class SonarrClient(BaseMediaClient):
-    """Client for Sonarr v3 API."""
+class SonarrClient(BaseArrClient):
+    """Client for Sonarr v3 API (TV)."""
 
-    async def test_connection(self) -> bool:
-        """Test connection to Sonarr.
-
-        Returns:
-            True if connection successful
-        """
-        try:
-            await self.get_system_status()
-            return True
-        except Exception:
-            return False
-
-    async def search(self, query: str) -> list[dict[str, Any]]:
-        """Search for TV shows.
-
-        Args:
-            query: Show title to search for
-
-        Returns:
-            List of matching shows from lookup
-        """
-        return await self._get("api/v3/series/lookup", params={"term": query})
-
-    async def get_item(self, item_id: int) -> dict[str, Any]:
-        """Get series details by ID.
-
-        Args:
-            item_id: Series ID
-
-        Returns:
-            Series details
-        """
-        return await self._get(f"api/v3/series/{item_id}")
-
-    async def delete_item(self, item_id: int, delete_files: bool = False) -> bool:
-        """Delete a series.
-
-        Args:
-            item_id: Series ID
-            delete_files: Whether to delete all files
-
-        Returns:
-            True if successful
-        """
-        params = {"deleteFiles": str(delete_files).lower()}
-        await self._delete(
-            f"api/v3/series/{item_id}?{'&'.join(f'{k}={v}' for k, v in params.items())}"
-        )
-        return True
-
-    async def get_all_series(self) -> list[dict[str, Any]]:
-        """Get all series in the library.
-
-        Returns:
-            List of all series
-        """
-        return await self._get("api/v3/series")
+    entity = "series"
+    api_prefix = "api/v3"
+    search_command = "SeriesSearch"
 
     async def add_series(
         self,
@@ -72,32 +21,19 @@ class SonarrClient(BaseMediaClient):
         title: str,
         quality_profile_id: int,
         root_folder_path: str,
-        seasons: list | None = None,
         monitored: bool = True,
-        search_for_missing: bool = True,
+        search_for_missing_episodes: bool = True,
+        season_folder: bool = True,
     ) -> dict[str, Any]:
-        """Add a new series to the library.
-
-        Args:
-            tvdb_id: TVDB ID of the series
-            title: Series title
-            quality_profile_id: Quality profile ID
-            root_folder_path: Root folder path
-            seasons: Season list from lookup result (required by Sonarr v3)
-            monitored: Whether to monitor the series
-            search_for_missing: Whether to search for missing episodes
-
-        Returns:
-            Added series details
-        """
+        """Add a new series to the library."""
         data = {
             "tvdbId": tvdb_id,
             "title": title,
             "qualityProfileId": quality_profile_id,
             "rootFolderPath": root_folder_path,
             "monitored": monitored,
-            "seasons": seasons or [],
-            "addOptions": {"searchForMissingEpisodes": search_for_missing},
+            "seasonFolder": season_folder,
+            "addOptions": {"searchForMissingEpisodes": search_for_missing_episodes},
         }
         return await self._post("api/v3/series", data=data)
 
@@ -107,181 +43,79 @@ class SonarrClient(BaseMediaClient):
         quality_profile_id: int,
         root_folder_path: str,
         monitored: bool = True,
-        search_for_missing: bool = True,
+        search_for_missing_episodes: bool = True,
     ) -> dict[str, Any]:
-        """Add a series using the full Sonarr lookup result.
-
-        Uses the lookup object as the base body so all Sonarr-required fields
-        (titleSlug, seriesType, languageProfileId, seasons, etc.) are present.
-        """
-        data = {
-            **lookup_result,
-            "qualityProfileId": quality_profile_id,
-            "rootFolderPath": root_folder_path,
-            "monitored": monitored,
-            "addOptions": {"searchForMissingEpisodes": search_for_missing},
-        }
+        """Add a series directly from a search/lookup result dict."""
+        data = dict(lookup_result)
+        data["qualityProfileId"] = quality_profile_id
+        data["rootFolderPath"] = root_folder_path
+        data["monitored"] = monitored
+        data["addOptions"] = {"searchForMissingEpisodes": search_for_missing_episodes}
         return await self._post("api/v3/series", data=data)
 
     async def get_episodes(
         self, series_id: int, season_number: int | None = None
     ) -> list[dict[str, Any]]:
-        """Get episodes for a series.
-
-        Args:
-            series_id: Series ID
-            season_number: Optional season number filter
-
-        Returns:
-            List of episodes
-        """
-        params = {"seriesId": series_id}
+        """Get episodes for a series, optionally filtered by season."""
+        params: dict[str, Any] = {"seriesId": series_id}
         if season_number is not None:
             params["seasonNumber"] = season_number
         return await self._get("api/v3/episode", params=params)
 
     async def get_episode_files(self, series_id: int) -> list[dict[str, Any]]:
-        """Get episode files for a series.
-
-        Args:
-            series_id: Series ID
-
-        Returns:
-            List of episode files
-        """
+        """Get episode files for a series."""
         return await self._get("api/v3/episodefile", params={"seriesId": series_id})
 
     async def delete_episode_file(self, file_id: int) -> bool:
-        """Delete an episode file.
-
-        Args:
-            file_id: Episode file ID
-
-        Returns:
-            True if successful
-        """
+        """Delete an episode file."""
         await self._delete(f"api/v3/episodefile/{file_id}")
         return True
 
     async def delete_episode_files(self, file_ids: list[int]) -> int:
-        """Delete multiple episode files.
-
-        Args:
-            file_ids: List of episode file IDs
-
-        Returns:
-            Number of files deleted
-        """
+        """Delete episode files, returning the number successfully deleted."""
         deleted = 0
         for file_id in file_ids:
             try:
                 await self.delete_episode_file(file_id)
                 deleted += 1
-            except Exception:
-                pass
+            except httpx.HTTPError as e:
+                logging.getLogger(__name__).warning(
+                    "Failed to delete episode file %s: %s", file_id, e
+                )
         return deleted
 
-    async def trigger_series_search(self, series_id: int) -> dict[str, Any]:
-        """Trigger a search for all missing episodes of a series.
-
-        Args:
-            series_id: Series ID
-
-        Returns:
-            Command response
-        """
+    async def trigger_season_search(self, series_id: int, season_number: int) -> dict[str, Any]:
+        """Trigger a search for one season."""
         return await self._post(
             "api/v3/command",
-            data={"name": "SeriesSearch", "seriesId": series_id},
+            data={"name": "SeasonSearch", "seriesId": series_id, "seasonNumber": season_number},
         )
 
     async def trigger_episode_search(self, episode_ids: list[int]) -> dict[str, Any]:
-        """Trigger a search for specific episodes.
-
-        Args:
-            episode_ids: List of episode IDs
-
-        Returns:
-            Command response
-        """
+        """Trigger a search for specific episodes."""
         return await self._post(
             "api/v3/command",
             data={"name": "EpisodeSearch", "episodeIds": episode_ids},
         )
 
     async def monitor_all_seasons(self, series_id: int) -> dict[str, Any]:
-        """Set all seasons of a series to monitored and save.
-
-        Args:
-            series_id: Series ID
-
-        Returns:
-            Updated series dict
-        """
+        """Set every season of a series to monitored."""
         series = await self._get(f"api/v3/series/{series_id}")
+        series["monitored"] = True
         for season in series.get("seasons", []):
-            if season.get("seasonNumber", 0) > 0:
-                season["monitored"] = True
+            season["monitored"] = True
         return await self._put(f"api/v3/series/{series_id}", data=series)
 
-    async def get_quality_profiles(self) -> list[dict[str, Any]]:
-        """Get available quality profiles.
-
-        Returns:
-            List of quality profiles
-        """
-        return await self._get("api/v3/qualityprofile")
-
-    async def get_root_folders(self) -> list[dict[str, Any]]:
-        """Get available root folders.
-
-        Returns:
-            List of root folders
-        """
-        return await self._get("api/v3/rootfolder")
-
     async def set_series_monitored(self, series_id: int, monitored: bool) -> dict[str, Any]:
-        """Update the monitored status of a series.
-
-        Args:
-            series_id: Series ID
-            monitored: True to monitor, False to unmonitor
-
-        Returns:
-            Updated series dict
-        """
+        """Update the monitored status of a series."""
         series = await self._get(f"api/v3/series/{series_id}")
         series["monitored"] = monitored
         return await self._put(f"api/v3/series/{series_id}", data=series)
 
-    async def trigger_season_search(self, series_id: int, season_number: int) -> dict[str, Any]:
-        """Trigger a search for all episodes in a season.
-
-        Args:
-            series_id: Series ID
-            season_number: Season number
-
-        Returns:
-            Command response
-        """
-        return await self._post(
-            "api/v3/command",
-            data={"name": "SeasonSearch", "seriesId": series_id, "seasonNumber": season_number},
-        )
-
     async def get_calendar(
         self, start: str, end: str, include_series: bool = True
     ) -> list[dict[str, Any]]:
-        """Get episodes airing between start and end dates.
-
-        Args:
-            start: ISO date string e.g. "2024-01-01"
-            end: ISO date string e.g. "2024-01-08"
-            include_series: Embed series info in each episode
-
-        Returns:
-            List of episode dicts with optional nested series
-        """
+        """Get episodes airing between start and end dates."""
         params: dict[str, Any] = {
             "start": start,
             "end": end,
@@ -291,14 +125,7 @@ class SonarrClient(BaseMediaClient):
         return await self._get("api/v3/calendar", params=params)
 
     async def get_queue(self, page_size: int = 50) -> dict[str, Any]:
-        """Get the current download queue.
-
-        Args:
-            page_size: Number of items to return
-
-        Returns:
-            Paginated queue response with records array
-        """
+        """Get the current download queue."""
         params: dict[str, Any] = {
             "pageSize": page_size,
             "includeSeries": "true",
@@ -307,14 +134,7 @@ class SonarrClient(BaseMediaClient):
         return await self._get("api/v3/queue", params=params)
 
     async def get_history(self, page_size: int = 25) -> dict[str, Any]:
-        """Get recent download history.
-
-        Args:
-            page_size: Number of items to return
-
-        Returns:
-            Paginated history response
-        """
+        """Get recent download history, newest first."""
         params: dict[str, Any] = {
             "pageSize": page_size,
             "includeSeries": "true",
@@ -325,14 +145,7 @@ class SonarrClient(BaseMediaClient):
         return await self._get("api/v3/history", params=params)
 
     async def get_wanted_missing(self, page_size: int = 50) -> dict[str, Any]:
-        """Get monitored episodes that are missing (no file yet).
-
-        Args:
-            page_size: Number of items to return
-
-        Returns:
-            Paginated missing episodes response
-        """
+        """Get monitored episodes that are missing (no file yet)."""
         params: dict[str, Any] = {
             "pageSize": page_size,
             "includeSeries": "true",
@@ -342,162 +155,40 @@ class SonarrClient(BaseMediaClient):
         return await self._get("api/v3/wanted/missing", params=params)
 
     async def trigger_rename_series(self, series_id: int) -> dict[str, Any]:
-        """Trigger a rename of all files for a series.
-
-        Args:
-            series_id: Series ID
-
-        Returns:
-            Command response
-        """
-        files = await self.get_episode_files(series_id)
-        file_ids = [f["id"] for f in files if f.get("id")]
+        """Trigger a rename of all files for a series."""
         return await self._post(
             "api/v3/command",
-            data={"name": "RenameFiles", "seriesId": series_id, "files": file_ids},
+            data={"name": "RenameSeries", "seriesId": series_id},
         )
 
     async def rescan_series(self, series_id: int) -> dict[str, Any]:
-        """Trigger a disk rescan for a series.
-
-        Args:
-            series_id: Series ID
-
-        Returns:
-            Command response
-        """
+        """Trigger a disk rescan for a series."""
         return await self._post(
             "api/v3/command",
             data={"name": "RescanSeries", "seriesId": series_id},
         )
 
-    async def get_tags(self) -> list[dict[str, Any]]:
-        """Get all tags defined in Sonarr."""
-        return await self._get("api/v3/tag")
-
-    async def create_tag(self, label: str) -> dict[str, Any]:
-        """Create a new tag.
-
-        Args:
-            label: Tag name
-
-        Returns:
-            Created tag dict with id and label
-        """
-        return await self._post("api/v3/tag", data={"label": label})
-
-    async def delete_tag(self, tag_id: int) -> bool:
-        """Delete a tag.
-
-        Args:
-            tag_id: Tag ID to delete
-
-        Returns:
-            True if successful
-        """
-        await self._delete(f"api/v3/tag/{tag_id}")
-        return True
-
-    async def add_tag_to_series(self, series_id: int, tag_id: int) -> dict[str, Any]:
-        """Add a tag to a series (no-op if already present).
-
-        Args:
-            series_id: Series ID
-            tag_id: Tag ID to add
-
-        Returns:
-            Updated series dict
-        """
-        series = await self._get(f"api/v3/series/{series_id}")
-        existing = series.get("tags", [])
-        if tag_id not in existing:
-            series["tags"] = existing + [tag_id]
-            return await self._put(f"api/v3/series/{series_id}", data=series)
-        return series
-
-    async def remove_tag_from_series(self, series_id: int, tag_id: int) -> dict[str, Any]:
-        """Remove a tag from a series.
-
-        Args:
-            series_id: Series ID
-            tag_id: Tag ID to remove
-
-        Returns:
-            Updated series dict
-        """
-        series = await self._get(f"api/v3/series/{series_id}")
-        series["tags"] = [t for t in series.get("tags", []) if t != tag_id]
-        return await self._put(f"api/v3/series/{series_id}", data=series)
-
     async def interactive_search_episode(self, episode_id: int) -> list[dict[str, Any]]:
         """Run a live interactive indexer search for one episode.
 
         Queries every indexer in real time; can take 30-180 seconds. Rejected
-        releases are included by Sonarr with a ``rejections`` array — callers
+        releases are included by Sonarr with a ``rejections`` array; callers
         must preserve it, since "Release is blocklisted" on top-seeded results
         is a diagnostic signal, not noise.
-
-        Args:
-            episode_id: Episode ID (from get_episodes)
-
-        Returns:
-            List of release dicts (accepted and rejected)
         """
         return await self._get_with_timeout("api/v3/release", params={"episodeId": episode_id})
 
     async def interactive_search_season(
         self, series_id: int, season_number: int
     ) -> list[dict[str, Any]]:
-        """Run a live interactive indexer search for a season.
-
-        Args:
-            series_id: Series ID
-            season_number: Season number
-
-        Returns:
-            List of release dicts (accepted and rejected)
-        """
+        """Run a live interactive indexer search for a season."""
         return await self._get_with_timeout(
             "api/v3/release",
             params={"seriesId": series_id, "seasonNumber": season_number},
         )
 
-    async def push_release(self, release: dict[str, Any]) -> dict[str, Any]:
-        """Grab a specific release found by interactive search.
-
-        Args:
-            release: The full release dict as returned by interactive_search;
-                Sonarr identifies it by its ``guid`` and indexerId
-
-        Returns:
-            The queued release
-        """
-        return await self._post("api/v3/release", data=release)
-
-    async def get_blocklist(self, page_size: int = 50) -> dict[str, Any]:
-        """Get blocklisted releases.
-
-        Args:
-            page_size: Number of items to return
-
-        Returns:
-            Paginated blocklist response with records array
-        """
-        return await self._get(
-            "api/v3/blocklist",
-            params={"pageSize": page_size, "sortKey": "date", "sortDirection": "descending"},
-        )
-
     async def get_episode_history(self, episode_id: int, page_size: int = 50) -> dict[str, Any]:
-        """Get history events for one episode.
-
-        Args:
-            episode_id: Episode ID
-            page_size: Number of events to return
-
-        Returns:
-            Paginated history response filtered to the episode
-        """
+        """Get history events for one episode, newest first."""
         return await self._get(
             "api/v3/history",
             params={

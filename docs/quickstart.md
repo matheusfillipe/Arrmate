@@ -3,7 +3,7 @@
 ## Docker (recommended)
 
 ```bash
-curl -O https://raw.githubusercontent.com/techbutton/arrmate/main/docker-compose.prod.yml
+curl -O https://raw.githubusercontent.com/techbutton/arrmate/main/compose.prod.yaml
 curl -O https://raw.githubusercontent.com/techbutton/arrmate/main/.env.example
 cp .env.example .env
 ```
@@ -14,7 +14,7 @@ Open `.env` and fill in at minimum:
 - URLs and API keys for any services you want to connect
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d
+docker compose -f compose.prod.yaml up -d
 ```
 
 Then open `http://localhost:8000`.
@@ -22,7 +22,7 @@ Then open `http://localhost:8000`.
 If you're using Ollama, pull a model:
 
 ```bash
-docker compose -f docker-compose.prod.yml exec ollama ollama pull qwen2.5:7b
+docker compose -f compose.prod.yaml exec ollama ollama pull qwen2.5:7b
 ```
 
 `qwen2.5:7b` works well for tool-calling. Larger models will be more accurate with complex commands.

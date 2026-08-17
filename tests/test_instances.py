@@ -1,4 +1,5 @@
 """Tests for the multi-instance registry (step 5)."""
+
 import pytest
 
 from arrmate.config import instances

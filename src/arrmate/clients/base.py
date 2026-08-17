@@ -1,7 +1,7 @@
 """Base class for media service API clients."""
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -162,4 +162,5 @@ class BaseMediaClient(ABC):
         Returns:
             System status information
         """
-        return await self._get("api/v3/system/status")
+        status = await self._get("api/v3/system/status")
+        return cast("dict[str, Any]", status)

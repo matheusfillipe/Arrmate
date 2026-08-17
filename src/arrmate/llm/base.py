@@ -1,13 +1,13 @@
 """Abstract base class for LLM providers."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class BaseLLMProvider(ABC):
     """Abstract base class for LLM providers."""
 
-    def __init__(self, model: Optional[str] = None) -> None:
+    def __init__(self, model: str | None = None) -> None:
         """Initialize the provider with optional model override.
 
         Args:
@@ -17,8 +17,8 @@ class BaseLLMProvider(ABC):
 
     @abstractmethod
     async def parse_command(
-        self, user_input: str, tools: List[Dict[str, Any]], system_prompt: str
-    ) -> Dict[str, Any]:
+        self, user_input: str, tools: list[dict[str, Any]], system_prompt: str
+    ) -> dict[str, Any]:
         """Parse a natural language command using tool calling.
 
         Args:
@@ -32,22 +32,6 @@ class BaseLLMProvider(ABC):
         Raises:
             ValueError: If parsing fails or LLM doesn't use tools correctly
         """
-        pass
-
-    @abstractmethod
-    async def generate_response(
-        self, prompt: str, context: Optional[Dict[str, Any]] = None
-    ) -> str:
-        """Generate a natural language response.
-
-        Args:
-            prompt: The prompt to respond to
-            context: Optional context dictionary
-
-        Returns:
-            Generated response text
-        """
-        pass
 
     @abstractmethod
     def supports_tool_calling(self) -> bool:
@@ -56,11 +40,7 @@ class BaseLLMProvider(ABC):
         Returns:
             True if tool calling is supported, False otherwise
         """
-        pass
 
     async def close(self) -> None:
-        """Clean up any resources.
-
-        Override this if your provider needs cleanup.
-        """
-        pass
+        """Clean up any resources; the default provider holds none."""
+        return

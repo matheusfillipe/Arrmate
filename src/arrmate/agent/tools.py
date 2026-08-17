@@ -12,13 +12,12 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import httpx
 from pydantic_ai import Agent, RunContext
 
-from ..clients.discovery import discover_services
-from ..clients.jellyfin import JellyfinClient
-from ..clients.jellyseerr import JellyseerrClient
-from ..clients.prowlarr import ProwlarrClient
-from ..config.settings import settings
+from arrmate.clients.discovery import discover_services
+from arrmate.core.library_service import add_first_match
+
 from .deps import AgentDeps
 
 logger = logging.getLogger(__name__)
@@ -58,7 +57,7 @@ async def _safe(body: Callable[[], Awaitable[Any]]) -> str:
         return _wrap({"error": "permission-denied", "detail": str(e)})
     except ValueError as e:
         return _wrap({"error": "not-configured", "detail": str(e)})
-    except Exception as e:
+    except (httpx.HTTPError, KeyError, AttributeError, TypeError) as e:
         logger.warning("agent tool failed: %s: %s", type(e).__name__, e)
         return _wrap({"error": "tool-failed", "detail": str(e)[:200]})
 
@@ -84,7 +83,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         Pass the id as service_id to other tools to target one."""
 
         async def body() -> Any:
-            from ..config import instances
+            from arrmate.config import instances
 
             return instances.list_instances()
 
@@ -156,10 +155,10 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
 
             if media_type == "tv":
                 async with ctx.deps.sonarr(service_id) as sonarr_client:
-                    return slim(await sonarr_client.get_all_series())
+                    return slim(await sonarr_client.get_all_items())
             if media_type == "movie":
                 async with ctx.deps.radarr(service_id) as radarr_client:
-                    return slim(await radarr_client.get_all_movies())
+                    return slim(await radarr_client.get_all_items())
             raise ValueError(f"unsupported media_type: {media_type}")
 
         return await _safe(body)
@@ -397,13 +396,8 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         """Get per-indexer grab/query/failure statistics from Prowlarr."""
 
         async def body() -> Any:
-            if not settings.prowlarr_url or not settings.prowlarr_api_key:
-                raise ValueError("Prowlarr is not configured")
-            client = ProwlarrClient(settings.prowlarr_url, settings.prowlarr_api_key)
-            try:
+            async with ctx.deps.prowlarr() as client:
                 return await client.get_indexer_stats()
-            finally:
-                await client.close()
 
         return await _safe(body)
 
@@ -481,10 +475,10 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
                         return await c.trigger_episode_search(episode_ids)
                     if season_number >= 0:
                         return await c.trigger_season_search(item_id, season_number)
-                    return await c.trigger_series_search(item_id)
+                    return await c.trigger_item_search(item_id)
             if media_type == "movie":
                 async with ctx.deps.radarr() as c:
-                    return await c.trigger_movie_search(item_id)
+                    return await c.trigger_item_search(item_id)
             raise ValueError(f"unsupported media_type: {media_type}")
 
         return await _safe(body)
@@ -494,45 +488,21 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         ctx: RunContext[AgentDeps],
         media_type: str,
         title: str,
-        quality_profile_id: int = 0,
-        root_folder_path: str = "",
         monitored: bool = True,
         service_id: str = "",
     ) -> str:
         """Add a new series/movie to the library by title. Uses the first
-        quality profile and root folder unless overridden; searches for
-        missing content immediately."""
+        quality profile and root folder; searches for missing content
+        immediately."""
 
         async def body() -> Any:
             ctx.deps.require_write("add_media")
             if media_type == "tv":
                 async with ctx.deps.sonarr(service_id) as c:
-                    matches = await c.search(title)
-                    if not matches:
-                        raise ValueError(f"no TV match for {title!r}")
-                    profiles = await c.get_quality_profiles()
-                    roots = await c.get_root_folders()
-                    return await c.add_series_from_lookup(
-                        matches[0],
-                        quality_profile_id or profiles[0]["id"],
-                        root_folder_path or roots[0]["path"],
-                        monitored=monitored,
-                    )
+                    return await add_first_match(c, media_type, title, monitored=monitored)
             if media_type == "movie":
                 async with ctx.deps.radarr(service_id) as c:
-                    matches = await c.search(title)
-                    if not matches:
-                        raise ValueError(f"no movie match for {title!r}")
-                    profiles = await c.get_quality_profiles()
-                    roots = await c.get_root_folders()
-                    movie = matches[0]
-                    return await c.add_movie(
-                        tmdb_id=movie["tmdbId"],
-                        title=movie["title"],
-                        quality_profile_id=quality_profile_id or profiles[0]["id"],
-                        root_folder_path=root_folder_path or roots[0]["path"],
-                        monitored=monitored,
-                    )
+                    return await add_first_match(c, media_type, title, monitored=monitored)
             raise ValueError(f"unsupported media_type: {media_type}")
 
         return await _safe(body)
@@ -611,10 +581,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         or empty for everything."""
 
         async def body() -> Any:
-            if not settings.jellyfin_url or not settings.jellyfin_api_key:
-                raise ValueError("Jellyfin is not configured")
-            client = JellyfinClient(settings.jellyfin_url, settings.jellyfin_api_key)
-            try:
+            async with ctx.deps.jellyfin() as client:
                 data = await client.get_items(
                     item_type=item_type, search_term=search_term, limit=limit
                 )
@@ -628,8 +595,6 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
                     }
                     for i in data.get("Items", [])
                 ]
-            finally:
-                await client.close()
 
         return await _safe(body)
 
@@ -638,10 +603,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         """List what the primary Jellyfin user started and never finished."""
 
         async def body() -> Any:
-            if not settings.jellyfin_url or not settings.jellyfin_api_key:
-                raise ValueError("Jellyfin is not configured")
-            client = JellyfinClient(settings.jellyfin_url, settings.jellyfin_api_key)
-            try:
+            async with ctx.deps.jellyfin() as client:
                 users = await client.get_users()
                 if not users:
                     raise ValueError("no Jellyfin users found")
@@ -650,8 +612,6 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
                     {"id": i.get("Id"), "name": i.get("Name"), "type": i.get("Type")}
                     for i in data.get("Items", [])
                 ]
-            finally:
-                await client.close()
 
         return await _safe(body)
 
@@ -661,14 +621,9 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
 
         async def body() -> Any:
             ctx.deps.require_write("jellyfin_scan")
-            if not settings.jellyfin_url or not settings.jellyfin_api_key:
-                raise ValueError("Jellyfin is not configured")
-            client = JellyfinClient(settings.jellyfin_url, settings.jellyfin_api_key)
-            try:
+            async with ctx.deps.jellyfin() as client:
                 await client.trigger_library_scan()
                 return {"scan": "triggered"}
-            finally:
-                await client.close()
 
         return await _safe(body)
 
@@ -678,10 +633,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         'available', or empty for all."""
 
         async def body() -> Any:
-            if not settings.jellyseerr_url or not settings.jellyseerr_api_key:
-                raise ValueError("Jellyseerr is not configured")
-            client = JellyseerrClient(settings.jellyseerr_url, settings.jellyseerr_api_key)
-            try:
+            async with ctx.deps.jellyseerr() as client:
                 data = await client.get_requests(status=status)
                 return [
                     {
@@ -693,8 +645,6 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
                     }
                     for r in data.get("results", [])
                 ]
-            finally:
-                await client.close()
 
         return await _safe(body)
 
@@ -704,17 +654,12 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
 
         async def body() -> Any:
             ctx.deps.require_write("jellyseerr_decide")
-            if not settings.jellyseerr_url or not settings.jellyseerr_api_key:
-                raise ValueError("Jellyseerr is not configured")
-            client = JellyseerrClient(settings.jellyseerr_url, settings.jellyseerr_api_key)
-            try:
+            async with ctx.deps.jellyseerr() as client:
                 if approve:
                     await client.approve_request(request_id)
                 else:
                     await client.decline_request(request_id)
                 return {"requestId": request_id, "approved": approve}
-            finally:
-                await client.close()
 
         return await _safe(body)
 
@@ -724,10 +669,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         tmdbId for add_media without a separate TMDB key."""
 
         async def body() -> Any:
-            if not settings.jellyseerr_url or not settings.jellyseerr_api_key:
-                raise ValueError("Jellyseerr is not configured")
-            client = JellyseerrClient(settings.jellyseerr_url, settings.jellyseerr_api_key)
-            try:
+            async with ctx.deps.jellyseerr() as client:
                 data = await client.search_tmdb(query)
                 return [
                     {
@@ -739,7 +681,5 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
                     }
                     for r in data.get("results", [])
                 ]
-            finally:
-                await client.close()
 
         return await _safe(body)

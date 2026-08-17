@@ -4,11 +4,15 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
-from ..clients.qbittorrent import QBittorrentClient
-from ..clients.radarr import RadarrClient
-from ..clients.sonarr import SonarrClient
-from ..config import instances
-from ..config.settings import settings
+from arrmate.clients.cleanuparr import CleanuparrClient
+from arrmate.clients.jellyfin import JellyfinClient
+from arrmate.clients.jellyseerr import JellyseerrClient
+from arrmate.clients.prowlarr import ProwlarrClient
+from arrmate.clients.qbittorrent import QBittorrentClient
+from arrmate.clients.radarr import RadarrClient
+from arrmate.clients.sonarr import SonarrClient
+from arrmate.config import instances
+from arrmate.config.settings import settings
 
 ROLE_USER = "user"
 ROLE_POWER_USER = "power_user"
@@ -76,6 +80,46 @@ class AgentDeps:
             settings.qbittorrent_username or "",
             settings.qbittorrent_password or "",
         )
+        try:
+            yield client
+        finally:
+            await client.close()
+
+    @asynccontextmanager
+    async def prowlarr(self) -> AsyncIterator[ProwlarrClient]:
+        if not settings.prowlarr_url or not settings.prowlarr_api_key:
+            raise ValueError("Prowlarr is not configured")
+        client = ProwlarrClient(settings.prowlarr_url, settings.prowlarr_api_key)
+        try:
+            yield client
+        finally:
+            await client.close()
+
+    @asynccontextmanager
+    async def cleanuparr(self) -> AsyncIterator[CleanuparrClient]:
+        if not settings.cleanuparr_url or not settings.cleanuparr_api_key:
+            raise ValueError("Cleanuparr is not configured")
+        client = CleanuparrClient(settings.cleanuparr_url, settings.cleanuparr_api_key)
+        try:
+            yield client
+        finally:
+            await client.close()
+
+    @asynccontextmanager
+    async def jellyfin(self) -> AsyncIterator[JellyfinClient]:
+        if not settings.jellyfin_url or not settings.jellyfin_api_key:
+            raise ValueError("Jellyfin is not configured")
+        client = JellyfinClient(settings.jellyfin_url, settings.jellyfin_api_key)
+        try:
+            yield client
+        finally:
+            await client.close()
+
+    @asynccontextmanager
+    async def jellyseerr(self) -> AsyncIterator[JellyseerrClient]:
+        if not settings.jellyseerr_url or not settings.jellyseerr_api_key:
+            raise ValueError("Jellyseerr is not configured")
+        client = JellyseerrClient(settings.jellyseerr_url, settings.jellyseerr_api_key)
         try:
             yield client
         finally:

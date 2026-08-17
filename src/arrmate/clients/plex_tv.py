@@ -120,5 +120,5 @@ class PlexTVClient:
             resp.raise_for_status()
             data = resp.json()
             return data.get("authToken") or data.get("auth_token")
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return None

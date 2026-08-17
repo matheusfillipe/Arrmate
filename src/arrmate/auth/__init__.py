@@ -1,8 +1,8 @@
 """Authentication package for Arrmate."""
 
-from .manager import AuthManager
 from . import user_db
+from .manager import AuthManager
 
 auth_manager = AuthManager()
 
-__all__ = ["auth_manager", "AuthManager", "user_db"]
+__all__ = ["AuthManager", "auth_manager", "user_db"]

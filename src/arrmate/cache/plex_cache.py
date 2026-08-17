@@ -8,9 +8,12 @@ Cache is refreshed on demand (manual sync) or when first loading after startup.
 import logging
 import sqlite3
 import time
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +22,7 @@ CACHE_TTL = 15 * 60  # 15 minutes
 
 
 def _db_path() -> Path:
-    from ..config.settings import settings
+    from arrmate.config.settings import settings
 
     return Path(settings.auth_data_dir) / "plex_cache.db"
 
@@ -63,11 +66,11 @@ def init_cache() -> None:
 def _ensure_init() -> None:
     try:
         init_cache()
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning("Could not init Plex cache: %s", e)
 
 
-def get_last_synced() -> Optional[int]:
+def get_last_synced() -> int | None:
     """Return Unix timestamp of last successful sync, or None."""
     try:
         _ensure_init()
@@ -76,7 +79,7 @@ def get_last_synced() -> Optional[int]:
                 "SELECT value FROM plex_cache_meta WHERE key='last_synced'"
             ).fetchone()
             return int(row["value"]) if row else None
-    except Exception:
+    except (httpx.HTTPError, ValueError):
         return None
 
 
@@ -93,12 +96,12 @@ def get_cache_size() -> int:
     try:
         _ensure_init()
         with _get_conn() as conn:
-            return conn.execute("SELECT COUNT(*) FROM plex_history").fetchone()[0]
-    except Exception:
+            return int(conn.execute("SELECT COUNT(*) FROM plex_history").fetchone()[0])
+    except (httpx.HTTPError, ValueError):
         return 0
 
 
-def populate_cache(items: List[Dict[str, Any]]) -> int:
+def populate_cache(items: list[dict[str, Any]]) -> int:
     """Replace cache with a fresh list of Plex history items.
 
     Args:
@@ -138,20 +141,18 @@ def populate_cache(items: List[Dict[str, Any]]) -> int:
             )
             conn.commit()
             return len(items)
-    except Exception as e:
+    except (httpx.HTTPError, sqlite3.Error, ValueError) as e:
         logger.error("Failed to populate Plex cache: %s", e)
         return 0
 
 
-def get_cached_history() -> List[Dict[str, Any]]:
+def get_cached_history() -> list[dict[str, Any]]:
     """Return all cached history rows as plain dicts."""
     try:
         _ensure_init()
         with _get_conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM plex_history ORDER BY viewed_at DESC"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM plex_history ORDER BY viewed_at DESC").fetchall()
             return [dict(row) for row in rows]
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning("Failed to read Plex cache: %s", e)
         return []

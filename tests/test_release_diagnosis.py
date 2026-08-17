@@ -1,10 +1,10 @@
 """Tests for the diagnosis client methods added for the agent (step 1)."""
+
 import httpx
 import pytest
 
 from arrmate.clients.radarr import RadarrClient
 from arrmate.clients.sonarr import SonarrClient
-
 
 BASE = "http://sonarr:8989"
 HEADERS = {"X-Api-Key": "key"}
@@ -97,7 +97,7 @@ async def test_sonarr_episode_history_filters_by_episode(sonarr, httpx_mock):
 @pytest.mark.asyncio
 async def test_radarr_interactive_search(radarr, httpx_mock):
     httpx_mock.add_response(
-        url=httpx.URL(f"http://radarr:8989/api/v3/release", params={"movieId": "5"}),
+        url=httpx.URL("http://radarr:8989/api/v3/release", params={"movieId": "5"}),
         json=[{"guid": "g2", "rejections": ["Release is blocklisted"]}],
     )
     releases = await radarr.interactive_search(5)

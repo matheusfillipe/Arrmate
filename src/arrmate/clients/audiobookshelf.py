@@ -6,6 +6,8 @@ a modern web UI, mobile apps, and robust playback tracking.
 
 from typing import Any
 
+import httpx
+
 from .base import BaseMediaClient
 
 
@@ -27,11 +29,9 @@ class AudioBookshelfClient(BaseMediaClient):
         super().__init__(base_url, api_key, timeout)
 
     @property
-    def client(self):
+    def client(self) -> httpx.AsyncClient:
         """Get or create the HTTP client with Bearer token auth."""
         if self._client is None:
-            import httpx
-
             self._client = httpx.AsyncClient(
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 timeout=self.timeout,
@@ -47,7 +47,7 @@ class AudioBookshelfClient(BaseMediaClient):
         try:
             await self.get_libraries()
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_system_status(self) -> dict[str, Any]:
@@ -100,7 +100,7 @@ class AudioBookshelfClient(BaseMediaClient):
         Returns:
             Paginated library items
         """
-        params = {"limit": limit, "page": page}
+        params: dict[str, int | str] = {"limit": limit, "page": page}
         if sort:
             params["sort"] = sort
         if filter:
@@ -124,7 +124,7 @@ class AudioBookshelfClient(BaseMediaClient):
             return result.get("book", [])
         return []
 
-    async def get_item(self, item_id: str) -> dict[str, Any]:
+    async def get_item(self, item_id: int | str) -> dict[str, Any]:
         """Get audiobook details by ID.
 
         Args:
@@ -135,7 +135,7 @@ class AudioBookshelfClient(BaseMediaClient):
         """
         return await self._get(f"api/items/{item_id}")
 
-    async def delete_item(self, item_id: str, delete_files: bool = False) -> bool:
+    async def delete_item(self, item_id: int | str, delete_files: bool = False) -> bool:
         """Delete an audiobook.
 
         Args:

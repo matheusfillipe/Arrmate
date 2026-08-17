@@ -44,7 +44,7 @@ class PlexClient(BaseExternalService):
         try:
             data = await self._get("/identity")
             return bool(data)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_stats(self) -> dict[str, Any]:
@@ -72,7 +72,7 @@ class PlexClient(BaseExternalService):
         try:
             data = await self._get("/identity")
             return data.get("MediaContainer", {}).get("machineIdentifier")
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return None
 
     async def get_version(self) -> str | None:
@@ -84,7 +84,7 @@ class PlexClient(BaseExternalService):
         try:
             data = await self._get("/identity")
             return data.get("MediaContainer", {}).get("version")
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return None
 
     async def get_libraries(self) -> list[dict[str, Any]]:
@@ -154,7 +154,7 @@ class PlexClient(BaseExternalService):
             url = f"{self.base_url}/library/metadata/{rating_key}/refresh"
             response = await self.client.put(url)
             return response.status_code in (200, 204)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def scan_library(self, section_id: str) -> bool:
@@ -170,7 +170,7 @@ class PlexClient(BaseExternalService):
             url = f"{self.base_url}/library/sections/{section_id}/refresh"
             response = await self.client.get(url)
             return response.status_code in (200, 204)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def scan_all_libraries(self) -> bool:
@@ -183,7 +183,7 @@ class PlexClient(BaseExternalService):
             url = f"{self.base_url}/library/sections/all/refresh"
             response = await self.client.get(url)
             return response.status_code in (200, 204)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def delete_item(self, rating_key: str) -> bool:
@@ -199,7 +199,7 @@ class PlexClient(BaseExternalService):
             url = f"{self.base_url}/library/metadata/{rating_key}"
             response = await self.client.delete(url)
             return response.status_code in (200, 204)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def empty_trash(self, section_id: str) -> bool:
@@ -215,7 +215,7 @@ class PlexClient(BaseExternalService):
             url = f"{self.base_url}/library/sections/{section_id}/emptyTrash"
             response = await self.client.put(url)
             return response.status_code in (200, 204)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_sessions(self) -> list[dict[str, Any]]:
@@ -236,7 +236,7 @@ class PlexClient(BaseExternalService):
         try:
             data = await self._get("/accounts")
             return data.get("MediaContainer", {}).get("Account", [])
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return []
 
     async def get_history(
@@ -280,7 +280,7 @@ class PlexClient(BaseExternalService):
             data2 = await self._get("/library/onDeck")
             all_deck = data2.get("MediaContainer", {}).get("Metadata", [])
             return [i for i in all_deck if i.get("viewOffset", 0) > 0]
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return []
 
     async def get_on_deck(self) -> list[dict[str, Any]]:
@@ -323,7 +323,7 @@ class PlexClient(BaseExternalService):
                 url, params={"sessionId": session_id, "reason": reason}
             )
             return response.status_code in (200, 204)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def rate_item(self, rating_key: str, stars: float) -> bool:
@@ -337,15 +337,15 @@ class PlexClient(BaseExternalService):
             True if rating was accepted
         """
         try:
-            params = {
+            rate_params: dict[str, int | str] = {
                 "key": rating_key,
                 "identifier": "com.plexapp.plugins.library",
                 "rating": int(max(1, min(5, stars)) * 2),
             }
             url = f"{self.base_url}/:/rate"
-            response = await self.client.put(url, params=params)
+            response = await self.client.put(url, params=rate_params)
             return response.status_code in (200, 204)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_butler_tasks(self) -> list[dict[str, Any]]:
@@ -357,7 +357,7 @@ class PlexClient(BaseExternalService):
         try:
             data = await self._get("/butler")
             return data.get("MediaContainer", {}).get("ButlerTask", [])
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return []
 
     async def run_butler_task(self, task_name: str) -> bool:
@@ -373,7 +373,7 @@ class PlexClient(BaseExternalService):
             url = f"{self.base_url}/butler/{task_name}"
             response = await self.client.post(url)
             return response.status_code in (200, 204)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def detect_intro(self, rating_key: str) -> bool:
@@ -389,7 +389,7 @@ class PlexClient(BaseExternalService):
             url = f"{self.base_url}/library/metadata/{rating_key}/analyze"
             response = await self.client.put(url)
             return response.status_code in (200, 204)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def detect_credits(self, rating_key: str) -> bool:
@@ -408,7 +408,7 @@ class PlexClient(BaseExternalService):
             url = f"{self.base_url}/library/metadata/{rating_key}/analyze"
             response = await self.client.put(url)
             return response.status_code in (200, 204)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_playlists(self) -> list[dict[str, Any]]:
@@ -420,7 +420,7 @@ class PlexClient(BaseExternalService):
         try:
             data = await self._get("/playlists/all")
             return data.get("MediaContainer", {}).get("Metadata", [])
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return []
 
     async def get_playlist_items(self, playlist_id: str) -> list[dict[str, Any]]:
@@ -452,7 +452,7 @@ class PlexClient(BaseExternalService):
             url = f"{self.base_url}/:/scrobble"
             response = await self.client.get(url, params=params)
             return response.status_code in (200, 204)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def mark_unwatched(self, rating_key: str) -> bool:
@@ -472,5 +472,5 @@ class PlexClient(BaseExternalService):
             url = f"{self.base_url}/:/unscrobble"
             response = await self.client.get(url, params=params)
             return response.status_code in (200, 204)
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False

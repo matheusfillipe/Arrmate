@@ -1,4 +1,5 @@
 """Tests for downloader get_item_files and actions (step 1b)."""
+
 import httpx
 import pytest
 
@@ -18,11 +19,11 @@ def qbit():
 @pytest.mark.asyncio
 async def test_qbit_files(qbit, httpx_mock):
     httpx_mock.add_response(
-        url=httpx.URL(f"http://qb:8080/api/v2/auth/login"),
+        url=httpx.URL("http://qb:8080/api/v2/auth/login"),
         text="Ok.",
     )
     httpx_mock.add_response(
-        url=httpx.URL(f"http://qb:8080/api/v2/torrents/files", params={"hash": "abc"}),
+        url=httpx.URL("http://qb:8080/api/v2/torrents/files", params={"hash": "abc"}),
         json=[{"name": "X-Men.97.S02E07.1080p.WEB.h264-GRACE.exe", "size": 959000000}],
     )
     files = await qbit.get_item_files("abc")
@@ -46,9 +47,7 @@ async def test_transmission_files(httpx_mock):
         json={
             "result": "success",
             "arguments": {
-                "torrents": [
-                    {"id": 1, "name": "t", "files": [{"name": "a.mkv", "length": 100}]}
-                ]
+                "torrents": [{"id": 1, "name": "t", "files": [{"name": "a.mkv", "length": 100}]}]
             },
         },
     )

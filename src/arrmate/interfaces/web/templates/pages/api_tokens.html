@@ -9,6 +9,12 @@
         <p class="text-gray-400">Create long-lived tokens to access Arrmate from external apps (e.g. an Android client).</p>
     </div>
 
+    {% if error %}
+    <div class="card border-red-700/60 mb-6">
+        <p class="text-red-300 text-sm">{{ error }}</p>
+    </div>
+    {% endif %}
+
     <!-- One-time new token display -->
     {% if new_token %}
     <div class="card border-green-700/60 mb-6" x-data="{ copied: false }">

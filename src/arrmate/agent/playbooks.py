@@ -10,10 +10,11 @@ import logging
 import re
 from typing import Any
 
+import httpx
 from pydantic_ai import Agent, RunContext
 
-from ..clients.cleanuparr import CleanuparrClient
-from ..config.settings import settings
+from arrmate.config.settings import settings
+
 from .deps import AgentDeps
 from .tools import _wrap
 
@@ -69,12 +70,18 @@ def _encode_family(release_title: str) -> str:
     codec = (
         "h265"
         if re.search(r"x265|h265|hevc", t)
-        else "h264" if re.search(r"x264|h264|avc", t) else "?"
+        else "h264"
+        if re.search(r"x264|h264|avc", t)
+        else "?"
     )
     src = (
         "web"
         if "web" in t
-        else "bluray" if "bluray" in t or "bdrip" in t else "hdtv" if "hdtv" in t else "?"
+        else "bluray"
+        if "bluray" in t or "bdrip" in t
+        else "hdtv"
+        if "hdtv" in t
+        else "?"
     )
     m = re.search(r"-([a-z0-9]+)$", t.strip())
     grp = m.group(1) if m else "?"
@@ -150,23 +157,21 @@ def register_playbook_tools(agent: Agent[AgentDeps, str]) -> None:
             }
 
             # 3. Cleanuparr cross-check
-            if external_strikes and settings.cleanuparr_url and settings.cleanuparr_api_key:
-                cc = CleanuparrClient(settings.cleanuparr_url, settings.cleanuparr_api_key)
-                try:
-                    events = await cc.get_events(page_size=100)
-                    strikes = [e for e in events if any(str(d) in str(e) for d in download_ids)]
-                    finding["cleanuparr"] = (
-                        {
-                            "matchedStrikes": len(strikes),
-                            "sample": strikes[:5],
-                        }
-                        if strikes
-                        else {"matchedStrikes": 0}
-                    )
-                except Exception as e:
-                    finding["cleanuparr"] = {"error": str(e)[:150]}
-                finally:
-                    await cc.close()
+            if external_strikes:
+                async with ctx.deps.cleanuparr() as cc:
+                    try:
+                        events = await cc.get_events(page_size=100)
+                        strikes = [e for e in events if any(str(d) in str(e) for d in download_ids)]
+                        finding["cleanuparr"] = (
+                            {
+                                "matchedStrikes": len(strikes),
+                                "sample": strikes[:5],
+                            }
+                            if strikes
+                            else {"matchedStrikes": 0}
+                        )
+                    except (httpx.HTTPError, KeyError, ValueError) as e:
+                        finding["cleanuparr"] = {"error": str(e)[:150]}
 
             # 4. Downloader file-list check on any live torrent
             if settings.qbittorrent_url:
@@ -254,7 +259,7 @@ def register_playbook_tools(agent: Agent[AgentDeps, str]) -> None:
             return _wrap(await body())
         except ValueError as e:
             return _wrap({"error": "bad-arguments", "detail": str(e)})
-        except Exception as e:
+        except (httpx.HTTPError, KeyError, AttributeError, TypeError) as e:
             logger.warning("diagnose_failed_grabs failed: %s", e)
             return _wrap({"error": "playbook-failed", "detail": str(e)[:200]})
 
@@ -329,13 +334,15 @@ def register_playbook_tools(agent: Agent[AgentDeps, str]) -> None:
                 "totalTorrents": len(findings),
                 "flagged": len(flagged),
                 "items": flagged,
-                "note": "unmanaged = no arr queue entry owns it; zero-seeds = stalled with no peers",
+                "note": (
+                    "unmanaged = no arr queue entry owns it; zero-seeds = stalled with no peers"
+                ),
             }
 
         try:
             return _wrap(await body())
         except ValueError as e:
             return _wrap({"error": "not-configured", "detail": str(e)})
-        except Exception as e:
+        except (httpx.HTTPError, KeyError, AttributeError, TypeError) as e:
             logger.warning("audit_downloads failed: %s", e)
             return _wrap({"error": "playbook-failed", "detail": str(e)[:200]})

@@ -1,42 +1,49 @@
-FROM python:3.11-slim
+FROM python:3.14-slim AS builder
 
-# Set working directory
-WORKDIR /app
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Install system dependencies (ffmpeg for H.265 transcoding, gosu for privilege drop)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    gosu \
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy project files
-COPY requirements.txt ./
-COPY pyproject.toml ./
-COPY src/ ./src/
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=0
 
-# Install Python dependencies (requirements.txt first to pin security-patched versions)
-RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir -e .
+WORKDIR /app
 
-# Create data directory and non-root user
-# The entrypoint re-chowns /data at runtime (named volumes are created as root),
-# then drops privileges via gosu before starting the app.
-RUN mkdir -p /data \
-    && groupadd -r arrmate \
-    && useradd -r -g arrmate -d /app -s /sbin/nologin arrmate \
-    && chown -R arrmate:arrmate /app /data
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-install-project --no-dev --no-editable
 
-# Copy entrypoint script
+COPY README.md pyproject.toml uv.lock ./
+COPY src ./src
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --no-editable
+
+
+FROM python:3.14-slim
+
+# ffmpeg for H.265 transcoding, gosu for the privilege drop in entrypoint.sh
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg gosu \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1
+
+COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /app/src /app/src
 COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
 
-# Expose port
+RUN groupadd -r arrmate \
+    && useradd -r -g arrmate -d /app -s /sbin/nologin arrmate \
+    && mkdir -p /data \
+    && chown -R arrmate:arrmate /app /data \
+    && chmod +x /entrypoint.sh
+
 EXPOSE 8000
 
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app/src
-
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD gosu arrmate python -c "import httpx; httpx.get('http://localhost:8000/health')" || exit 1
 

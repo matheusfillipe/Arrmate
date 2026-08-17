@@ -2,9 +2,8 @@
 
 import os
 
-from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-
 from fastapi.responses import Response
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 SESSION_COOKIE = "arrmate_session"
 SESSION_MAX_AGE = 86400  # 24 hours
@@ -42,7 +41,8 @@ def validate_session_token(token: str, secret_key: str) -> dict | None:
                 "role": "admin",
             }
         if "user_id" in data and "username" in data and "role" in data:
-            return data
+            session: dict | None = data
+            return session
         return None
     except (BadSignature, SignatureExpired):
         return None

@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 from fastapi import Header, HTTPException, Request
 
-from . import auth_manager
+from . import auth_manager, user_db
 from .session import SESSION_COOKIE, validate_session_token
 
 
@@ -58,17 +58,11 @@ async def require_any_auth(request: Request) -> None:
         # Enforce must_change_password: block access to all protected routes until changed
         uid = user.get("user_id") or user.get("id", "")
         if uid and uid != "legacy":
-            try:
-                from .user_db import get_user_by_id
-                db_user = get_user_by_id(uid)
-                if db_user and db_user.get("must_change_password"):
-                    if request.url.path != "/web/change-password":
-                        is_htmx = bool(request.headers.get("HX-Request"))
-                        raise AuthRedirectException("/web/change-password", is_htmx=is_htmx)
-            except AuthRedirectException:
-                raise
-            except Exception:
-                pass
+            db_user = user_db.get_user_by_id(uid)
+            needs_change = db_user and db_user.get("must_change_password")
+            if needs_change and request.url.path != "/web/change-password":
+                is_htmx = bool(request.headers.get("HX-Request"))
+                raise AuthRedirectException("/web/change-password", is_htmx=is_htmx)
         return
 
     is_htmx = bool(request.headers.get("HX-Request"))
@@ -77,8 +71,7 @@ async def require_any_auth(request: Request) -> None:
         # redirect lands back on the full page, not the partial endpoint.
         current_url = request.headers.get("HX-Current-URL", "")
         if current_url:
-            from urllib.parse import urlparse as _parse
-            parsed = _parse(current_url)
+            parsed = urlparse(current_url)
             next_url = parsed.path
             if parsed.query:
                 next_url += f"?{parsed.query}"
@@ -107,8 +100,7 @@ async def require_admin(request: Request) -> None:
         if is_htmx:
             current_url = request.headers.get("HX-Current-URL", "")
             if current_url:
-                from urllib.parse import urlparse as _parse
-                parsed = _parse(current_url)
+                parsed = urlparse(current_url)
                 next_url = parsed.path
             else:
                 next_url = str(request.url.path)
@@ -128,8 +120,7 @@ async def require_power_user(request: Request) -> None:
         if is_htmx:
             current_url = request.headers.get("HX-Current-URL", "")
             if current_url:
-                from urllib.parse import urlparse as _parse
-                parsed = _parse(current_url)
+                parsed = urlparse(current_url)
                 next_url = parsed.path
             else:
                 next_url = str(request.url.path)
@@ -159,8 +150,7 @@ async def get_api_user(authorization: str | None = Header(default=None)) -> dict
             headers={"WWW-Authenticate": "Bearer"},
         )
     token = authorization[7:].strip()
-    from .user_db import validate_api_token
-    user = validate_api_token(token)
+    user = user_db.validate_api_token(token)
     if not user:
         raise HTTPException(
             status_code=401,

@@ -9,7 +9,9 @@ Default port: 3030
 Auth: Bearer token (JWT from login or admin-generated API token)
 """
 
-from typing import Any
+from typing import Any, cast
+
+import httpx
 
 from .base_external import BaseExternalService
 
@@ -21,11 +23,9 @@ class ReadMeABookClient(BaseExternalService):
         super().__init__(base_url, api_key, timeout)
 
     @property
-    def client(self):
+    def client(self) -> httpx.AsyncClient:
         """HTTP client with Bearer token auth."""
         if self._client is None:
-            import httpx
-
             self._client = httpx.AsyncClient(
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 timeout=self.timeout,
@@ -54,7 +54,7 @@ class ReadMeABookClient(BaseExternalService):
         try:
             await self._get("api/health")
             return True
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
 
     async def get_stats(self) -> dict[str, Any]:
@@ -64,7 +64,7 @@ class ReadMeABookClient(BaseExternalService):
             if isinstance(data, dict):
                 return data
             return {}
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return {}
 
     async def get_version(self) -> str | None:
@@ -74,7 +74,7 @@ class ReadMeABookClient(BaseExternalService):
             if isinstance(data, dict):
                 return data.get("version") or data.get("tag")
             return None
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return None
 
     async def search(self, query: str) -> list[dict[str, Any]]:
@@ -87,9 +87,10 @@ class ReadMeABookClient(BaseExternalService):
             if isinstance(data, list):
                 return data
             if isinstance(data, dict):
-                return data.get("results", data.get("audiobooks", data.get("books", [])))
+                items = data.get("results", data.get("audiobooks", data.get("books", [])))
+                return cast("list[dict[str, Any]]", items)
             return []
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return []
 
     async def get_popular(self) -> list[dict[str, Any]]:
@@ -99,9 +100,10 @@ class ReadMeABookClient(BaseExternalService):
             if isinstance(data, list):
                 return data
             if isinstance(data, dict):
-                return data.get("results", data.get("audiobooks", []))
+                items = data.get("results", data.get("audiobooks", []))
+                return cast("list[dict[str, Any]]", items)
             return []
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return []
 
     async def get_new_releases(self) -> list[dict[str, Any]]:
@@ -111,9 +113,10 @@ class ReadMeABookClient(BaseExternalService):
             if isinstance(data, list):
                 return data
             if isinstance(data, dict):
-                return data.get("results", data.get("audiobooks", []))
+                items = data.get("results", data.get("audiobooks", []))
+                return cast("list[dict[str, Any]]", items)
             return []
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return []
 
     async def get_requests(self) -> list[dict[str, Any]]:
@@ -123,9 +126,10 @@ class ReadMeABookClient(BaseExternalService):
             if isinstance(data, list):
                 return data
             if isinstance(data, dict):
-                return data.get("requests", data.get("results", []))
+                items = data.get("requests", data.get("results", []))
+                return cast("list[dict[str, Any]]", items)
             return []
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return []
 
     async def create_request(

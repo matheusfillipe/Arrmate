@@ -1,0 +1,183 @@
+# Arrmate — compose.yaml (build from source)
+#
+# Compose v2 file. `docker compose up -d` picks this up automatically.
+# The legacy docker-compose*.yml names are symlinks to the compose.*.yaml
+# files, so old -f flags and COMPOSE_FILE values keep working.
+#
+# USAGE:
+#   cp .env.example .env && nano .env
+#   docker compose up -d
+#
+# GPU ACCELERATION FOR OLLAMA (merge an override):
+#   NVIDIA: COMPOSE_FILE=compose.yaml:compose.ollama-nvidia.yaml
+#   AMD:    COMPOSE_FILE=compose.yaml:compose.ollama-amd.yaml
+#
+# EXTERNAL OLLAMA:
+#   Set OLLAMA_BASE_URL to that machine's address and comment out the
+#   ollama service below to avoid a duplicate instance.
+
+x-arrmate-env: &arrmate-env
+  # Application
+  API_HOST: 0.0.0.0
+  API_PORT: ${API_PORT:-8000}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+  # LLM provider (ollama | openai | anthropic)
+  LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+
+  # Ollama
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+  OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+  OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+
+  # OpenAI (leave blank to disable)
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+
+  # Anthropic (leave blank to disable)
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}
+
+  # Media services (unset in .env = hidden in the UI)
+  SONARR_URL: ${SONARR_URL:-}
+  SONARR_API_KEY: ${SONARR_API_KEY:-}
+  RADARR_URL: ${RADARR_URL:-}
+  RADARR_API_KEY: ${RADARR_API_KEY:-}
+  LIDARR_URL: ${LIDARR_URL:-}
+  LIDARR_API_KEY: ${LIDARR_API_KEY:-}
+  BAZARR_URL: ${BAZARR_URL:-}
+  BAZARR_API_KEY: ${BAZARR_API_KEY:-}
+  AUDIOBOOKSHELF_URL: ${AUDIOBOOKSHELF_URL:-}
+  AUDIOBOOKSHELF_API_KEY: ${AUDIOBOOKSHELF_API_KEY:-}
+  LAZYLIBRARIAN_URL: ${LAZYLIBRARIAN_URL:-}
+  LAZYLIBRARIAN_API_KEY: ${LAZYLIBRARIAN_API_KEY:-}
+  READMEABOOK_URL: ${READMEABOOK_URL:-}
+  READMEABOOK_API_KEY: ${READMEABOOK_API_KEY:-}
+  READARR_URL: ${READARR_URL:-}
+  READARR_API_KEY: ${READARR_API_KEY:-}
+  PLEX_URL: ${PLEX_URL:-}
+  PLEX_TOKEN: ${PLEX_TOKEN:-}
+
+  # Authentication
+  SECRET_KEY: ${SECRET_KEY:-}
+  AUTH_DATA_DIR: /data
+  # Session cookie Secure flag; set false only for plain-HTTP deployments
+  COOKIE_SECURE: ${COOKIE_SECURE:-true}
+
+  # Download managers (optional)
+  SABNZBD_URL: ${SABNZBD_URL:-}
+  SABNZBD_API_KEY: ${SABNZBD_API_KEY:-}
+  NZBGET_URL: ${NZBGET_URL:-}
+  NZBGET_USERNAME: ${NZBGET_USERNAME:-}
+  NZBGET_PASSWORD: ${NZBGET_PASSWORD:-}
+  QBITTORRENT_URL: ${QBITTORRENT_URL:-}
+  QBITTORRENT_USERNAME: ${QBITTORRENT_USERNAME:-}
+  QBITTORRENT_PASSWORD: ${QBITTORRENT_PASSWORD:-}
+  TRANSMISSION_URL: ${TRANSMISSION_URL:-}
+  TRANSMISSION_USERNAME: ${TRANSMISSION_USERNAME:-}
+  TRANSMISSION_PASSWORD: ${TRANSMISSION_PASSWORD:-}
+
+  # Transcoding: CRF 18=high quality, 28=default, 32=small;
+  # preset ultrafast/fast/medium/slow/veryslow
+  TRANSCODE_CRF: ${TRANSCODE_CRF:-28}
+  TRANSCODE_PRESET: ${TRANSCODE_PRESET:-medium}
+
+services:
+  # Runs once before the app: fixes /data ownership left by pre-v2.0.0
+  # images that ran as root (users.db, services.json, ...).
+  arrmate-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - arrmate-data:/data
+    entrypoint:
+      - /bin/sh
+      - -c
+      - "chown -R arrmate:arrmate /data && echo 'arrmate: /data ownership verified'"
+    user: root
+    restart: "no"
+    networks:
+      - arrmate-net
+
+  arrmate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: arrmate
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      <<: *arrmate-env
+    volumes:
+      - arrmate-data:/data
+      # H.265 transcoding (optional): mount media dirs at the SAME paths
+      # Sonarr/Radarr report so ffmpeg can reach the files:
+      # - /your/movies:/movies
+      # - /your/tv:/tv
+    networks:
+      - arrmate-net
+      # If using Traefik, also add the Traefik network:
+      # - traefik
+    depends_on:
+      arrmate-init:
+        condition: service_completed_successfully
+      ollama:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import httpx; httpx.get('http://localhost:8000/health')
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Traefik labels (uncomment and set TRAEFIK_* vars in .env):
+    # labels:
+    #   traefik.enable: "true"
+    #   traefik.http.routers.arrmate.rule: Host(`${TRAEFIK_DOMAIN}`)
+    #   traefik.http.routers.arrmate.entrypoints: ${TRAEFIK_ENTRYPOINT:-websecure}
+    #   traefik.http.routers.arrmate.tls.certresolver: ${TRAEFIK_CERTRESOLVER:-letsencrypt}
+    #   traefik.http.services.arrmate.loadbalancer.server.port: "8000"
+    #   traefik.docker.network: ${TRAEFIK_NETWORK:-traefik}
+
+  # Local LLM. Comment this service out when using an external Ollama
+  # or the OpenAI/Anthropic providers. GPU acceleration is merged in via
+  # compose.ollama-nvidia.yaml / compose.ollama-amd.yaml.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: arrmate-ollama
+    restart: unless-stopped
+    # Reachable inside arrmate-net as http://ollama:11434; uncomment to
+    # expose on the host:
+    # ports:
+    #   - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - arrmate-net
+    healthcheck:
+      test:
+        - CMD
+        - ollama
+        - list
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+networks:
+  arrmate-net:
+    name: arrmate-net
+  # traefik:
+  #   external: true
+  #   name: ${TRAEFIK_NETWORK:-traefik}
+
+volumes:
+  arrmate-data:
+    driver: local
+  ollama-data:
+    driver: local

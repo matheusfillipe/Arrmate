@@ -1,7 +1,7 @@
 """Ollama LLM provider implementation."""
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import ollama
 
@@ -15,7 +15,7 @@ class OllamaProvider(BaseLLMProvider):
         self,
         model: str = "qwen2.5:7b",
         base_url: str = "http://localhost:11434",
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
     ) -> None:
         """Initialize Ollama provider.
 
@@ -35,8 +35,8 @@ class OllamaProvider(BaseLLMProvider):
         return True
 
     async def parse_command(
-        self, user_input: str, tools: List[Dict[str, Any]], system_prompt: str
-    ) -> Dict[str, Any]:
+        self, user_input: str, tools: list[dict[str, Any]], system_prompt: str
+    ) -> dict[str, Any]:
         """Parse command using Ollama with tool calling.
 
         Args:
@@ -61,7 +61,7 @@ class OllamaProvider(BaseLLMProvider):
             ]
 
             response = self.client.chat(
-                model=self.model,
+                model=self.model or "qwen2.5:7b",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_input},
@@ -96,9 +96,9 @@ class OllamaProvider(BaseLLMProvider):
             )
 
         except Exception as e:
-            raise ValueError(f"Failed to parse command with Ollama: {str(e)}") from e
+            raise ValueError(f"Failed to parse command with Ollama: {e!s}") from e
 
-    def _extract_json_from_text(self, text: str) -> Optional[Dict[str, Any]]:
+    def _extract_json_from_text(self, text: str) -> dict[str, Any] | None:
         """Try to extract structured command data from a text response.
 
         Some models respond with JSON in the text instead of using tool calls.
@@ -113,7 +113,8 @@ class OllamaProvider(BaseLLMProvider):
             try:
                 data = json.loads(json_match.group(1))
                 if "action" in data and "media_type" in data:
-                    return data
+                    parsed: dict[str, Any] = data
+                    return parsed
             except json.JSONDecodeError:
                 pass
 
@@ -123,51 +124,8 @@ class OllamaProvider(BaseLLMProvider):
             try:
                 data = json.loads(json_match.group(0))
                 if "action" in data and "media_type" in data:
-                    return data
+                    return parsed
             except json.JSONDecodeError:
                 pass
 
         return None
-
-    async def generate_response(
-        self, prompt: str, context: Optional[Dict[str, Any]] = None
-    ) -> str:
-        """Generate a response using Ollama.
-
-        Args:
-            prompt: The prompt to respond to
-            context: Optional context (execution result, error details, etc.)
-
-        Returns:
-            Generated response
-        """
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful media server assistant. "
-                    "Report the outcome of media library actions in plain English. "
-                    "Be concise (1-3 sentences). "
-                    "If successful, confirm what was done. "
-                    "If an error occurred, explain it clearly and suggest what the user can check. "
-                    "Never include raw JSON, internal IDs, or technical stack traces in your response."
-                ),
-            }
-        ]
-
-        if context:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": f"Action result: {json.dumps(context)}",
-                }
-            )
-
-        messages.append({"role": "user", "content": prompt})
-
-        response = self.client.chat(
-            model=self.model,
-            messages=messages,
-        )
-
-        return response.message.content or ""

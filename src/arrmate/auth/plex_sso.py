@@ -20,7 +20,7 @@ Security notes:
 """
 
 import hashlib
-from typing import Optional, Tuple
+import logging
 
 import httpx
 from fastapi import Request
@@ -29,6 +29,7 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from .session import _COOKIE_SECURE
 
+logger = logging.getLogger(__name__)
 
 PLEX_TV_API = "https://plex.tv/api/v2"
 PLEX_APP_AUTH = "https://app.plex.tv/auth"
@@ -46,6 +47,7 @@ _PLEX_HEADERS = {
 
 # ── Client identifier ────────────────────────────────────────────────────────
 
+
 def plex_client_id(secret_key: str) -> str:
     """Derive a stable, instance-specific Plex Client Identifier.
 
@@ -53,14 +55,13 @@ def plex_client_id(secret_key: str) -> str:
     We derive it deterministically from the instance secret so it is stable
     across restarts without needing a separate setting.
     """
-    return hashlib.sha256(
-        f"arrmate-plex-client-{secret_key}".encode()
-    ).hexdigest()[:32]
+    return hashlib.sha256(f"arrmate-plex-client-{secret_key}".encode()).hexdigest()[:32]
 
 
 # ── Plex API calls ───────────────────────────────────────────────────────────
 
-async def request_pin(client_id: str) -> Tuple[int, str]:
+
+async def request_pin(client_id: str) -> tuple[int, str]:
     """Request a new PIN from plex.tv.
 
     Returns (pin_id: int, pin_code: str).
@@ -77,7 +78,7 @@ async def request_pin(client_id: str) -> Tuple[int, str]:
         return int(data["id"]), str(data["code"])
 
 
-async def validate_pin(pin_id: int, client_id: str) -> Optional[str]:
+async def validate_pin(pin_id: int, client_id: str) -> str | None:
     """Check whether a PIN has been claimed by the user.
 
     Returns the authToken string if the user has authorised, or None if not
@@ -112,10 +113,12 @@ async def get_plex_user(auth_token: str) -> dict:
             },
         )
         resp.raise_for_status()
-        return resp.json()
+        user: dict = resp.json()
+        return user
 
 
 # ── Auth URL builder ─────────────────────────────────────────────────────────
+
 
 def build_plex_auth_url(client_id: str, code: str, forward_url: str) -> str:
     """Build the plex.tv auth page URL.
@@ -124,18 +127,22 @@ def build_plex_auth_url(client_id: str, code: str, forward_url: str) -> str:
     Arrmate.  Plex will redirect them back to forward_url when done.
     """
     from urllib.parse import urlencode
-    params = urlencode({
-        "clientID": client_id,
-        "code": code,
-        "forwardUrl": forward_url,
-        "context[device][product]": "Arrmate",
-    })
+
+    params = urlencode(
+        {
+            "clientID": client_id,
+            "code": code,
+            "forwardUrl": forward_url,
+            "context[device][product]": "Arrmate",
+        }
+    )
     # Plex auth uses a fragment (hash) URL — note the '#?' prefix which Plex's
     # JS expects when parsing the fragment as a query string.
     return f"{PLEX_APP_AUTH}#?{params}"
 
 
 # ── State cookie ─────────────────────────────────────────────────────────────
+
 
 def set_plex_state_cookie(
     response: Response,
@@ -163,7 +170,7 @@ def set_plex_state_cookie(
 def get_plex_state(
     request: Request,
     secret_key: str,
-) -> Optional[Tuple[int, str]]:
+) -> tuple[int, str] | None:
     """Read and validate the Plex state cookie.
 
     Returns (pin_id, next_url) on success, or None if the cookie is missing,
@@ -187,6 +194,7 @@ def clear_plex_state_cookie(response: Response) -> None:
 
 # ── Plex friends / shared users ──────────────────────────────────────────────
 
+
 async def get_plex_friend_uuids(server_token: str, client_id: str) -> set[str]:
     """Fetch the UUIDs of all Plex friends/shared users for the server's owner.
 
@@ -208,6 +216,6 @@ async def get_plex_friend_uuids(server_token: str, client_id: str) -> set[str]:
                     uid = friend.get("uuid") or friend.get("id")
                     if uid:
                         uuids.add(str(uid))
-    except Exception:
-        pass  # Non-fatal — caller decides what to do with an empty set
+    except httpx.HTTPError:
+        logger.debug("friend list unavailable", exc_info=True)
     return uuids

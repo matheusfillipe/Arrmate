@@ -9,9 +9,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic_ai import Agent, FinalResultEvent, FunctionToolCallEvent, FunctionToolResultEvent
 from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
 
-from ..auth import user_db
-from ..auth.dependencies import get_current_user
-from ..interfaces.web.routes import templates
+from arrmate.auth import user_db
+from arrmate.auth.dependencies import get_current_user
+from arrmate.interfaces.web.routes import templates
+
 from . import store
 from .deps import AgentDeps
 from .models import RUN_USAGE_LIMITS, get_agent
@@ -101,7 +102,7 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
 
     try:
         body = await request.json()
-    except Exception:
+    except json.JSONDecodeError:
         return JSONResponse(status_code=400, content={"detail": "invalid JSON body"})
 
     thread_id = str(body.get("thread_id") or "")

@@ -41,6 +41,7 @@ htmlcov/
 # Documentation
 docs/
 *.md
+!README.md
 
 # Logs
 *.log
@@ -52,3 +53,11 @@ docs/
 # OS
 .DS_Store
 Thumbs.db
+
+.venv/
+.git/
+.github/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+data/
