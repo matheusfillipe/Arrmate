@@ -169,7 +169,21 @@ function chat() {
       if (!text || this.streaming) return;
       this.input = '';
       this.messages.push({ role: 'user', text: text, cards: [] });
-      const assistant = { role: 'assistant', text: '', cards: [] };
+      // Reassigned to the array's reactive proxy once pushed (see openAssistant): writing to
+      // the plain object updates the data but never notifies Alpine, so the bubble stays
+      // blank until a reload re-renders from the server.
+      let assistant = { role: 'assistant', text: '', cards: [] };
+      let started = false;
+
+      // Alpine hands back a proxy for what the array holds; only writes through that proxy
+      // re-render. Swap the plain object for it the moment it is pushed.
+      const openAssistant = () => {
+        if (started) return;
+        this.messages.push(assistant);
+        assistant = this.messages[this.messages.length - 1];
+        started = true;
+      };
+
       this.streaming = true;
       this.startWaiting();
       this.scrollDown();
@@ -185,7 +199,6 @@ function chat() {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
-        let started = false;
 
         const pump = () => reader.read().then(({ done, value }) => {
           if (done) { this.stopWaiting(); return; }
@@ -203,11 +216,11 @@ function chat() {
                 this.threads.unshift({ id: this.threadId, title: text.slice(0, 60) });
               }
             } else if (ev.event === 'delta') {
-              if (!started) { this.messages.push(assistant); started = true; }
+              openAssistant();
               assistant.text += ev.data.text;
               this.scrollDown();
             } else if (ev.event === 'tool') {
-              if (!started) { this.messages.push(assistant); started = true; }
+              openAssistant();
               if (ev.data.phase === 'start') {
                 assistant.cards.push({
                   name: ev.data.name, phase: 'start', ok: true, open: false,
@@ -227,10 +240,10 @@ function chat() {
               }
               this.scrollDown();
             } else if (ev.event === 'done') {
-              if (!started) this.messages.push(assistant);
+              openAssistant();
               this.stopWaiting();
             } else if (ev.event === 'error') {
-              if (!started) { this.messages.push(assistant); started = true; }
+              openAssistant();
               assistant.text += (assistant.text ? '\n\n' : '') +
                 '⚠️ ' + ev.data.message;
               this.stopWaiting();
@@ -241,6 +254,7 @@ function chat() {
         });
         return pump();
       }).catch(err => {
+        openAssistant();
         assistant.text += (assistant.text ? '\n\n' : '') + '⚠️ ' + err;
         this.stopWaiting();
       });
