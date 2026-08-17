@@ -1,6 +1,5 @@
 """SQLite persistence for chat threads and pydantic-ai message history."""
 
-import json
 import logging
 import secrets
 import sqlite3
@@ -8,6 +7,9 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+
+import pydantic
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +159,12 @@ def save_history(thread_id: str, history_json: str) -> None:
         conn.commit()
 
 
-def load_history(thread_id: str) -> list | None:
+def load_history(thread_id: str) -> list[ModelMessage] | None:
+    """Rehydrate the stored history into the message objects the agent expects.
+
+    Handing the agent raw dicts fails deep inside pydantic-ai, so a thread that cannot be
+    validated is dropped rather than replayed.
+    """
     with _get_conn() as conn:
         row = conn.execute(
             "SELECT history FROM thread_history WHERE thread_id = ?", (thread_id,)
@@ -165,8 +172,8 @@ def load_history(thread_id: str) -> list | None:
     if not row or not row["history"]:
         return None
     try:
-        data = json.loads(row["history"])
-    except json.JSONDecodeError:
-        logger.warning("thread %s history corrupted, dropping", thread_id)
+        messages = ModelMessagesTypeAdapter.validate_json(row["history"])
+    except pydantic.ValidationError:
+        logger.warning("thread %s history unreadable, dropping", thread_id)
         return None
-    return data[-_THREAD_HISTORY_MAX:] if isinstance(data, list) else None
+    return messages[-_THREAD_HISTORY_MAX:] or None
