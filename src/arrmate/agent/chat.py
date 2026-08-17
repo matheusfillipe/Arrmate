@@ -55,20 +55,35 @@ async def _with_heartbeat(events: AsyncIterator[str]) -> AsyncIterator[str]:
     A single indexer search can run for a minute with nothing to say. Without a byte on the
     wire the page looks frozen and any idle proxy timeout is free to drop the response, so
     silence is filled with pings the client counts as progress.
+
+    The agent run is drained by one task from end to end. Stepping the generator from a fresh
+    task per item instead would move the exit of pydantic-ai's cancel scope off the task that
+    entered it, which fails the run right after it has produced its answer.
     """
-    pending = asyncio.ensure_future(events.__anext__())
+    frames: asyncio.Queue[str | None] = asyncio.Queue()
+
+    async def drain() -> None:
+        try:
+            async for frame in events:
+                await frames.put(frame)
+        finally:
+            await frames.put(None)
+
+    producer = asyncio.create_task(drain())
     try:
         while True:
             try:
-                yield await asyncio.wait_for(asyncio.shield(pending), _HEARTBEAT_SECONDS)
+                frame = await asyncio.wait_for(frames.get(), _HEARTBEAT_SECONDS)
             except TimeoutError:
                 yield "event: ping\ndata: {}\n\n"
                 continue
-            except StopAsyncIteration:
-                return
-            pending = asyncio.ensure_future(events.__anext__())
+            if frame is None:
+                break
+            yield frame
+        # The producer is already finished; awaiting it surfaces whatever it raised.
+        await producer
     finally:
-        pending.cancel()
+        producer.cancel()
 
 
 def _text_chunk(event: AgentStreamEvent) -> str:

@@ -320,7 +320,10 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
             def slim(releases: list) -> list:
                 return [
                     {
+                        # guid and indexerId together are what a grab is keyed on. Dropping
+                        # indexerId leaves every push_release rejected with a 400.
                         "guid": r.get("guid"),
+                        "indexerId": r.get("indexerId"),
                         "title": r.get("title"),
                         "indexer": r.get("indexer"),
                         "size": r.get("size"),
@@ -448,12 +451,17 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def push_release(ctx: RunContext[AgentDeps], media_type: str, release_json: str) -> str:
         """Grab one specific release previously returned by interactive_search.
 
-        Pass the release's full JSON object verbatim as release_json.
+        Pass that release's JSON object verbatim as release_json; its guid and indexerId are
+        what identify the grab.
         """
 
         async def body() -> Any:
             ctx.deps.require_write("push_release")
             release = json.loads(release_json)
+            if not release.get("indexerId"):
+                raise ValueError(
+                    "release_json needs the indexerId from interactive_search, not just a guid"
+                )
             if media_type == "tv":
                 async with ctx.deps.sonarr() as c:
                     return await c.push_release(release)

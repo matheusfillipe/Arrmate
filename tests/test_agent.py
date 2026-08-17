@@ -211,3 +211,17 @@ class TestHeartbeat:
 
         with pytest.raises(RuntimeError, match="upstream died"):
             [f async for f in chat._with_heartbeat(boom())]
+
+
+class TestReleaseProjection:
+    """A grab is keyed on guid + indexerId; a search result missing either cannot be pushed."""
+
+    def test_indexer_id_survives_compaction(self):
+        release = {
+            "guid": "https://indexer.example/abc",
+            "indexerId": 12,
+            "title": "Futurama S11E01 1080p WEB",
+            "seeders": 2557,
+            "rejections": [],
+        }
+        assert _compact(release)["indexerId"] == 12
