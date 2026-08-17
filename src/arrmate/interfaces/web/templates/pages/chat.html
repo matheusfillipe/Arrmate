@@ -108,9 +108,8 @@ function chat() {
     streaming: false,
 
     init() {
-      if (!this.threadId && this.threads.length === 0) {
-        // nothing yet — first send() creates the thread
-      }
+      // Opening a thread should land on the latest turn, not the top of the transcript.
+      this.scrollDown();
     },
 
     scrollDown() {
