@@ -2,13 +2,19 @@
 
 import pytest
 from pydantic_ai.messages import (
+    FinalResultEvent,
     ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
+    PartDeltaEvent,
+    PartStartEvent,
     TextPart,
+    TextPartDelta,
+    ThinkingPart,
     UserPromptPart,
 )
 
+from arrmate.agent.chat import _text_chunk
 from arrmate.agent.deps import AgentDeps
 from arrmate.agent.tools import _compact, _wrap
 
@@ -121,3 +127,23 @@ class TestHistoryRoundTrip:
         tmp_chat_db.save_history(thread_id, "[]")
 
         assert tmp_chat_db.load_history(thread_id) is None
+
+
+class TestTextChunk:
+    """The reply's opening words arrive on part-start, the rest as deltas; both must stream."""
+
+    def test_reads_part_start(self):
+        ev = PartStartEvent(index=0, part=TextPart(content="Hello"))
+        assert _text_chunk(ev) == "Hello"
+
+    def test_reads_delta(self):
+        ev = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" there"))
+        assert _text_chunk(ev) == " there"
+
+    def test_ignores_thinking(self):
+        ev = PartStartEvent(index=0, part=ThinkingPart(content="pondering"))
+        assert _text_chunk(ev) == ""
+
+    def test_ignores_final_result_marker(self):
+        """Breaking on this event was what silenced the whole answer."""
+        assert _text_chunk(FinalResultEvent(tool_name=None, tool_call_id=None)) == ""

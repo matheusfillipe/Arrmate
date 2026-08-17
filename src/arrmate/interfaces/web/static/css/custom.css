@@ -1,3 +1,10 @@
+/* ===== Alpine ===== */
+/* Alpine loads deferred and strips x-cloak once it boots. Without this rule the attribute is
+   inert and every dropdown renders expanded on each page load until Alpine catches up. */
+[x-cloak] {
+    display: none !important;
+}
+
 /* ===== HTMX Loading Indicators ===== */
 .htmx-indicator {
     display: none;

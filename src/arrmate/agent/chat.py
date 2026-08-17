@@ -6,8 +6,14 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from pydantic_ai import Agent, FinalResultEvent, FunctionToolCallEvent, FunctionToolResultEvent
-from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
+from pydantic_ai import Agent, FunctionToolCallEvent, FunctionToolResultEvent
+from pydantic_ai.messages import (
+    AgentStreamEvent,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+)
 
 from arrmate.auth import user_db
 from arrmate.auth.dependencies import get_current_user
@@ -38,6 +44,22 @@ def _page_context(user: dict, threads: list, thread: dict | None, messages: list
 
 def _init_once() -> None:
     store.init_db()
+
+
+def _text_chunk(event: AgentStreamEvent) -> str:
+    """Answer text carried by a model-stream event, if any.
+
+    The opening piece of a reply arrives on the part-start event and the rest as deltas, so
+    both shapes have to be read or the first words go missing. Thinking parts are skipped;
+    only the answer reaches the user.
+    """
+    match event:
+        case PartStartEvent(part=TextPart(content=text)):
+            return text
+        case PartDeltaEvent(delta=TextPartDelta(content_delta=text)):
+            return text
+        case _:
+            return ""
 
 
 @router.get("", response_class=HTMLResponse)
@@ -125,6 +147,7 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
 
     async def event_stream() -> AsyncIterator[str]:
         yield f"event: meta\ndata: {json.dumps({'thread_id': thread_id})}\n\n"
+        streamed = False
         try:
             agent: Agent[AgentDeps, str] = get_agent()
             history = store.load_history(thread_id)
@@ -139,16 +162,12 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                     if Agent.is_model_request_node(node):
                         async with node.stream(run.ctx) as stream:
                             async for ev in stream:
-                                if isinstance(ev, FinalResultEvent):
-                                    break
-                                if (
-                                    isinstance(ev, PartDeltaEvent)
-                                    and isinstance(ev.delta, TextPartDelta)
-                                    and ev.delta.content_delta
-                                ):
+                                chunk = _text_chunk(ev)
+                                if chunk:
+                                    streamed = True
                                     yield (
                                         "event: delta\ndata: "
-                                        + json.dumps({"text": ev.delta.content_delta})
+                                        + json.dumps({"text": chunk})
                                         + "\n\n"
                                     )
                     elif Agent.is_call_tools_node(node):
@@ -181,6 +200,8 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
 
                 result = run.result
                 final_text = result.output if result else ""
+                if final_text and not streamed:
+                    yield "event: delta\ndata: " + json.dumps({"text": final_text}) + "\n\n"
                 store.add_message(thread_id, "assistant", final_text)
                 store.save_history(
                     thread_id, result.all_messages_json().decode() if result else "[]"
