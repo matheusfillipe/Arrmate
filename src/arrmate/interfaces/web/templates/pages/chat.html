@@ -61,12 +61,13 @@
 
       <div x-show="streaming" x-cloak class="text-gray-400 text-sm px-1">
         <span class="animate-pulse">thinking…</span>
+        <span x-show="waited > 4" x-text="waited + 's'" class="text-gray-500"></span>
       </div>
     </div>
 
     <div class="border-t border-gray-700 p-3">
       <form @submit.prevent="send()" class="flex gap-2">
-        <input x-model="input" :disabled="streaming"
+        <input x-model="input" :disabled="streaming" x-ref="prompt" autofocus
                maxlength="2000"
                placeholder="Ask about your library, diagnose a failed download…"
                class="flex-1 rounded-lg bg-gray-900 border border-gray-700 px-4 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-indigo-500">
@@ -114,10 +115,32 @@ function chat() {
     messages: {{ messages | tojson }},
     input: '',
     streaming: false,
+    waited: 0,
+    waitTimer: null,
 
     init() {
       // Opening a thread should land on the latest turn, not the top of the transcript.
       this.scrollDown();
+      this.focusInput();
+    },
+
+    focusInput() {
+      this.$nextTick(() => this.$refs.prompt && this.$refs.prompt.focus());
+    },
+
+    // A tool call can run for a minute with nothing to show. The elapsed count is the only
+    // sign the run is alive, so it ticks on every event the server sends, pings included.
+    startWaiting() {
+      this.waited = 0;
+      clearInterval(this.waitTimer);
+      this.waitTimer = setInterval(() => this.waited++, 1000);
+    },
+
+    stopWaiting() {
+      clearInterval(this.waitTimer);
+      this.waitTimer = null;
+      this.streaming = false;
+      this.focusInput();
     },
 
     scrollDown() {
@@ -148,6 +171,7 @@ function chat() {
       this.messages.push({ role: 'user', text: text, cards: [] });
       const assistant = { role: 'assistant', text: '', cards: [] };
       this.streaming = true;
+      this.startWaiting();
       this.scrollDown();
 
       fetch('/web/chat/stream', {
@@ -164,7 +188,7 @@ function chat() {
         let started = false;
 
         const pump = () => reader.read().then(({ done, value }) => {
-          if (done) { this.streaming = false; return; }
+          if (done) { this.stopWaiting(); return; }
           buffer += decoder.decode(value, { stream: true });
           let idx;
           while ((idx = buffer.indexOf('\n\n')) >= 0) {
@@ -204,12 +228,12 @@ function chat() {
               this.scrollDown();
             } else if (ev.event === 'done') {
               if (!started) this.messages.push(assistant);
-              this.streaming = false;
+              this.stopWaiting();
             } else if (ev.event === 'error') {
               if (!started) { this.messages.push(assistant); started = true; }
               assistant.text += (assistant.text ? '\n\n' : '') +
                 '⚠️ ' + ev.data.message;
-              this.streaming = false;
+              this.stopWaiting();
             }
           }
           this.scrollDown();
@@ -218,7 +242,7 @@ function chat() {
         return pump();
       }).catch(err => {
         assistant.text += (assistant.text ? '\n\n' : '') + '⚠️ ' + err;
-        this.streaming = false;
+        this.stopWaiting();
       });
     },
   };

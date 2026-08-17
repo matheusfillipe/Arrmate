@@ -1,5 +1,6 @@
 """Chat routes: pages, thread management, and the SSE agent stream."""
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/web/chat", tags=["chat"])
 
 _TOOL_RESULT_PREVIEW = 400
+_HEARTBEAT_SECONDS = 5.0
 
 
 def _page_context(user: dict, threads: list, thread: dict | None, messages: list) -> dict:
@@ -45,6 +47,28 @@ def _page_context(user: dict, threads: list, thread: dict | None, messages: list
 
 def _init_once() -> None:
     store.init_db()
+
+
+async def _with_heartbeat(events: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Forward events, emitting a ping whenever the agent goes quiet.
+
+    A single indexer search can run for a minute with nothing to say. Without a byte on the
+    wire the page looks frozen and any idle proxy timeout is free to drop the response, so
+    silence is filled with pings the client counts as progress.
+    """
+    pending = asyncio.ensure_future(events.__anext__())
+    try:
+        while True:
+            try:
+                yield await asyncio.wait_for(asyncio.shield(pending), _HEARTBEAT_SECONDS)
+            except TimeoutError:
+                yield "event: ping\ndata: {}\n\n"
+                continue
+            except StopAsyncIteration:
+                return
+            pending = asyncio.ensure_future(events.__anext__())
+    finally:
+        pending.cancel()
 
 
 def _text_chunk(event: AgentStreamEvent) -> str:
@@ -234,4 +258,8 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                 + "\n\n"
             )
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        _with_heartbeat(event_stream()),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

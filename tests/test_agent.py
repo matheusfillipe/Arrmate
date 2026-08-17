@@ -1,5 +1,7 @@
 """Tests for the agent layer: store, deps, tools."""
 
+import asyncio
+
 import pytest
 from pydantic_ai.messages import (
     FinalResultEvent,
@@ -14,6 +16,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
+from arrmate.agent import chat
 from arrmate.agent.chat import _text_chunk
 from arrmate.agent.deps import AgentDeps
 from arrmate.agent.tools import _MAX_LIST_ITEMS, _compact, _wrap
@@ -169,3 +172,42 @@ class TestStoredMessageShape:
             ("assistant", "hi back"),
         ]
         assert all(m["cards"] == [] for m in messages)
+
+
+class TestHeartbeat:
+    """A long tool call sends nothing; without pings the page looks frozen."""
+
+    @pytest.mark.asyncio
+    async def test_pings_while_the_agent_is_quiet(self, monkeypatch):
+        monkeypatch.setattr(chat, "_HEARTBEAT_SECONDS", 0.01)
+
+        async def slow():
+            yield "event: meta\ndata: {}\n\n"
+            await asyncio.sleep(0.05)
+            yield "event: done\ndata: {}\n\n"
+
+        frames = [f async for f in chat._with_heartbeat(slow())]
+
+        assert frames[0].startswith("event: meta")
+        assert frames[-1].startswith("event: done")
+        assert any(f.startswith("event: ping") for f in frames)
+
+    @pytest.mark.asyncio
+    async def test_passes_events_through_untouched(self):
+        async def quick():
+            yield "event: delta\ndata: {}\n\n"
+            yield "event: done\ndata: {}\n\n"
+
+        assert [f async for f in chat._with_heartbeat(quick())] == [
+            "event: delta\ndata: {}\n\n",
+            "event: done\ndata: {}\n\n",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_propagates_errors(self):
+        async def boom():
+            yield "event: meta\ndata: {}\n\n"
+            raise RuntimeError("upstream died")
+
+        with pytest.raises(RuntimeError, match="upstream died"):
+            [f async for f in chat._with_heartbeat(boom())]
