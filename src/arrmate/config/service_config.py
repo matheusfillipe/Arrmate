@@ -44,6 +44,11 @@ CONFIGURABLE_FIELDS: set[str] = {
     "nzbget_url", "nzbget_username", "nzbget_password",
     "qbittorrent_url", "qbittorrent_username", "qbittorrent_password",
     "transmission_url", "transmission_username", "transmission_password",
+    # Cleanuparr (experimental)
+    "cleanuparr_url", "cleanuparr_api_key",
+    # Jellyfin / Jellyseerr
+    "jellyfin_url", "jellyfin_api_key",
+    "jellyseerr_url", "jellyseerr_api_key",
     # Notification webhooks
     "slack_webhook_url",
     "discord_webhook_url",

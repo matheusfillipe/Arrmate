@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from ...auth.dependencies import AuthRedirectException, get_api_user
 from ...auth import user_db
 from ...auth.rate_limit import login_limiter
+from ...agent.chat import router as chat_router
 from ...clients.discovery import discover_services
 from ...config.service_config import apply_saved_config
 from ...config.settings import settings
@@ -102,6 +103,7 @@ async def auth_redirect_handler(request: Request, exc: AuthRedirectException):
 # Include web routers
 app.include_router(auth_router)
 app.include_router(web_router)
+app.include_router(chat_router)
 
 # Global components (initialized on startup)
 parser = None
@@ -117,6 +119,12 @@ async def startup_event() -> None:
         user_db.init_db()
     except Exception as e:
         logging.getLogger(__name__).warning("user_db init failed: %s", e)
+    try:
+        from ...agent import store as chat_store
+
+        chat_store.init_db()
+    except Exception as e:
+        logging.getLogger(__name__).warning("chat store init failed: %s", e)
     services = await discover_services()
     available = [name for name, info in services.items() if info.available]
     parser = CommandParser(available_services=available or None)

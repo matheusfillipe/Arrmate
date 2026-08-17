@@ -1,7 +1,7 @@
 """NZBget JSON-RPC download manager client."""
 
 import logging
-from typing import Any, List, Optional
+from typing import Any
 
 import httpx
 
@@ -16,7 +16,7 @@ class NZBgetClient:
         self.username = username
         self.password = password
         self.timeout = timeout
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -32,7 +32,7 @@ class NZBgetClient:
             await self._client.aclose()
             self._client = None
 
-    async def _rpc(self, method: str, params: Optional[List[Any]] = None) -> Any:
+    async def _rpc(self, method: str, params: list[Any] | None = None) -> Any:
         url = f"{self.base_url}/jsonrpc"
         payload = {"method": method, "params": params or [], "id": 1}
         resp = await self.client.post(url, json=payload)
@@ -125,3 +125,18 @@ class NZBgetClient:
             return result.get("result", False)
         except Exception:
             return False
+
+    async def get_item_files(self, nzo_id: int) -> list[Dict[str, Any]]:
+        """List the files inside an NZB group.
+
+        Args:
+            nzo_id: NZBID of the group
+
+        Returns:
+            List of file dicts with name and size (bytes)
+        """
+        result = await self._rpc("listfiles", [0, 0, nzo_id])
+        return [
+            {"name": f.get("FileName", ""), "size": f.get("FileSize", 0)}
+            for f in result.get("result", []) or []
+        ]

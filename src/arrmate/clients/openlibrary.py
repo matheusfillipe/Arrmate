@@ -4,7 +4,7 @@ Open Library is free and requires no API key.
 https://openlibrary.org/developers/api
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
@@ -16,7 +16,7 @@ class OpenLibraryClient:
     COVER_BASE = "https://covers.openlibrary.org/b/id"
 
     def __init__(self) -> None:
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -32,19 +32,19 @@ class OpenLibraryClient:
             await self._client.aclose()
             self._client = None
 
-    async def _get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Any:
+    async def _get(self, endpoint: str, params: dict[str, Any] | None = None) -> Any:
         url = f"{self.BASE_URL}/{endpoint.lstrip('/')}"
         resp = await self.client.get(url, params=params or {})
         resp.raise_for_status()
         return resp.json()
 
-    def cover_url(self, cover_id: int | None, size: str = "M") -> Optional[str]:
+    def cover_url(self, cover_id: int | None, size: str = "M") -> str | None:
         """Return full cover image URL for a given Open Library cover ID."""
         if not cover_id:
             return None
         return f"{self.COVER_BASE}/{cover_id}-{size}.jpg"
 
-    def _norm_trending(self, work: Dict[str, Any]) -> Dict[str, Any]:
+    def _norm_trending(self, work: dict[str, Any]) -> dict[str, Any]:
         """Normalise a trending/works entry into a common card dict."""
         authors = work.get("author_name") or []
         year = work.get("first_publish_year")
@@ -60,7 +60,7 @@ class OpenLibraryClient:
             "media_type": "book",
         }
 
-    def _norm_subject(self, work: Dict[str, Any]) -> Dict[str, Any]:
+    def _norm_subject(self, work: dict[str, Any]) -> dict[str, Any]:
         """Normalise a subject/works entry (slightly different schema)."""
         authors = work.get("authors") or []
         author_names = [a.get("name", "") for a in authors]
@@ -76,17 +76,17 @@ class OpenLibraryClient:
             "media_type": "book",
         }
 
-    async def get_trending_daily(self) -> List[Dict[str, Any]]:
+    async def get_trending_daily(self) -> list[dict[str, Any]]:
         """Books trending today on Open Library."""
         data = await self._get("trending/daily.json", {"limit": 24})
         return [self._norm_trending(w) for w in data.get("works", [])]
 
-    async def get_trending_weekly(self) -> List[Dict[str, Any]]:
+    async def get_trending_weekly(self) -> list[dict[str, Any]]:
         """Books trending this week on Open Library."""
         data = await self._get("trending/weekly.json", {"limit": 24})
         return [self._norm_trending(w) for w in data.get("works", [])]
 
-    async def get_subject(self, subject: str) -> List[Dict[str, Any]]:
+    async def get_subject(self, subject: str) -> list[dict[str, Any]]:
         """Top books for a genre/subject (e.g. 'fiction', 'mystery')."""
         data = await self._get(f"subjects/{subject}.json", {"limit": 24})
         return [self._norm_subject(w) for w in data.get("works", [])]

@@ -7,7 +7,7 @@ rather than managing media directly. Examples include:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
@@ -30,7 +30,7 @@ class BaseCompanionClient(ABC):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -48,7 +48,7 @@ class BaseCompanionClient(ABC):
             await self._client.aclose()
             self._client = None
 
-    async def _get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Any:
+    async def _get(self, endpoint: str, params: dict[str, Any] | None = None) -> Any:
         """Make a GET request.
 
         Args:
@@ -66,9 +66,7 @@ class BaseCompanionClient(ABC):
         response.raise_for_status()
         return response.json()
 
-    async def _post(
-        self, endpoint: str, data: Optional[Dict[str, Any]] = None
-    ) -> Any:
+    async def _post(self, endpoint: str, data: dict[str, Any] | None = None) -> Any:
         """Make a POST request.
 
         Args:
@@ -104,10 +102,9 @@ class BaseCompanionClient(ABC):
         Returns:
             True if connection is successful, False otherwise
         """
-        pass
 
     @abstractmethod
-    async def get_missing_items(self, service_type: str) -> List[Dict[str, Any]]:
+    async def get_missing_items(self, service_type: str) -> list[dict[str, Any]]:
         """Get items missing from the companion service.
 
         For example, Bazarr would return episodes/movies missing subtitles.
@@ -118,9 +115,8 @@ class BaseCompanionClient(ABC):
         Returns:
             List of missing items
         """
-        pass
 
-    async def get_system_status(self) -> Dict[str, Any]:
+    async def get_system_status(self) -> dict[str, Any]:
         """Get system status and version.
 
         Default implementation - can be overridden by subclasses.

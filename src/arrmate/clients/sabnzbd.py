@@ -1,7 +1,7 @@
 """SABnzbd download manager client."""
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -15,7 +15,7 @@ class SABnzbdClient:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -38,7 +38,7 @@ class SABnzbdClient:
         # Default: bare host:port — SABnzbd Docker (linuxserver) uses /api at root
         return f"{url}/api"
 
-    async def _get(self, mode: str, extra: Optional[Dict[str, Any]] = None) -> Any:
+    async def _get(self, mode: str, extra: dict[str, Any] | None = None) -> Any:
         params = {"apikey": self.api_key, "output": "json", "mode": mode}
         if extra:
             params.update(extra)
@@ -53,11 +53,11 @@ class SABnzbdClient:
         except Exception:
             return False
 
-    async def get_status(self) -> Dict[str, Any]:
+    async def get_status(self) -> dict[str, Any]:
         """Get server status including speed, disk space, and pause state."""
         return await self._get("fullstatus")
 
-    async def get_queue(self) -> Dict[str, Any]:
+    async def get_queue(self) -> dict[str, Any]:
         """Get the download queue."""
         return await self._get("queue")
 
@@ -79,16 +79,18 @@ class SABnzbdClient:
         """Set download speed limit in KB/s (0 = unlimited)."""
         try:
             value = f"{kbps}K" if kbps > 0 else "0"
-            await self._get("config", {"section": "misc", "keyword": "bandwidth_limit", "value": value})
+            await self._get(
+                "config", {"section": "misc", "keyword": "bandwidth_limit", "value": value}
+            )
             return True
         except Exception:
             return False
 
     async def delete_item(self, nzo_id: str, delete_files: bool = False) -> bool:
         try:
-            await self._get("queue", {
-                "name": "delete", "value": nzo_id, "del_files": 1 if delete_files else 0
-            })
+            await self._get(
+                "queue", {"name": "delete", "value": nzo_id, "del_files": 1 if delete_files else 0}
+            )
             return True
         except Exception:
             return False
@@ -132,3 +134,23 @@ class SABnzbdClient:
             return True
         except Exception:
             return False
+
+    async def get_item_files(self, nzo_id: str) -> list[dict[str, Any]]:
+        """List the files inside a queue job.
+
+        Args:
+            nzo_id: NZO ID of the job
+
+        Returns:
+            List of file dicts with name and size (bytes) where SAB reports it
+        """
+        data = await self._get("files", {"value": nzo_id})
+        files = data.get("files", []) if isinstance(data, dict) else []
+        return [
+            {
+                "name": f.get("filename", ""),
+                "size": f.get("bytes", 0),
+                "status": f.get("status", ""),
+            }
+            for f in files
+        ]

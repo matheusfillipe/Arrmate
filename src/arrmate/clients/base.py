@@ -1,7 +1,7 @@
 """Base class for media service API clients."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
@@ -20,7 +20,7 @@ class BaseMediaClient(ABC):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -38,7 +38,7 @@ class BaseMediaClient(ABC):
             await self._client.aclose()
             self._client = None
 
-    async def _get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Any:
+    async def _get(self, endpoint: str, params: dict[str, Any] | None = None) -> Any:
         """Make a GET request.
 
         Args:
@@ -56,9 +56,21 @@ class BaseMediaClient(ABC):
         response.raise_for_status()
         return response.json()
 
-    async def _post(
-        self, endpoint: str, data: Optional[Dict[str, Any]] = None
+    async def _get_with_timeout(
+        self, endpoint: str, params: dict[str, Any] | None = None, timeout: float = 180.0
     ) -> Any:
+        """Make a GET request with an extended per-request timeout.
+
+        Interactive release searches query live indexers and can take 30-180s;
+        they must not inherit the client-wide short timeout or the agent will
+        conclude the service is broken and retry, doubling indexer load.
+        """
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        response = await self.client.get(url, params=params, timeout=timeout)
+        response.raise_for_status()
+        return response.json()
+
+    async def _post(self, endpoint: str, data: dict[str, Any] | None = None) -> Any:
         """Make a POST request.
 
         Args:
@@ -73,7 +85,7 @@ class BaseMediaClient(ABC):
         response.raise_for_status()
         return response.json()
 
-    async def _put(self, endpoint: str, data: Optional[Dict[str, Any]] = None) -> Any:
+    async def _put(self, endpoint: str, data: dict[str, Any] | None = None) -> Any:
         """Make a PUT request.
 
         Args:
@@ -109,10 +121,9 @@ class BaseMediaClient(ABC):
         Returns:
             True if connection is successful, False otherwise
         """
-        pass
 
     @abstractmethod
-    async def search(self, query: str) -> List[Dict[str, Any]]:
+    async def search(self, query: str) -> list[dict[str, Any]]:
         """Search for media items.
 
         Args:
@@ -121,10 +132,9 @@ class BaseMediaClient(ABC):
         Returns:
             List of matching items
         """
-        pass
 
     @abstractmethod
-    async def get_item(self, item_id: int) -> Dict[str, Any]:
+    async def get_item(self, item_id: int) -> dict[str, Any]:
         """Get details of a specific media item.
 
         Args:
@@ -133,7 +143,6 @@ class BaseMediaClient(ABC):
         Returns:
             Item details
         """
-        pass
 
     @abstractmethod
     async def delete_item(self, item_id: int, delete_files: bool = False) -> bool:
@@ -146,9 +155,8 @@ class BaseMediaClient(ABC):
         Returns:
             True if successful
         """
-        pass
 
-    async def get_system_status(self) -> Dict[str, Any]:
+    async def get_system_status(self) -> dict[str, Any]:
         """Get system status and version.
 
         Returns:

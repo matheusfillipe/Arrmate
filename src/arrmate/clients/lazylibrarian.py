@@ -5,7 +5,7 @@ Sonarr/Radarr, with support for NZB/torrent downloads, Goodreads/GoogleBooks
 metadata, and Calibre integration.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib.parse import quote_plus
 
 from .base import BaseMediaClient
@@ -30,9 +30,7 @@ class LazyLibrarianClient(BaseMediaClient):
         except Exception:
             return False
 
-    async def _api_call(
-        self, cmd: str, params: Optional[Dict[str, Any]] = None
-    ) -> Any:
+    async def _api_call(self, cmd: str, params: dict[str, Any] | None = None) -> Any:
         """Make a LazyLibrarian API call.
 
         LazyLibrarian uses ?cmd= style API with API key parameter.
@@ -61,7 +59,7 @@ class LazyLibrarianClient(BaseMediaClient):
             return result
         return result
 
-    async def get_system_status(self) -> Dict[str, Any]:
+    async def get_system_status(self) -> dict[str, Any]:
         """Get system version.
 
         Returns:
@@ -70,7 +68,7 @@ class LazyLibrarianClient(BaseMediaClient):
         version = await self._api_call("getVersion")
         return {"version": version}
 
-    async def search(self, query: str) -> List[Dict[str, Any]]:
+    async def search(self, query: str) -> list[dict[str, Any]]:
         """Search for books or authors.
 
         Args:
@@ -85,7 +83,7 @@ class LazyLibrarianClient(BaseMediaClient):
             return result.get("results", [])
         return []
 
-    async def find_author(self, name: str) -> List[Dict[str, Any]]:
+    async def find_author(self, name: str) -> list[dict[str, Any]]:
         """Search for an author on GoodReads/GoogleBooks.
 
         Args:
@@ -99,7 +97,7 @@ class LazyLibrarianClient(BaseMediaClient):
             return result.get("results", [])
         return []
 
-    async def find_book(self, name: str) -> List[Dict[str, Any]]:
+    async def find_book(self, name: str) -> list[dict[str, Any]]:
         """Search for a book on GoodReads/GoogleBooks.
 
         Args:
@@ -113,7 +111,7 @@ class LazyLibrarianClient(BaseMediaClient):
             return result.get("results", [])
         return []
 
-    async def add_author(self, name: str) -> Dict[str, Any]:
+    async def add_author(self, name: str) -> dict[str, Any]:
         """Add an author to the database.
 
         Args:
@@ -124,7 +122,7 @@ class LazyLibrarianClient(BaseMediaClient):
         """
         return await self._api_call("addAuthor", {"name": name})
 
-    async def add_author_by_id(self, author_id: str) -> Dict[str, Any]:
+    async def add_author_by_id(self, author_id: str) -> dict[str, Any]:
         """Add an author by their AuthorID.
 
         Args:
@@ -135,7 +133,7 @@ class LazyLibrarianClient(BaseMediaClient):
         """
         return await self._api_call("addAuthorID", {"id": author_id})
 
-    async def get_author(self, author_id: str) -> Dict[str, Any]:
+    async def get_author(self, author_id: str) -> dict[str, Any]:
         """Get author details and their books.
 
         Args:
@@ -149,7 +147,7 @@ class LazyLibrarianClient(BaseMediaClient):
             return result
         return {}
 
-    async def get_item(self, item_id: int) -> Dict[str, Any]:
+    async def get_item(self, item_id: int) -> dict[str, Any]:
         """Get author details by ID.
 
         Args:
@@ -173,7 +171,7 @@ class LazyLibrarianClient(BaseMediaClient):
         result = await self._api_call("removeAuthor", {"id": str(item_id)})
         return result == "OK" or (isinstance(result, dict) and result.get("success"))
 
-    async def pause_author(self, author_id: str) -> Dict[str, Any]:
+    async def pause_author(self, author_id: str) -> dict[str, Any]:
         """Pause author monitoring.
 
         Args:
@@ -184,7 +182,7 @@ class LazyLibrarianClient(BaseMediaClient):
         """
         return await self._api_call("pauseAuthor", {"id": author_id})
 
-    async def resume_author(self, author_id: str) -> Dict[str, Any]:
+    async def resume_author(self, author_id: str) -> dict[str, Any]:
         """Resume author monitoring.
 
         Args:
@@ -195,7 +193,7 @@ class LazyLibrarianClient(BaseMediaClient):
         """
         return await self._api_call("resumeAuthor", {"id": author_id})
 
-    async def refresh_author(self, name: str, refresh: bool = True) -> Dict[str, Any]:
+    async def refresh_author(self, name: str, refresh: bool = True) -> dict[str, Any]:
         """Refresh author data from GoodReads/GoogleBooks.
 
         Args:
@@ -210,7 +208,7 @@ class LazyLibrarianClient(BaseMediaClient):
             params["refresh"] = "1"
         return await self._api_call("refreshAuthor", params)
 
-    async def get_all_books(self) -> List[Dict[str, Any]]:
+    async def get_all_books(self) -> list[dict[str, Any]]:
         """Get all books in the database.
 
         Returns:
@@ -221,7 +219,7 @@ class LazyLibrarianClient(BaseMediaClient):
             return result.get("books", [])
         return []
 
-    async def get_all_authors(self) -> List[Dict[str, Any]]:
+    async def get_all_authors(self) -> list[dict[str, Any]]:
         """Get all authors (index).
 
         Returns:
@@ -232,7 +230,7 @@ class LazyLibrarianClient(BaseMediaClient):
             return result.get("authors", [])
         return []
 
-    async def add_book(self, book_id: str) -> Dict[str, Any]:
+    async def add_book(self, book_id: str) -> dict[str, Any]:
         """Add a book to the database.
 
         Args:
@@ -244,8 +242,8 @@ class LazyLibrarianClient(BaseMediaClient):
         return await self._api_call("addBook", {"id": book_id})
 
     async def queue_book(
-        self, book_id: Optional[str] = None, book_type: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, book_id: str | None = None, book_type: str | None = None
+    ) -> dict[str, Any]:
         """Mark a book as wanted.
 
         Args:
@@ -263,8 +261,8 @@ class LazyLibrarianClient(BaseMediaClient):
         return await self._api_call("queueBook", params)
 
     async def unqueue_book(
-        self, book_id: Optional[str] = None, book_type: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, book_id: str | None = None, book_type: str | None = None
+    ) -> dict[str, Any]:
         """Mark a book as skipped.
 
         Args:
@@ -282,8 +280,8 @@ class LazyLibrarianClient(BaseMediaClient):
         return await self._api_call("unqueueBook", params)
 
     async def search_book(
-        self, book_id: str, book_type: Optional[str] = None, wait: bool = False
-    ) -> Dict[str, Any]:
+        self, book_id: str, book_type: str | None = None, wait: bool = False
+    ) -> dict[str, Any]:
         """Search for a specific book by ID.
 
         Args:
@@ -302,8 +300,8 @@ class LazyLibrarianClient(BaseMediaClient):
         return await self._api_call("searchBook", params)
 
     async def force_library_scan(
-        self, wait: bool = False, remove: bool = False, directory: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, wait: bool = False, remove: bool = False, directory: str | None = None
+    ) -> dict[str, Any]:
         """Force a library scan.
 
         Args:
@@ -323,7 +321,7 @@ class LazyLibrarianClient(BaseMediaClient):
             params["dir"] = directory
         return await self._api_call("forceLibraryScan", params)
 
-    async def force_audiobook_scan(self, wait: bool = False) -> Dict[str, Any]:
+    async def force_audiobook_scan(self, wait: bool = False) -> dict[str, Any]:
         """Force an audiobook library scan.
 
         Args:
@@ -337,7 +335,7 @@ class LazyLibrarianClient(BaseMediaClient):
             params["wait"] = "1"
         return await self._api_call("forceAudioBookScan", params)
 
-    async def get_magazines(self) -> List[Dict[str, Any]]:
+    async def get_magazines(self) -> list[dict[str, Any]]:
         """Get all magazines.
 
         Returns:
@@ -348,7 +346,7 @@ class LazyLibrarianClient(BaseMediaClient):
             return result.get("magazines", [])
         return []
 
-    async def add_magazine(self, name: str) -> Dict[str, Any]:
+    async def add_magazine(self, name: str) -> dict[str, Any]:
         """Add a magazine.
 
         Args:
@@ -359,7 +357,7 @@ class LazyLibrarianClient(BaseMediaClient):
         """
         return await self._api_call("addMagazine", {"name": name})
 
-    async def get_issues(self, magazine_name: str) -> List[Dict[str, Any]]:
+    async def get_issues(self, magazine_name: str) -> list[dict[str, Any]]:
         """Get issues for a magazine.
 
         Args:
@@ -373,7 +371,7 @@ class LazyLibrarianClient(BaseMediaClient):
             return result.get("issues", [])
         return []
 
-    async def restart(self) -> Dict[str, Any]:
+    async def restart(self) -> dict[str, Any]:
         """Restart LazyLibrarian.
 
         Returns:
@@ -381,7 +379,7 @@ class LazyLibrarianClient(BaseMediaClient):
         """
         return await self._api_call("restart")
 
-    async def shutdown(self) -> Dict[str, Any]:
+    async def shutdown(self) -> dict[str, Any]:
         """Shutdown LazyLibrarian.
 
         Returns:
@@ -391,7 +389,7 @@ class LazyLibrarianClient(BaseMediaClient):
 
     # Implement abstract methods from BaseMediaClient
 
-    async def get_all_series(self) -> List[Dict[str, Any]]:
+    async def get_all_series(self) -> list[dict[str, Any]]:
         """Get all authors (LazyLibrarian uses authors not series).
 
         Returns:
@@ -399,11 +397,11 @@ class LazyLibrarianClient(BaseMediaClient):
         """
         return await self.get_all_authors()
 
-    async def get_all_movies(self) -> List[Dict[str, Any]]:
+    async def get_all_movies(self) -> list[dict[str, Any]]:
         """Alias for get_all_authors."""
         return await self.get_all_authors()
 
-    async def get_quality_profiles(self) -> List[Dict[str, Any]]:
+    async def get_quality_profiles(self) -> list[dict[str, Any]]:
         """LazyLibrarian doesn't have quality profiles.
 
         Returns:
@@ -411,7 +409,7 @@ class LazyLibrarianClient(BaseMediaClient):
         """
         return []
 
-    async def get_root_folders(self) -> List[Dict[str, Any]]:
+    async def get_root_folders(self) -> list[dict[str, Any]]:
         """LazyLibrarian doesn't expose root folders via API.
 
         Returns:

@@ -4,7 +4,7 @@ Requires a free Last.fm API key: https://www.last.fm/api/account/create
 Set LASTFM_API_KEY in your environment.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
@@ -16,7 +16,7 @@ class LastFMClient:
 
     def __init__(self, api_key: str) -> None:
         self.api_key = api_key
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -29,8 +29,8 @@ class LastFMClient:
             await self._client.aclose()
             self._client = None
 
-    async def _get(self, method: str, extra: Optional[Dict[str, Any]] = None) -> Any:
-        params: Dict[str, Any] = {
+    async def _get(self, method: str, extra: dict[str, Any] | None = None) -> Any:
+        params: dict[str, Any] = {
             "method": method,
             "api_key": self.api_key,
             "format": "json",
@@ -42,7 +42,7 @@ class LastFMClient:
         resp.raise_for_status()
         return resp.json()
 
-    def _image_url(self, images: list) -> Optional[str]:
+    def _image_url(self, images: list) -> str | None:
         """Return the largest non-empty image URL from a Last.fm image list."""
         for size in ("extralarge", "large", "medium", "small"):
             for img in images:
@@ -50,7 +50,7 @@ class LastFMClient:
                     return img["#text"]
         return None
 
-    async def get_top_artists(self) -> List[Dict[str, Any]]:
+    async def get_top_artists(self) -> list[dict[str, Any]]:
         """Global top artists chart."""
         data = await self._get("chart.gettopartists")
         raw = data.get("artists", {}).get("artist", [])
@@ -69,7 +69,7 @@ class LastFMClient:
             for a in raw
         ]
 
-    async def get_top_tracks(self) -> List[Dict[str, Any]]:
+    async def get_top_tracks(self) -> list[dict[str, Any]]:
         """Global top tracks chart."""
         data = await self._get("chart.gettoptracks")
         raw = data.get("tracks", {}).get("track", [])

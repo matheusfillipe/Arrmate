@@ -1,6 +1,6 @@
 """Whisparr API client implementation."""
 
-from typing import Any, Dict, List
+from typing import Any
 
 from .base import BaseMediaClient
 
@@ -24,7 +24,7 @@ class WhisparrClient(BaseMediaClient):
         except Exception:
             return False
 
-    async def search(self, query: str) -> List[Dict[str, Any]]:
+    async def search(self, query: str) -> list[dict[str, Any]]:
         """Search for adult content.
 
         Args:
@@ -35,7 +35,7 @@ class WhisparrClient(BaseMediaClient):
         """
         return await self._get("api/v3/movie/lookup", params={"term": query})
 
-    async def get_item(self, item_id: int) -> Dict[str, Any]:
+    async def get_item(self, item_id: int) -> dict[str, Any]:
         """Get item details by ID.
 
         Args:
@@ -62,7 +62,7 @@ class WhisparrClient(BaseMediaClient):
         )
         return True
 
-    async def get_all_movies(self) -> List[Dict[str, Any]]:
+    async def get_all_movies(self) -> list[dict[str, Any]]:
         """Get all items in the library.
 
         Returns:
@@ -78,7 +78,7 @@ class WhisparrClient(BaseMediaClient):
         root_folder_path: str,
         monitored: bool = True,
         search_for_movie: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Add a new item to the library.
 
         Args:
@@ -102,7 +102,7 @@ class WhisparrClient(BaseMediaClient):
         }
         return await self._post("api/v3/movie", data=data)
 
-    async def get_movie_file(self, movie_id: int) -> Dict[str, Any]:
+    async def get_movie_file(self, movie_id: int) -> dict[str, Any]:
         """Get file details for an item.
 
         Args:
@@ -126,7 +126,7 @@ class WhisparrClient(BaseMediaClient):
         await self._delete(f"api/v3/moviefile/{file_id}")
         return True
 
-    async def trigger_movie_search(self, movie_id: int) -> Dict[str, Any]:
+    async def trigger_movie_search(self, movie_id: int) -> dict[str, Any]:
         """Trigger a search for an item.
 
         Args:
@@ -140,7 +140,7 @@ class WhisparrClient(BaseMediaClient):
             data={"name": "MoviesSearch", "movieIds": [movie_id]},
         )
 
-    async def get_quality_profiles(self) -> List[Dict[str, Any]]:
+    async def get_quality_profiles(self) -> list[dict[str, Any]]:
         """Get available quality profiles.
 
         Returns:
@@ -148,7 +148,7 @@ class WhisparrClient(BaseMediaClient):
         """
         return await self._get("api/v3/qualityprofile")
 
-    async def get_root_folders(self) -> List[Dict[str, Any]]:
+    async def get_root_folders(self) -> list[dict[str, Any]]:
         """Get available root folders.
 
         Returns:

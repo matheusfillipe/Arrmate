@@ -7,7 +7,7 @@ Support provided for existing instances only. Consider alternatives:
 """
 
 import logging
-from typing import Any, Dict, List
+from typing import Any
 
 from .base import BaseMediaClient
 
@@ -51,7 +51,7 @@ class ReadarrClient(BaseMediaClient):
         except Exception:
             return False
 
-    async def get_system_status(self) -> Dict[str, Any]:
+    async def get_system_status(self) -> dict[str, Any]:
         """Get system status and version.
 
         Note: Readarr uses v1 API instead of v3.
@@ -61,7 +61,7 @@ class ReadarrClient(BaseMediaClient):
         """
         return await self._get("api/v1/system/status")
 
-    async def search(self, query: str) -> List[Dict[str, Any]]:
+    async def search(self, query: str) -> list[dict[str, Any]]:
         """Search for books/audiobooks.
 
         Args:
@@ -72,7 +72,7 @@ class ReadarrClient(BaseMediaClient):
         """
         return await self._get("api/v1/search", params={"term": query})
 
-    async def get_item(self, item_id: int) -> Dict[str, Any]:
+    async def get_item(self, item_id: int) -> dict[str, Any]:
         """Get book/author details by ID.
 
         Args:
@@ -99,7 +99,7 @@ class ReadarrClient(BaseMediaClient):
         )
         return True
 
-    async def get_all_authors(self) -> List[Dict[str, Any]]:
+    async def get_all_authors(self) -> list[dict[str, Any]]:
         """Get all authors in the library.
 
         Returns:
@@ -116,7 +116,7 @@ class ReadarrClient(BaseMediaClient):
         root_folder_path: str,
         monitored: bool = True,
         search_for_missing: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Add a new author to the library.
 
         Args:
@@ -142,7 +142,7 @@ class ReadarrClient(BaseMediaClient):
         }
         return await self._post("api/v1/author", data=data)
 
-    async def get_books(self, author_id: int) -> List[Dict[str, Any]]:
+    async def get_books(self, author_id: int) -> list[dict[str, Any]]:
         """Get books for an author.
 
         Args:
@@ -153,7 +153,7 @@ class ReadarrClient(BaseMediaClient):
         """
         return await self._get("api/v1/book", params={"authorId": author_id})
 
-    async def get_book_files(self, author_id: int) -> List[Dict[str, Any]]:
+    async def get_book_files(self, author_id: int) -> list[dict[str, Any]]:
         """Get book files for an author.
 
         Args:
@@ -176,7 +176,7 @@ class ReadarrClient(BaseMediaClient):
         await self._delete(f"api/v1/bookfile/{file_id}")
         return True
 
-    async def trigger_author_search(self, author_id: int) -> Dict[str, Any]:
+    async def trigger_author_search(self, author_id: int) -> dict[str, Any]:
         """Trigger a search for all missing books of an author.
 
         Args:
@@ -190,7 +190,7 @@ class ReadarrClient(BaseMediaClient):
             data={"name": "AuthorSearch", "authorId": author_id},
         )
 
-    async def trigger_book_search(self, book_ids: List[int]) -> Dict[str, Any]:
+    async def trigger_book_search(self, book_ids: list[int]) -> dict[str, Any]:
         """Trigger a search for specific books.
 
         Args:
@@ -204,7 +204,7 @@ class ReadarrClient(BaseMediaClient):
             data={"name": "BookSearch", "bookIds": book_ids},
         )
 
-    async def get_quality_profiles(self) -> List[Dict[str, Any]]:
+    async def get_quality_profiles(self) -> list[dict[str, Any]]:
         """Get available quality profiles.
 
         Returns:
@@ -212,7 +212,7 @@ class ReadarrClient(BaseMediaClient):
         """
         return await self._get("api/v1/qualityprofile")
 
-    async def get_metadata_profiles(self) -> List[Dict[str, Any]]:
+    async def get_metadata_profiles(self) -> list[dict[str, Any]]:
         """Get available metadata profiles.
 
         Returns:
@@ -220,7 +220,7 @@ class ReadarrClient(BaseMediaClient):
         """
         return await self._get("api/v1/metadataprofile")
 
-    async def get_root_folders(self) -> List[Dict[str, Any]]:
+    async def get_root_folders(self) -> list[dict[str, Any]]:
         """Get available root folders.
 
         Returns:

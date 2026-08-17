@@ -171,6 +171,26 @@ class Settings(BaseSettings):
     )
     prowlarr_api_key: Optional[str] = Field(default=None, description="Prowlarr API key")
 
+    # Cleanuparr settings (reverse-engineered API — experimental)
+    cleanuparr_url: Optional[str] = Field(
+        default=None, description="Cleanuparr base URL (e.g., http://cleanuparr:11011)"
+    )
+    cleanuparr_api_key: Optional[str] = Field(
+        default=None, description="Cleanuparr API key (64-hex api_key from its users.db)"
+    )
+
+    # Jellyfin settings
+    jellyfin_url: Optional[str] = Field(
+        default=None, description="Jellyfin base URL (e.g., http://jellyfin:8096)"
+    )
+    jellyfin_api_key: Optional[str] = Field(default=None, description="Jellyfin API key")
+
+    # Jellyseerr settings
+    jellyseerr_url: Optional[str] = Field(
+        default=None, description="Jellyseerr base URL (e.g., http://jellyseerr:5055)"
+    )
+    jellyseerr_api_key: Optional[str] = Field(default=None, description="Jellyseerr API key")
+
     # Plex SSO settings (PIN-based OAuth via plex.tv)
     plex_sso_enabled: bool = Field(
         default=False,

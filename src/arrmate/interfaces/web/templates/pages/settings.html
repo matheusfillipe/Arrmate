@@ -96,6 +96,7 @@
                          jan:        {url:'http://host.docker.internal:1337/v1',                       model:'',                                            key:'',                                      free:true,  local:true},
                          xai:        {url:'https://api.x.ai/v1',                                      model:'grok-2-latest',                               key:'console.x.ai',                          free:false, local:false},
                          gemini:     {url:'https://generativelanguage.googleapis.com/v1beta/openai/',  model:'gemini-2.0-flash',                            key:'aistudio.google.com/app/apikey',        free:true,  local:false},
+                         zai_coding: {url:'https://api.z.ai/api/coding/paas/v4',                     model:'glm-5.1',                                     key:'z.ai coding plan key',                  free:true,  local:false},
                          custom:     {url:'',                                                           model:'',                                            key:'',                                      free:false, local:false}
                        },
                        applyPreset() {
@@ -122,6 +123,7 @@
                                 <option value="groq">Groq — fast inference</option>
                                 <option value="openrouter">OpenRouter — 200+ models</option>
                                 <option value="gemini">Google Gemini</option>
+                                <option value="zai_coding">z.ai — Coding Plan (GLM)</option>
                             </optgroup>
                             <optgroup label="── Cloud: Paid ──">
                                 <option value="openai">OpenAI</option>

@@ -1,25 +1,24 @@
 """Service discovery for media clients."""
 
 import logging
-from typing import Dict, Optional
 
 from ..config.settings import settings
 from ..core.models import (
     EnhancedServiceInfo,
     ImplementationStatus,
     ServiceCapability,
-    ServiceInfo,
 )
 from .audiobookshelf import AudioBookshelfClient
 from .bazarr import BazarrClient
 from .lazylibrarian import LazyLibrarianClient
-from .readmeabook import ReadMeABookClient
 from .lidarr import LidarrClient
 from .plex import PlexClient
 from .prowlarr import ProwlarrClient
 from .radarr import RadarrClient
 from .readarr import ReadarrClient
+from .readmeabook import ReadMeABookClient
 from .sonarr import SonarrClient
+
 logger = logging.getLogger(__name__)
 
 # Default ports for services
@@ -37,7 +36,7 @@ DEFAULT_PORTS = {
 }
 
 
-def _mask_api_key(api_key: Optional[str]) -> Optional[str]:
+def _mask_api_key(api_key: str | None) -> str | None:
     """Mask an API key for display.
 
     Args:
@@ -196,7 +195,7 @@ def _get_capabilities(service_name: str) -> ServiceCapability:
     if service_name == "readmeabook":
         return ServiceCapability(
             can_search=True,
-            can_add=True,   # Submit requests
+            can_add=True,  # Submit requests
             can_remove=False,
             can_upgrade=False,
             can_list=True,
@@ -225,7 +224,7 @@ def _get_capabilities(service_name: str) -> ServiceCapability:
     return ServiceCapability()
 
 
-async def discover_services() -> Dict[str, EnhancedServiceInfo]:
+async def discover_services() -> dict[str, EnhancedServiceInfo]:
     """Discover available media services.
 
     Attempts to find services in this order:
@@ -236,7 +235,7 @@ async def discover_services() -> Dict[str, EnhancedServiceInfo]:
     Returns:
         Dictionary of service name to EnhancedServiceInfo
     """
-    services: Dict[str, EnhancedServiceInfo] = {}
+    services: dict[str, EnhancedServiceInfo] = {}
 
     # Sonarr
     if settings.sonarr_url and settings.sonarr_api_key:
@@ -432,9 +431,7 @@ async def discover_services() -> Dict[str, EnhancedServiceInfo]:
 
     # AudioBookshelf (Audiobook Player)
     if settings.audiobookshelf_url and settings.audiobookshelf_api_key:
-        client = AudioBookshelfClient(
-            settings.audiobookshelf_url, settings.audiobookshelf_api_key
-        )
+        client = AudioBookshelfClient(settings.audiobookshelf_url, settings.audiobookshelf_api_key)
         try:
             available = await client.test_connection()
             version = None
@@ -475,9 +472,7 @@ async def discover_services() -> Dict[str, EnhancedServiceInfo]:
 
     # LazyLibrarian (Books/Audiobooks with downloading)
     if settings.lazylibrarian_url and settings.lazylibrarian_api_key:
-        client = LazyLibrarianClient(
-            settings.lazylibrarian_url, settings.lazylibrarian_api_key
-        )
+        client = LazyLibrarianClient(settings.lazylibrarian_url, settings.lazylibrarian_api_key)
         try:
             available = await client.test_connection()
             version = None
@@ -631,10 +626,121 @@ async def discover_services() -> Dict[str, EnhancedServiceInfo]:
         finally:
             await client.close()
 
+    # Cleanuparr (experimental, reverse-engineered)
+    if settings.cleanuparr_url and settings.cleanuparr_api_key:
+        from .cleanuparr import CleanuparrClient
+
+        client = CleanuparrClient(settings.cleanuparr_url, settings.cleanuparr_api_key)
+        try:
+            available = await client.test_connection()
+            services["cleanuparr"] = EnhancedServiceInfo(
+                name="cleanuparr",
+                url=settings.cleanuparr_url,
+                api_key=_mask_api_key(settings.cleanuparr_api_key),
+                available=available,
+                version=None,
+                implementation_status=_get_implementation_status("prowlarr"),
+                api_version="reverse-engineered",
+                capabilities=_get_capabilities("prowlarr"),
+                media_type=_get_media_type("prowlarr"),
+                is_deprecated=False,
+            )
+        except Exception as e:
+            logger.error(f"Error discovering Cleanuparr: {e}")
+            services["cleanuparr"] = EnhancedServiceInfo(
+                name="cleanuparr",
+                url=settings.cleanuparr_url,
+                api_key=_mask_api_key(settings.cleanuparr_api_key),
+                available=False,
+                implementation_status=_get_implementation_status("prowlarr"),
+                api_version="reverse-engineered",
+                capabilities=_get_capabilities("prowlarr"),
+                media_type=_get_media_type("prowlarr"),
+                is_deprecated=False,
+            )
+        finally:
+            await client.close()
+
+    # Jellyfin (media server)
+    if settings.jellyfin_url and settings.jellyfin_api_key:
+        from .jellyfin import JellyfinClient
+
+        client = JellyfinClient(settings.jellyfin_url, settings.jellyfin_api_key)
+        try:
+            available = await client.test_connection()
+            version = None
+            if available:
+                try:
+                    version = (await client.get_system_info()).get("Version")
+                except Exception:
+                    pass
+            services["jellyfin"] = EnhancedServiceInfo(
+                name="jellyfin",
+                url=settings.jellyfin_url,
+                api_key=_mask_api_key(settings.jellyfin_api_key),
+                available=available,
+                version=version,
+                implementation_status=_get_implementation_status("plex"),
+                api_version="stable",
+                capabilities=_get_capabilities("plex"),
+                media_type=_get_media_type("plex"),
+                is_deprecated=False,
+            )
+        except Exception as e:
+            logger.error(f"Error discovering Jellyfin: {e}")
+            services["jellyfin"] = EnhancedServiceInfo(
+                name="jellyfin",
+                url=settings.jellyfin_url,
+                api_key=_mask_api_key(settings.jellyfin_api_key),
+                available=False,
+                implementation_status=_get_implementation_status("plex"),
+                api_version="stable",
+                capabilities=_get_capabilities("plex"),
+                media_type=_get_media_type("plex"),
+                is_deprecated=False,
+            )
+        finally:
+            await client.close()
+
+    # Jellyseerr (request management)
+    if settings.jellyseerr_url and settings.jellyseerr_api_key:
+        from .jellyseerr import JellyseerrClient
+
+        client = JellyseerrClient(settings.jellyseerr_url, settings.jellyseerr_api_key)
+        try:
+            available = await client.test_connection()
+            services["jellyseerr"] = EnhancedServiceInfo(
+                name="jellyseerr",
+                url=settings.jellyseerr_url,
+                api_key=_mask_api_key(settings.jellyseerr_api_key),
+                available=available,
+                version=None,
+                implementation_status=_get_implementation_status("prowlarr"),
+                api_version="v1",
+                capabilities=_get_capabilities("prowlarr"),
+                media_type=_get_media_type("prowlarr"),
+                is_deprecated=False,
+            )
+        except Exception as e:
+            logger.error(f"Error discovering Jellyseerr: {e}")
+            services["jellyseerr"] = EnhancedServiceInfo(
+                name="jellyseerr",
+                url=settings.jellyseerr_url,
+                api_key=_mask_api_key(settings.jellyseerr_api_key),
+                available=False,
+                implementation_status=_get_implementation_status("prowlarr"),
+                api_version="v1",
+                capabilities=_get_capabilities("prowlarr"),
+                media_type=_get_media_type("prowlarr"),
+                is_deprecated=False,
+            )
+        finally:
+            await client.close()
+
     return services
 
 
-def get_client_for_media_type(media_type: str) -> Optional[object]:
+def get_client_for_media_type(media_type: str) -> object | None:
     """Get the appropriate client for a media type.
 
     Args:
@@ -648,30 +754,22 @@ def get_client_for_media_type(media_type: str) -> Optional[object]:
     """
     if media_type == "tv":
         if not settings.sonarr_url or not settings.sonarr_api_key:
-            raise ValueError(
-                "Sonarr is not configured. Set SONARR_URL and SONARR_API_KEY."
-            )
+            raise ValueError("Sonarr is not configured. Set SONARR_URL and SONARR_API_KEY.")
         return SonarrClient(settings.sonarr_url, settings.sonarr_api_key)
 
     elif media_type == "movie":
         if not settings.radarr_url or not settings.radarr_api_key:
-            raise ValueError(
-                "Radarr is not configured. Set RADARR_URL and RADARR_API_KEY."
-            )
+            raise ValueError("Radarr is not configured. Set RADARR_URL and RADARR_API_KEY.")
         return RadarrClient(settings.radarr_url, settings.radarr_api_key)
 
     elif media_type == "music":
         if not settings.lidarr_url or not settings.lidarr_api_key:
-            raise ValueError(
-                "Lidarr is not configured. Set LIDARR_URL and LIDARR_API_KEY."
-            )
+            raise ValueError("Lidarr is not configured. Set LIDARR_URL and LIDARR_API_KEY.")
         return LidarrClient(settings.lidarr_url, settings.lidarr_api_key)
 
     elif media_type in ("audiobook", "book"):
         if not settings.readarr_url or not settings.readarr_api_key:
-            raise ValueError(
-                "Readarr is not configured. Set READARR_URL and READARR_API_KEY."
-            )
+            raise ValueError("Readarr is not configured. Set READARR_URL and READARR_API_KEY.")
         logger.warning(
             "Using deprecated Readarr client. Project is retired. "
             "Consider alternatives like Calibre-Web or LazyLibrarian."

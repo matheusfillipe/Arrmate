@@ -4,7 +4,7 @@ Used to power the Discover page — trending, upcoming, popular, and on-the-air
 content that users can add directly to Radarr/Sonarr.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
@@ -17,7 +17,7 @@ class TMDBClient:
 
     def __init__(self, api_key: str) -> None:
         self.api_key = api_key
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -30,7 +30,7 @@ class TMDBClient:
             await self._client.aclose()
             self._client = None
 
-    async def _get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Any:
+    async def _get(self, endpoint: str, params: dict[str, Any] | None = None) -> Any:
         if params is None:
             params = {}
         params["api_key"] = self.api_key
@@ -54,61 +54,61 @@ class TMDBClient:
 
     # ── Movies ────────────────────────────────────────────────────────────────
 
-    async def get_trending_movies(self, time_window: str = "week") -> List[Dict]:
+    async def get_trending_movies(self, time_window: str = "week") -> list[dict]:
         """Trending movies over the last day or week."""
         data = await self._get(f"trending/movie/{time_window}", {"language": "en-US"})
         return data.get("results", [])
 
-    async def get_upcoming_movies(self) -> List[Dict]:
+    async def get_upcoming_movies(self) -> list[dict]:
         """Movies with a future release date (US region)."""
         data = await self._get("movie/upcoming", {"language": "en-US", "region": "US"})
         return data.get("results", [])
 
-    async def get_now_playing(self) -> List[Dict]:
+    async def get_now_playing(self) -> list[dict]:
         """Movies currently in theatres (US region)."""
         data = await self._get("movie/now_playing", {"language": "en-US", "region": "US"})
         return data.get("results", [])
 
-    async def get_popular_movies(self) -> List[Dict]:
+    async def get_popular_movies(self) -> list[dict]:
         """Most popular movies right now."""
         data = await self._get("movie/popular", {"language": "en-US"})
         return data.get("results", [])
 
-    async def get_top_rated_movies(self) -> List[Dict]:
+    async def get_top_rated_movies(self) -> list[dict]:
         """Top-rated movies of all time."""
         data = await self._get("movie/top_rated", {"language": "en-US"})
         return data.get("results", [])
 
     # ── TV Shows ──────────────────────────────────────────────────────────────
 
-    async def get_trending_tv(self, time_window: str = "week") -> List[Dict]:
+    async def get_trending_tv(self, time_window: str = "week") -> list[dict]:
         """Trending TV shows over the last day or week."""
         data = await self._get(f"trending/tv/{time_window}", {"language": "en-US"})
         return data.get("results", [])
 
-    async def get_tv_airing_today(self) -> List[Dict]:
+    async def get_tv_airing_today(self) -> list[dict]:
         """TV shows with episodes airing today."""
         data = await self._get("tv/airing_today", {"language": "en-US"})
         return data.get("results", [])
 
-    async def get_tv_on_the_air(self) -> List[Dict]:
+    async def get_tv_on_the_air(self) -> list[dict]:
         """TV shows currently airing (next 7 days)."""
         data = await self._get("tv/on_the_air", {"language": "en-US"})
         return data.get("results", [])
 
-    async def get_popular_tv(self) -> List[Dict]:
+    async def get_popular_tv(self) -> list[dict]:
         """Most popular TV shows right now."""
         data = await self._get("tv/popular", {"language": "en-US"})
         return data.get("results", [])
 
-    async def get_top_rated_tv(self) -> List[Dict]:
+    async def get_top_rated_tv(self) -> list[dict]:
         """Top-rated TV shows of all time."""
         data = await self._get("tv/top_rated", {"language": "en-US"})
         return data.get("results", [])
 
     # ── Metadata helpers ──────────────────────────────────────────────────────
 
-    async def get_external_ids(self, tmdb_id: int, media_type: str = "tv") -> Dict:
+    async def get_external_ids(self, tmdb_id: int, media_type: str = "tv") -> dict:
         """Get external IDs for a movie or TV show.
 
         For TV shows this includes the TVDB ID needed by Sonarr.

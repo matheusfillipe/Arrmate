@@ -5,7 +5,7 @@ It integrates with existing Sonarr/Radarr instances to download and manage
 subtitle files for movies and TV shows.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .base_companion import BaseCompanionClient
 
@@ -29,7 +29,7 @@ class BazarrClient(BaseCompanionClient):
         except Exception:
             return False
 
-    async def get_system_status(self) -> Dict[str, Any]:
+    async def get_system_status(self) -> dict[str, Any]:
         """Get system status and version.
 
         Returns:
@@ -37,7 +37,7 @@ class BazarrClient(BaseCompanionClient):
         """
         return await self._get("api/system/status")
 
-    async def get_missing_items(self, service_type: str) -> List[Dict[str, Any]]:
+    async def get_missing_items(self, service_type: str) -> list[dict[str, Any]]:
         """Get items missing subtitles.
 
         Args:
@@ -53,7 +53,7 @@ class BazarrClient(BaseCompanionClient):
         else:
             raise ValueError(f"Unsupported service type: {service_type}")
 
-    async def get_episodes(self) -> List[Dict[str, Any]]:
+    async def get_episodes(self) -> list[dict[str, Any]]:
         """Get all episodes tracked by Bazarr.
 
         Returns:
@@ -61,7 +61,7 @@ class BazarrClient(BaseCompanionClient):
         """
         return await self._get("api/episodes")
 
-    async def get_episodes_with_missing_subtitles(self) -> List[Dict[str, Any]]:
+    async def get_episodes_with_missing_subtitles(self) -> list[dict[str, Any]]:
         """Get episodes that are missing subtitles.
 
         Returns:
@@ -69,13 +69,9 @@ class BazarrClient(BaseCompanionClient):
         """
         all_episodes = await self.get_episodes()
         # Filter for episodes with missing subtitles
-        return [
-            ep
-            for ep in all_episodes
-            if ep.get("missing_subtitles") or not ep.get("subtitles")
-        ]
+        return [ep for ep in all_episodes if ep.get("missing_subtitles") or not ep.get("subtitles")]
 
-    async def get_movies(self) -> List[Dict[str, Any]]:
+    async def get_movies(self) -> list[dict[str, Any]]:
         """Get all movies tracked by Bazarr.
 
         Returns:
@@ -83,7 +79,7 @@ class BazarrClient(BaseCompanionClient):
         """
         return await self._get("api/movies")
 
-    async def get_movies_with_missing_subtitles(self) -> List[Dict[str, Any]]:
+    async def get_movies_with_missing_subtitles(self) -> list[dict[str, Any]]:
         """Get movies that are missing subtitles.
 
         Returns:
@@ -98,8 +94,8 @@ class BazarrClient(BaseCompanionClient):
         ]
 
     async def search_episode_subtitles(
-        self, episode_id: int, language: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        self, episode_id: int, language: str | None = None
+    ) -> list[dict[str, Any]]:
         """Search for subtitles for an episode.
 
         Args:
@@ -115,8 +111,8 @@ class BazarrClient(BaseCompanionClient):
         return await self._post("api/episodes/search", data=params)
 
     async def search_movie_subtitles(
-        self, movie_id: int, language: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        self, movie_id: int, language: str | None = None
+    ) -> list[dict[str, Any]]:
         """Search for subtitles for a movie.
 
         Args:
@@ -133,7 +129,7 @@ class BazarrClient(BaseCompanionClient):
 
     async def download_episode_subtitle(
         self, episode_id: int, subtitle_id: str, language: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Download a subtitle for an episode.
 
         Args:
@@ -153,7 +149,7 @@ class BazarrClient(BaseCompanionClient):
 
     async def download_movie_subtitle(
         self, movie_id: int, subtitle_id: str, language: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Download a subtitle for a movie.
 
         Args:
@@ -171,7 +167,7 @@ class BazarrClient(BaseCompanionClient):
         }
         return await self._post("api/movies/subtitles", data=data)
 
-    async def get_languages(self) -> List[Dict[str, Any]]:
+    async def get_languages(self) -> list[dict[str, Any]]:
         """Get available subtitle languages configured in Bazarr.
 
         Returns:
@@ -181,7 +177,7 @@ class BazarrClient(BaseCompanionClient):
         # Extract languages from settings
         return status.get("data", {}).get("settings", {}).get("languages", [])
 
-    async def sync_with_sonarr(self) -> Dict[str, Any]:
+    async def sync_with_sonarr(self) -> dict[str, Any]:
         """Trigger a sync with Sonarr to update episode list.
 
         Returns:
@@ -189,7 +185,7 @@ class BazarrClient(BaseCompanionClient):
         """
         return await self._post("api/system/tasks", data={"taskid": "update_series"})
 
-    async def sync_with_radarr(self) -> Dict[str, Any]:
+    async def sync_with_radarr(self) -> dict[str, Any]:
         """Trigger a sync with Radarr to update movie list.
 
         Returns:
@@ -197,9 +193,7 @@ class BazarrClient(BaseCompanionClient):
         """
         return await self._post("api/system/tasks", data={"taskid": "update_movies"})
 
-    async def get_subtitle_history(
-        self, limit: int = 100
-    ) -> List[Dict[str, Any]]:
+    async def get_subtitle_history(self, limit: int = 100) -> list[dict[str, Any]]:
         """Get recent subtitle download history.
 
         Args:

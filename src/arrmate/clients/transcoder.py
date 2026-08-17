@@ -14,9 +14,9 @@ import logging
 import shutil
 import subprocess
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
@@ -28,13 +28,13 @@ logger = logging.getLogger(__name__)
 _H265_CODECS = {"hevc", "x265", "h265", "h.265"}
 
 # In-memory job store  {job_id: job_dict}
-_jobs: Dict[str, Dict[str, Any]] = {}
+_jobs: dict[str, dict[str, Any]] = {}
 
 
 # ── Public job store helpers ───────────────────────────────────────────────────
 
 
-def get_job(job_id: str) -> Optional[Dict[str, Any]]:
+def get_job(job_id: str) -> dict[str, Any] | None:
     """Return a job by ID, or None if not found."""
     return _jobs.get(job_id)
 
@@ -45,11 +45,12 @@ _JOB_MAX_TOTAL = 100
 
 def _prune_jobs() -> None:
     """Remove completed/cancelled jobs older than 24h, or when store exceeds 100 entries."""
-    cutoff = datetime.now(timezone.utc) - __import__("datetime").timedelta(hours=_JOB_MAX_AGE_HOURS)
+    cutoff = datetime.now(UTC) - __import__("datetime").timedelta(hours=_JOB_MAX_AGE_HOURS)
     to_delete = [
-        jid for jid, job in _jobs.items()
+        jid
+        for jid, job in _jobs.items()
         if job["status"] in ("completed", "cancelled")
-        and datetime.fromisoformat(job["created_at"]).replace(tzinfo=timezone.utc) < cutoff
+        and datetime.fromisoformat(job["created_at"]).replace(tzinfo=UTC) < cutoff
     ]
     for jid in to_delete:
         del _jobs[jid]
@@ -59,11 +60,11 @@ def _prune_jobs() -> None:
             [(jid, j) for jid, j in _jobs.items() if j["status"] in ("completed", "cancelled")],
             key=lambda x: x[1]["created_at"],
         )
-        for jid, _ in finished[:len(_jobs) - _JOB_MAX_TOTAL]:
+        for jid, _ in finished[: len(_jobs) - _JOB_MAX_TOTAL]:
             del _jobs[jid]
 
 
-def get_all_jobs() -> List[Dict[str, Any]]:
+def get_all_jobs() -> list[dict[str, Any]]:
     """Return all jobs, newest first."""
     _prune_jobs()
     return sorted(_jobs.values(), key=lambda j: j["created_at"], reverse=True)
@@ -96,7 +97,7 @@ def _format_bytes(n: int) -> str:
 # ── Library scanning ───────────────────────────────────────────────────────────
 
 
-async def _get_radarr_files(title_filter: Optional[str]) -> List[Dict[str, Any]]:
+async def _get_radarr_files(title_filter: str | None) -> list[dict[str, Any]]:
     """Fetch movie files from Radarr that are not yet H.265."""
     if not settings.radarr_url or not settings.radarr_api_key:
         return []
@@ -121,17 +122,19 @@ async def _get_radarr_files(title_filter: Optional[str]) -> List[Dict[str, Any]]
             continue
         path = mf.get("path")
         if path:
-            results.append({
-                "title": movie.get("title", "Unknown"),
-                "path": path,
-                "codec": codec or "unknown",
-                "media_type": "movie",
-                "size": mf.get("size", 0),
-            })
+            results.append(
+                {
+                    "title": movie.get("title", "Unknown"),
+                    "path": path,
+                    "codec": codec or "unknown",
+                    "media_type": "movie",
+                    "size": mf.get("size", 0),
+                }
+            )
     return results
 
 
-async def _get_sonarr_files(title_filter: Optional[str]) -> List[Dict[str, Any]]:
+async def _get_sonarr_files(title_filter: str | None) -> list[dict[str, Any]]:
     """Fetch episode files from Sonarr that are not yet H.265."""
     if not settings.sonarr_url or not settings.sonarr_api_key:
         return []
@@ -145,12 +148,14 @@ async def _get_sonarr_files(title_filter: Optional[str]) -> List[Dict[str, Any]]
         all_series = resp.json()
 
         if title_filter:
-            all_series = [s for s in all_series if title_filter.lower() in s.get("title", "").lower()]
+            all_series = [
+                s for s in all_series if title_filter.lower() in s.get("title", "").lower()
+            ]
 
         # Cap concurrent episode-file requests to avoid overwhelming Sonarr
         sem = asyncio.Semaphore(5)
 
-        async def fetch_series_files(series: Dict) -> List[Dict]:
+        async def fetch_series_files(series: dict) -> list[dict]:
             async with sem:
                 try:
                     r = await client.get(
@@ -166,13 +171,15 @@ async def _get_sonarr_files(title_filter: Optional[str]) -> List[Dict[str, Any]]
                             continue
                         path = ef.get("path")
                         if path:
-                            items.append({
-                                "title": f"{series['title']} — {ef.get('relativePath', path)}",
-                                "path": path,
-                                "codec": codec or "unknown",
-                                "media_type": "tv",
-                                "size": ef.get("size", 0),
-                            })
+                            items.append(
+                                {
+                                    "title": f"{series['title']} — {ef.get('relativePath', path)}",
+                                    "path": path,
+                                    "codec": codec or "unknown",
+                                    "media_type": "tv",
+                                    "size": ef.get("size", 0),
+                                }
+                            )
                     return items
                 except Exception as e:
                     logger.warning("Failed to get files for %s: %s", series.get("title"), e)
@@ -185,8 +192,8 @@ async def _get_sonarr_files(title_filter: Optional[str]) -> List[Dict[str, Any]]
 
 async def scan_for_transcode(
     media_type: str,
-    title: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    title: str | None = None,
+) -> list[dict[str, Any]]:
     """Return all library files that need H.265 transcoding.
 
     Args:
@@ -237,13 +244,21 @@ def _transcode_sync(file_path: str, crf: int, preset: str) -> tuple[bool, str]:
 
     try:
         cmd = [
-            "ffmpeg", "-i", str(src),
-            "-c:v", "libx265",
-            "-crf", str(crf),
-            "-preset", preset,
-            "-c:a", "copy",
-            "-c:s", "copy",
-            "-tag:v", "hvc1",
+            "ffmpeg",
+            "-i",
+            str(src),
+            "-c:v",
+            "libx265",
+            "-crf",
+            str(crf),
+            "-preset",
+            preset,
+            "-c:a",
+            "copy",
+            "-c:s",
+            "copy",
+            "-tag:v",
+            "hvc1",
             "-y",
             str(tmp),
         ]
@@ -275,7 +290,6 @@ def _transcode_sync(file_path: str, crf: int, preset: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
-
 def _transcode_sync_validated(
     file_path: str,
     crf: int,
@@ -294,10 +308,11 @@ def _transcode_sync_validated(
             return False, f"path not within allowed media directory: {file_path}"
     return _transcode_sync(file_path, crf, preset)
 
+
 # ── Background job runner ──────────────────────────────────────────────────────
 
 
-async def run_transcode_job(job_id: str, files: List[Dict[str, Any]]) -> None:
+async def run_transcode_job(job_id: str, files: list[dict[str, Any]]) -> None:
     """Background coroutine: processes all files in a transcode job."""
     job = _jobs.get(job_id)
     if not job:
@@ -329,12 +344,14 @@ async def run_transcode_job(job_id: str, files: List[Dict[str, Any]]) -> None:
                 saved = max(0, original_size - new_size)
                 job["completed"] += 1
                 job["saved_bytes"] += saved
-                job["completed_files"].append({
-                    "title": file_info["title"],
-                    "original_size": _format_bytes(original_size),
-                    "new_size": _format_bytes(new_size),
-                    "saved": _format_bytes(saved),
-                })
+                job["completed_files"].append(
+                    {
+                        "title": file_info["title"],
+                        "original_size": _format_bytes(original_size),
+                        "new_size": _format_bytes(new_size),
+                        "saved": _format_bytes(saved),
+                    }
+                )
             else:
                 job["failed"] += 1
                 job["errors"].append(f"{file_info['title']}: {error}")
@@ -345,16 +362,16 @@ async def run_transcode_job(job_id: str, files: List[Dict[str, Any]]) -> None:
 
     job["current_file"] = None
     job["status"] = "cancelled" if job.get("cancelled") else "completed"
-    job["finished_at"] = datetime.now(timezone.utc).isoformat()
+    job["finished_at"] = datetime.now(UTC).isoformat()
 
 
 # ── Job creation ───────────────────────────────────────────────────────────────
 
 
 def create_job(
-    files: List[Dict[str, Any]],
+    files: list[dict[str, Any]],
     media_type: str,
-    title: Optional[str] = None,
+    title: str | None = None,
 ) -> str:
     """Create a new transcode job entry and return its ID."""
     job_id = str(uuid.uuid4())[:8]
@@ -370,7 +387,7 @@ def create_job(
         "current_file": None,
         "errors": [],
         "completed_files": [],
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "finished_at": None,
         "cancelled": False,
     }

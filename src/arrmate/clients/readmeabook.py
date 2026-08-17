@@ -9,7 +9,7 @@ Default port: 3030
 Auth: Bearer token (JWT from login or admin-generated API token)
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .base_external import BaseExternalService
 
@@ -25,6 +25,7 @@ class ReadMeABookClient(BaseExternalService):
         """HTTP client with Bearer token auth."""
         if self._client is None:
             import httpx
+
             self._client = httpx.AsyncClient(
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 timeout=self.timeout,
@@ -36,13 +37,13 @@ class ReadMeABookClient(BaseExternalService):
             await self._client.aclose()
             self._client = None
 
-    async def _get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Any:
+    async def _get(self, endpoint: str, params: dict[str, Any] | None = None) -> Any:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         response = await self.client.get(url, params=params)
         response.raise_for_status()
         return response.json()
 
-    async def _post(self, endpoint: str, data: Optional[Dict[str, Any]] = None) -> Any:
+    async def _post(self, endpoint: str, data: dict[str, Any] | None = None) -> Any:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         response = await self.client.post(url, json=data or {})
         response.raise_for_status()
@@ -56,7 +57,7 @@ class ReadMeABookClient(BaseExternalService):
         except Exception:
             return False
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """Get ReadMeABook library statistics."""
         try:
             data = await self._get("api/stats")
@@ -66,7 +67,7 @@ class ReadMeABookClient(BaseExternalService):
         except Exception:
             return {}
 
-    async def get_version(self) -> Optional[str]:
+    async def get_version(self) -> str | None:
         """Get application version."""
         try:
             data = await self._get("api/version")
@@ -76,7 +77,7 @@ class ReadMeABookClient(BaseExternalService):
         except Exception:
             return None
 
-    async def search(self, query: str) -> List[Dict[str, Any]]:
+    async def search(self, query: str) -> list[dict[str, Any]]:
         """Search audiobooks by title or author.
 
         Returns list of audiobook dicts with title, author, asin fields.
@@ -91,7 +92,7 @@ class ReadMeABookClient(BaseExternalService):
         except Exception:
             return []
 
-    async def get_popular(self) -> List[Dict[str, Any]]:
+    async def get_popular(self) -> list[dict[str, Any]]:
         """Get popular audiobooks."""
         try:
             data = await self._get("api/audiobooks/popular")
@@ -103,7 +104,7 @@ class ReadMeABookClient(BaseExternalService):
         except Exception:
             return []
 
-    async def get_new_releases(self) -> List[Dict[str, Any]]:
+    async def get_new_releases(self) -> list[dict[str, Any]]:
         """Get new audiobook releases."""
         try:
             data = await self._get("api/audiobooks/new-releases")
@@ -115,7 +116,7 @@ class ReadMeABookClient(BaseExternalService):
         except Exception:
             return []
 
-    async def get_requests(self) -> List[Dict[str, Any]]:
+    async def get_requests(self) -> list[dict[str, Any]]:
         """List all audiobook requests."""
         try:
             data = await self._get("api/requests")
@@ -132,7 +133,7 @@ class ReadMeABookClient(BaseExternalService):
         asin: str,
         title: str,
         author: str = "",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Submit an audiobook request.
 
         Args:
@@ -143,7 +144,7 @@ class ReadMeABookClient(BaseExternalService):
         Returns:
             Created request details
         """
-        payload: Dict[str, Any] = {"asin": asin, "title": title}
+        payload: dict[str, Any] = {"asin": asin, "title": title}
         if author:
             payload["author"] = author
         return await self._post("api/requests", data=payload)

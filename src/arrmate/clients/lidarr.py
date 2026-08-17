@@ -1,6 +1,6 @@
 """Lidarr API client implementation."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .base import BaseMediaClient
 
@@ -20,7 +20,7 @@ class LidarrClient(BaseMediaClient):
         except Exception:
             return False
 
-    async def search(self, query: str) -> List[Dict[str, Any]]:
+    async def search(self, query: str) -> list[dict[str, Any]]:
         """Search for artists.
 
         Args:
@@ -31,7 +31,7 @@ class LidarrClient(BaseMediaClient):
         """
         return await self._get("api/v3/artist/lookup", params={"term": query})
 
-    async def get_item(self, item_id: int) -> Dict[str, Any]:
+    async def get_item(self, item_id: int) -> dict[str, Any]:
         """Get artist details by ID.
 
         Args:
@@ -58,7 +58,7 @@ class LidarrClient(BaseMediaClient):
         )
         return True
 
-    async def get_all_artists(self) -> List[Dict[str, Any]]:
+    async def get_all_artists(self) -> list[dict[str, Any]]:
         """Get all artists in the library.
 
         Returns:
@@ -75,7 +75,7 @@ class LidarrClient(BaseMediaClient):
         root_folder_path: str,
         monitored: bool = True,
         search_for_missing: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Add a new artist to the library.
 
         Args:
@@ -101,7 +101,7 @@ class LidarrClient(BaseMediaClient):
         }
         return await self._post("api/v3/artist", data=data)
 
-    async def get_albums(self, artist_id: int) -> List[Dict[str, Any]]:
+    async def get_albums(self, artist_id: int) -> list[dict[str, Any]]:
         """Get albums for an artist.
 
         Args:
@@ -112,7 +112,7 @@ class LidarrClient(BaseMediaClient):
         """
         return await self._get("api/v3/album", params={"artistId": artist_id})
 
-    async def get_tracks(self, album_id: int) -> List[Dict[str, Any]]:
+    async def get_tracks(self, album_id: int) -> list[dict[str, Any]]:
         """Get tracks for an album.
 
         Args:
@@ -123,7 +123,7 @@ class LidarrClient(BaseMediaClient):
         """
         return await self._get("api/v3/track", params={"albumId": album_id})
 
-    async def get_track_files(self, artist_id: int) -> List[Dict[str, Any]]:
+    async def get_track_files(self, artist_id: int) -> list[dict[str, Any]]:
         """Get track files for an artist.
 
         Args:
@@ -146,7 +146,7 @@ class LidarrClient(BaseMediaClient):
         await self._delete(f"api/v3/trackfile/{file_id}")
         return True
 
-    async def trigger_artist_search(self, artist_id: int) -> Dict[str, Any]:
+    async def trigger_artist_search(self, artist_id: int) -> dict[str, Any]:
         """Trigger a search for all missing albums of an artist.
 
         Args:
@@ -160,7 +160,7 @@ class LidarrClient(BaseMediaClient):
             data={"name": "ArtistSearch", "artistId": artist_id},
         )
 
-    async def trigger_album_search(self, album_ids: List[int]) -> Dict[str, Any]:
+    async def trigger_album_search(self, album_ids: list[int]) -> dict[str, Any]:
         """Trigger a search for specific albums.
 
         Args:
@@ -174,7 +174,7 @@ class LidarrClient(BaseMediaClient):
             data={"name": "AlbumSearch", "albumIds": album_ids},
         )
 
-    async def get_quality_profiles(self) -> List[Dict[str, Any]]:
+    async def get_quality_profiles(self) -> list[dict[str, Any]]:
         """Get available quality profiles.
 
         Returns:
@@ -182,7 +182,7 @@ class LidarrClient(BaseMediaClient):
         """
         return await self._get("api/v3/qualityprofile")
 
-    async def get_metadata_profiles(self) -> List[Dict[str, Any]]:
+    async def get_metadata_profiles(self) -> list[dict[str, Any]]:
         """Get available metadata profiles.
 
         Returns:
@@ -190,7 +190,7 @@ class LidarrClient(BaseMediaClient):
         """
         return await self._get("api/v3/metadataprofile")
 
-    async def get_root_folders(self) -> List[Dict[str, Any]]:
+    async def get_root_folders(self) -> list[dict[str, Any]]:
         """Get available root folders.
 
         Returns:

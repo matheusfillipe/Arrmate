@@ -1,6 +1,6 @@
 """Sonarr API client implementation."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .base import BaseMediaClient
 
@@ -20,7 +20,7 @@ class SonarrClient(BaseMediaClient):
         except Exception:
             return False
 
-    async def search(self, query: str) -> List[Dict[str, Any]]:
+    async def search(self, query: str) -> list[dict[str, Any]]:
         """Search for TV shows.
 
         Args:
@@ -31,7 +31,7 @@ class SonarrClient(BaseMediaClient):
         """
         return await self._get("api/v3/series/lookup", params={"term": query})
 
-    async def get_item(self, item_id: int) -> Dict[str, Any]:
+    async def get_item(self, item_id: int) -> dict[str, Any]:
         """Get series details by ID.
 
         Args:
@@ -53,10 +53,12 @@ class SonarrClient(BaseMediaClient):
             True if successful
         """
         params = {"deleteFiles": str(delete_files).lower()}
-        await self._delete(f"api/v3/series/{item_id}?{'&'.join(f'{k}={v}' for k, v in params.items())}")
+        await self._delete(
+            f"api/v3/series/{item_id}?{'&'.join(f'{k}={v}' for k, v in params.items())}"
+        )
         return True
 
-    async def get_all_series(self) -> List[Dict[str, Any]]:
+    async def get_all_series(self) -> list[dict[str, Any]]:
         """Get all series in the library.
 
         Returns:
@@ -70,10 +72,10 @@ class SonarrClient(BaseMediaClient):
         title: str,
         quality_profile_id: int,
         root_folder_path: str,
-        seasons: Optional[List] = None,
+        seasons: list | None = None,
         monitored: bool = True,
         search_for_missing: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Add a new series to the library.
 
         Args:
@@ -101,12 +103,12 @@ class SonarrClient(BaseMediaClient):
 
     async def add_series_from_lookup(
         self,
-        lookup_result: Dict[str, Any],
+        lookup_result: dict[str, Any],
         quality_profile_id: int,
         root_folder_path: str,
         monitored: bool = True,
         search_for_missing: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Add a series using the full Sonarr lookup result.
 
         Uses the lookup object as the base body so all Sonarr-required fields
@@ -122,8 +124,8 @@ class SonarrClient(BaseMediaClient):
         return await self._post("api/v3/series", data=data)
 
     async def get_episodes(
-        self, series_id: int, season_number: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
+        self, series_id: int, season_number: int | None = None
+    ) -> list[dict[str, Any]]:
         """Get episodes for a series.
 
         Args:
@@ -138,7 +140,7 @@ class SonarrClient(BaseMediaClient):
             params["seasonNumber"] = season_number
         return await self._get("api/v3/episode", params=params)
 
-    async def get_episode_files(self, series_id: int) -> List[Dict[str, Any]]:
+    async def get_episode_files(self, series_id: int) -> list[dict[str, Any]]:
         """Get episode files for a series.
 
         Args:
@@ -161,7 +163,7 @@ class SonarrClient(BaseMediaClient):
         await self._delete(f"api/v3/episodefile/{file_id}")
         return True
 
-    async def delete_episode_files(self, file_ids: List[int]) -> int:
+    async def delete_episode_files(self, file_ids: list[int]) -> int:
         """Delete multiple episode files.
 
         Args:
@@ -179,7 +181,7 @@ class SonarrClient(BaseMediaClient):
                 pass
         return deleted
 
-    async def trigger_series_search(self, series_id: int) -> Dict[str, Any]:
+    async def trigger_series_search(self, series_id: int) -> dict[str, Any]:
         """Trigger a search for all missing episodes of a series.
 
         Args:
@@ -193,7 +195,7 @@ class SonarrClient(BaseMediaClient):
             data={"name": "SeriesSearch", "seriesId": series_id},
         )
 
-    async def trigger_episode_search(self, episode_ids: List[int]) -> Dict[str, Any]:
+    async def trigger_episode_search(self, episode_ids: list[int]) -> dict[str, Any]:
         """Trigger a search for specific episodes.
 
         Args:
@@ -207,7 +209,7 @@ class SonarrClient(BaseMediaClient):
             data={"name": "EpisodeSearch", "episodeIds": episode_ids},
         )
 
-    async def monitor_all_seasons(self, series_id: int) -> Dict[str, Any]:
+    async def monitor_all_seasons(self, series_id: int) -> dict[str, Any]:
         """Set all seasons of a series to monitored and save.
 
         Args:
@@ -222,7 +224,7 @@ class SonarrClient(BaseMediaClient):
                 season["monitored"] = True
         return await self._put(f"api/v3/series/{series_id}", data=series)
 
-    async def get_quality_profiles(self) -> List[Dict[str, Any]]:
+    async def get_quality_profiles(self) -> list[dict[str, Any]]:
         """Get available quality profiles.
 
         Returns:
@@ -230,7 +232,7 @@ class SonarrClient(BaseMediaClient):
         """
         return await self._get("api/v3/qualityprofile")
 
-    async def get_root_folders(self) -> List[Dict[str, Any]]:
+    async def get_root_folders(self) -> list[dict[str, Any]]:
         """Get available root folders.
 
         Returns:
@@ -238,7 +240,7 @@ class SonarrClient(BaseMediaClient):
         """
         return await self._get("api/v3/rootfolder")
 
-    async def set_series_monitored(self, series_id: int, monitored: bool) -> Dict[str, Any]:
+    async def set_series_monitored(self, series_id: int, monitored: bool) -> dict[str, Any]:
         """Update the monitored status of a series.
 
         Args:
@@ -252,7 +254,7 @@ class SonarrClient(BaseMediaClient):
         series["monitored"] = monitored
         return await self._put(f"api/v3/series/{series_id}", data=series)
 
-    async def trigger_season_search(self, series_id: int, season_number: int) -> Dict[str, Any]:
+    async def trigger_season_search(self, series_id: int, season_number: int) -> dict[str, Any]:
         """Trigger a search for all episodes in a season.
 
         Args:
@@ -269,7 +271,7 @@ class SonarrClient(BaseMediaClient):
 
     async def get_calendar(
         self, start: str, end: str, include_series: bool = True
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Get episodes airing between start and end dates.
 
         Args:
@@ -280,7 +282,7 @@ class SonarrClient(BaseMediaClient):
         Returns:
             List of episode dicts with optional nested series
         """
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "start": start,
             "end": end,
             "includeSeries": str(include_series).lower(),
@@ -288,7 +290,7 @@ class SonarrClient(BaseMediaClient):
         }
         return await self._get("api/v3/calendar", params=params)
 
-    async def get_queue(self, page_size: int = 50) -> Dict[str, Any]:
+    async def get_queue(self, page_size: int = 50) -> dict[str, Any]:
         """Get the current download queue.
 
         Args:
@@ -297,14 +299,14 @@ class SonarrClient(BaseMediaClient):
         Returns:
             Paginated queue response with records array
         """
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "pageSize": page_size,
             "includeSeries": "true",
             "includeEpisode": "true",
         }
         return await self._get("api/v3/queue", params=params)
 
-    async def get_history(self, page_size: int = 25) -> Dict[str, Any]:
+    async def get_history(self, page_size: int = 25) -> dict[str, Any]:
         """Get recent download history.
 
         Args:
@@ -313,7 +315,7 @@ class SonarrClient(BaseMediaClient):
         Returns:
             Paginated history response
         """
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "pageSize": page_size,
             "includeSeries": "true",
             "includeEpisode": "true",
@@ -322,7 +324,7 @@ class SonarrClient(BaseMediaClient):
         }
         return await self._get("api/v3/history", params=params)
 
-    async def get_wanted_missing(self, page_size: int = 50) -> Dict[str, Any]:
+    async def get_wanted_missing(self, page_size: int = 50) -> dict[str, Any]:
         """Get monitored episodes that are missing (no file yet).
 
         Args:
@@ -331,7 +333,7 @@ class SonarrClient(BaseMediaClient):
         Returns:
             Paginated missing episodes response
         """
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "pageSize": page_size,
             "includeSeries": "true",
             "sortKey": "airDateUtc",
@@ -339,7 +341,7 @@ class SonarrClient(BaseMediaClient):
         }
         return await self._get("api/v3/wanted/missing", params=params)
 
-    async def trigger_rename_series(self, series_id: int) -> Dict[str, Any]:
+    async def trigger_rename_series(self, series_id: int) -> dict[str, Any]:
         """Trigger a rename of all files for a series.
 
         Args:
@@ -355,7 +357,7 @@ class SonarrClient(BaseMediaClient):
             data={"name": "RenameFiles", "seriesId": series_id, "files": file_ids},
         )
 
-    async def rescan_series(self, series_id: int) -> Dict[str, Any]:
+    async def rescan_series(self, series_id: int) -> dict[str, Any]:
         """Trigger a disk rescan for a series.
 
         Args:
@@ -369,11 +371,11 @@ class SonarrClient(BaseMediaClient):
             data={"name": "RescanSeries", "seriesId": series_id},
         )
 
-    async def get_tags(self) -> List[Dict[str, Any]]:
+    async def get_tags(self) -> list[dict[str, Any]]:
         """Get all tags defined in Sonarr."""
         return await self._get("api/v3/tag")
 
-    async def create_tag(self, label: str) -> Dict[str, Any]:
+    async def create_tag(self, label: str) -> dict[str, Any]:
         """Create a new tag.
 
         Args:
@@ -396,7 +398,7 @@ class SonarrClient(BaseMediaClient):
         await self._delete(f"api/v3/tag/{tag_id}")
         return True
 
-    async def add_tag_to_series(self, series_id: int, tag_id: int) -> Dict[str, Any]:
+    async def add_tag_to_series(self, series_id: int, tag_id: int) -> dict[str, Any]:
         """Add a tag to a series (no-op if already present).
 
         Args:
@@ -413,7 +415,7 @@ class SonarrClient(BaseMediaClient):
             return await self._put(f"api/v3/series/{series_id}", data=series)
         return series
 
-    async def remove_tag_from_series(self, series_id: int, tag_id: int) -> Dict[str, Any]:
+    async def remove_tag_from_series(self, series_id: int, tag_id: int) -> dict[str, Any]:
         """Remove a tag from a series.
 
         Args:
@@ -426,3 +428,82 @@ class SonarrClient(BaseMediaClient):
         series = await self._get(f"api/v3/series/{series_id}")
         series["tags"] = [t for t in series.get("tags", []) if t != tag_id]
         return await self._put(f"api/v3/series/{series_id}", data=series)
+
+    async def interactive_search_episode(self, episode_id: int) -> list[dict[str, Any]]:
+        """Run a live interactive indexer search for one episode.
+
+        Queries every indexer in real time; can take 30-180 seconds. Rejected
+        releases are included by Sonarr with a ``rejections`` array — callers
+        must preserve it, since "Release is blocklisted" on top-seeded results
+        is a diagnostic signal, not noise.
+
+        Args:
+            episode_id: Episode ID (from get_episodes)
+
+        Returns:
+            List of release dicts (accepted and rejected)
+        """
+        return await self._get_with_timeout("api/v3/release", params={"episodeId": episode_id})
+
+    async def interactive_search_season(
+        self, series_id: int, season_number: int
+    ) -> list[dict[str, Any]]:
+        """Run a live interactive indexer search for a season.
+
+        Args:
+            series_id: Series ID
+            season_number: Season number
+
+        Returns:
+            List of release dicts (accepted and rejected)
+        """
+        return await self._get_with_timeout(
+            "api/v3/release",
+            params={"seriesId": series_id, "seasonNumber": season_number},
+        )
+
+    async def push_release(self, release: dict[str, Any]) -> dict[str, Any]:
+        """Grab a specific release found by interactive search.
+
+        Args:
+            release: The full release dict as returned by interactive_search;
+                Sonarr identifies it by its ``guid`` and indexerId
+
+        Returns:
+            The queued release
+        """
+        return await self._post("api/v3/release", data=release)
+
+    async def get_blocklist(self, page_size: int = 50) -> dict[str, Any]:
+        """Get blocklisted releases.
+
+        Args:
+            page_size: Number of items to return
+
+        Returns:
+            Paginated blocklist response with records array
+        """
+        return await self._get(
+            "api/v3/blocklist",
+            params={"pageSize": page_size, "sortKey": "date", "sortDirection": "descending"},
+        )
+
+    async def get_episode_history(self, episode_id: int, page_size: int = 50) -> dict[str, Any]:
+        """Get history events for one episode.
+
+        Args:
+            episode_id: Episode ID
+            page_size: Number of events to return
+
+        Returns:
+            Paginated history response filtered to the episode
+        """
+        return await self._get(
+            "api/v3/history",
+            params={
+                "pageSize": page_size,
+                "episodeId": episode_id,
+                "sortKey": "date",
+                "sortDirection": "descending",
+            },
+        )

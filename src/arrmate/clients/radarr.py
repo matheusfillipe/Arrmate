@@ -1,6 +1,6 @@
 """Radarr API client implementation."""
 
-from typing import Any, Dict, List
+from typing import Any
 
 from .base import BaseMediaClient
 
@@ -20,7 +20,7 @@ class RadarrClient(BaseMediaClient):
         except Exception:
             return False
 
-    async def search(self, query: str) -> List[Dict[str, Any]]:
+    async def search(self, query: str) -> list[dict[str, Any]]:
         """Search for movies.
 
         Args:
@@ -31,7 +31,7 @@ class RadarrClient(BaseMediaClient):
         """
         return await self._get("api/v3/movie/lookup", params={"term": query})
 
-    async def get_item(self, item_id: int) -> Dict[str, Any]:
+    async def get_item(self, item_id: int) -> dict[str, Any]:
         """Get movie details by ID.
 
         Args:
@@ -53,10 +53,12 @@ class RadarrClient(BaseMediaClient):
             True if successful
         """
         params = {"deleteFiles": str(delete_files).lower()}
-        await self._delete(f"api/v3/movie/{item_id}?{'&'.join(f'{k}={v}' for k, v in params.items())}")
+        await self._delete(
+            f"api/v3/movie/{item_id}?{'&'.join(f'{k}={v}' for k, v in params.items())}"
+        )
         return True
 
-    async def get_all_movies(self) -> List[Dict[str, Any]]:
+    async def get_all_movies(self) -> list[dict[str, Any]]:
         """Get all movies in the library.
 
         Returns:
@@ -72,7 +74,7 @@ class RadarrClient(BaseMediaClient):
         root_folder_path: str,
         monitored: bool = True,
         search_for_movie: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Add a new movie to the library.
 
         Args:
@@ -96,7 +98,7 @@ class RadarrClient(BaseMediaClient):
         }
         return await self._post("api/v3/movie", data=data)
 
-    async def get_movie_file(self, movie_id: int) -> Dict[str, Any]:
+    async def get_movie_file(self, movie_id: int) -> dict[str, Any]:
         """Get movie file details.
 
         Args:
@@ -120,7 +122,7 @@ class RadarrClient(BaseMediaClient):
         await self._delete(f"api/v3/moviefile/{file_id}")
         return True
 
-    async def trigger_movie_search(self, movie_id: int) -> Dict[str, Any]:
+    async def trigger_movie_search(self, movie_id: int) -> dict[str, Any]:
         """Trigger a search for a movie.
 
         Args:
@@ -134,7 +136,7 @@ class RadarrClient(BaseMediaClient):
             data={"name": "MoviesSearch", "movieIds": [movie_id]},
         )
 
-    async def get_quality_profiles(self) -> List[Dict[str, Any]]:
+    async def get_quality_profiles(self) -> list[dict[str, Any]]:
         """Get available quality profiles.
 
         Returns:
@@ -142,7 +144,7 @@ class RadarrClient(BaseMediaClient):
         """
         return await self._get("api/v3/qualityprofile")
 
-    async def get_root_folders(self) -> List[Dict[str, Any]]:
+    async def get_root_folders(self) -> list[dict[str, Any]]:
         """Get available root folders.
 
         Returns:
@@ -150,7 +152,7 @@ class RadarrClient(BaseMediaClient):
         """
         return await self._get("api/v3/rootfolder")
 
-    async def set_movie_monitored(self, movie_id: int, monitored: bool) -> Dict[str, Any]:
+    async def set_movie_monitored(self, movie_id: int, monitored: bool) -> dict[str, Any]:
         """Update the monitored status of a movie.
 
         Args:
@@ -164,7 +166,7 @@ class RadarrClient(BaseMediaClient):
         movie["monitored"] = monitored
         return await self._put(f"api/v3/movie/{movie_id}", data=movie)
 
-    async def get_all_movies_with_files(self) -> List[Dict[str, Any]]:
+    async def get_all_movies_with_files(self) -> list[dict[str, Any]]:
         """Get all movies including nested movieFile with mediaInfo.
 
         Returns:
@@ -172,7 +174,7 @@ class RadarrClient(BaseMediaClient):
         """
         return await self._get("api/v3/movie")
 
-    async def get_calendar(self, start: str, end: str) -> List[Dict[str, Any]]:
+    async def get_calendar(self, start: str, end: str) -> list[dict[str, Any]]:
         """Get movies releasing between start and end dates.
 
         Args:
@@ -182,10 +184,10 @@ class RadarrClient(BaseMediaClient):
         Returns:
             List of movie dicts with release date fields
         """
-        params: Dict[str, Any] = {"start": start, "end": end}
+        params: dict[str, Any] = {"start": start, "end": end}
         return await self._get("api/v3/calendar", params=params)
 
-    async def get_queue(self, page_size: int = 50) -> Dict[str, Any]:
+    async def get_queue(self, page_size: int = 50) -> dict[str, Any]:
         """Get the current download queue.
 
         Args:
@@ -194,10 +196,10 @@ class RadarrClient(BaseMediaClient):
         Returns:
             Paginated queue response with records array
         """
-        params: Dict[str, Any] = {"pageSize": page_size, "includeMovie": "true"}
+        params: dict[str, Any] = {"pageSize": page_size, "includeMovie": "true"}
         return await self._get("api/v3/queue", params=params)
 
-    async def get_history(self, page_size: int = 25) -> Dict[str, Any]:
+    async def get_history(self, page_size: int = 25) -> dict[str, Any]:
         """Get recent download history.
 
         Args:
@@ -206,7 +208,7 @@ class RadarrClient(BaseMediaClient):
         Returns:
             Paginated history response
         """
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "pageSize": page_size,
             "includeMovie": "true",
             "sortKey": "date",
@@ -214,7 +216,7 @@ class RadarrClient(BaseMediaClient):
         }
         return await self._get("api/v3/history", params=params)
 
-    async def get_wanted_cutoff(self, page_size: int = 50) -> Dict[str, Any]:
+    async def get_wanted_cutoff(self, page_size: int = 50) -> dict[str, Any]:
         """Get monitored movies below quality cutoff.
 
         Args:
@@ -223,14 +225,14 @@ class RadarrClient(BaseMediaClient):
         Returns:
             Paginated cutoff movies response
         """
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "pageSize": page_size,
             "sortKey": "title",
             "sortDirection": "ascending",
         }
         return await self._get("api/v3/wanted/cutoff", params=params)
 
-    async def trigger_rename_movie(self, movie_id: int) -> Dict[str, Any]:
+    async def trigger_rename_movie(self, movie_id: int) -> dict[str, Any]:
         """Trigger a rename of all files for a movie.
 
         Args:
@@ -246,7 +248,7 @@ class RadarrClient(BaseMediaClient):
             data={"name": "RenameFiles", "movieIds": [movie_id], "files": file_ids},
         )
 
-    async def rescan_movie(self, movie_id: int) -> Dict[str, Any]:
+    async def rescan_movie(self, movie_id: int) -> dict[str, Any]:
         """Trigger a disk rescan for a movie.
 
         Args:
@@ -260,11 +262,11 @@ class RadarrClient(BaseMediaClient):
             data={"name": "RescanMovie", "movieId": movie_id},
         )
 
-    async def get_tags(self) -> List[Dict[str, Any]]:
+    async def get_tags(self) -> list[dict[str, Any]]:
         """Get all tags defined in Radarr."""
         return await self._get("api/v3/tag")
 
-    async def create_tag(self, label: str) -> Dict[str, Any]:
+    async def create_tag(self, label: str) -> dict[str, Any]:
         """Create a new tag.
 
         Args:
@@ -287,7 +289,7 @@ class RadarrClient(BaseMediaClient):
         await self._delete(f"api/v3/tag/{tag_id}")
         return True
 
-    async def add_tag_to_movie(self, movie_id: int, tag_id: int) -> Dict[str, Any]:
+    async def add_tag_to_movie(self, movie_id: int, tag_id: int) -> dict[str, Any]:
         """Add a tag to a movie (no-op if already present).
 
         Args:
@@ -304,7 +306,7 @@ class RadarrClient(BaseMediaClient):
             return await self._put(f"api/v3/movie/{movie_id}", data=movie)
         return movie
 
-    async def remove_tag_from_movie(self, movie_id: int, tag_id: int) -> Dict[str, Any]:
+    async def remove_tag_from_movie(self, movie_id: int, tag_id: int) -> dict[str, Any]:
         """Remove a tag from a movie.
 
         Args:
@@ -317,3 +319,65 @@ class RadarrClient(BaseMediaClient):
         movie = await self.get_item(movie_id)
         movie["tags"] = [t for t in movie.get("tags", []) if t != tag_id]
         return await self._put(f"api/v3/movie/{movie_id}", data=movie)
+
+    async def interactive_search(self, movie_id: int) -> list[dict[str, Any]]:
+        """Run a live interactive indexer search for a movie.
+
+        Queries every indexer in real time; can take 30-180 seconds. Rejected
+        releases are included by Radarr with a ``rejections`` array — callers
+        must preserve it, since "Release is blocklisted" on top-seeded results
+        is a diagnostic signal, not noise.
+
+        Args:
+            movie_id: Movie ID
+
+        Returns:
+            List of release dicts (accepted and rejected)
+        """
+        return await self._get_with_timeout("api/v3/release", params={"movieId": movie_id})
+
+    async def push_release(self, release: dict[str, Any]) -> dict[str, Any]:
+        """Grab a specific release found by interactive search.
+
+        Args:
+            release: The full release dict as returned by interactive_search;
+                Radarr identifies it by its ``guid`` and indexerId
+
+        Returns:
+            The queued release
+        """
+        return await self._post("api/v3/release", data=release)
+
+    async def get_blocklist(self, page_size: int = 50) -> dict[str, Any]:
+        """Get blocklisted releases.
+
+        Args:
+            page_size: Number of items to return
+
+        Returns:
+            Paginated blocklist response with records array
+        """
+        return await self._get(
+            "api/v3/blocklist",
+            params={"pageSize": page_size, "sortKey": "date", "sortDirection": "descending"},
+        )
+
+    async def get_movie_history(self, movie_id: int, page_size: int = 50) -> dict[str, Any]:
+        """Get history events for one movie.
+
+        Args:
+            movie_id: Movie ID
+            page_size: Number of events to return
+
+        Returns:
+            Paginated history response filtered to the movie
+        """
+        return await self._get(
+            "api/v3/history",
+            params={
+                "pageSize": page_size,
+                "movieId": movie_id,
+                "sortKey": "date",
+                "sortDirection": "descending",
+            },
+        )

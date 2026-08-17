@@ -4,7 +4,7 @@ AudioBookshelf is a self-hosted audiobook and podcast server with
 a modern web UI, mobile apps, and robust playback tracking.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .base import BaseMediaClient
 
@@ -31,6 +31,7 @@ class AudioBookshelfClient(BaseMediaClient):
         """Get or create the HTTP client with Bearer token auth."""
         if self._client is None:
             import httpx
+
             self._client = httpx.AsyncClient(
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 timeout=self.timeout,
@@ -49,7 +50,7 @@ class AudioBookshelfClient(BaseMediaClient):
         except Exception:
             return False
 
-    async def get_system_status(self) -> Dict[str, Any]:
+    async def get_system_status(self) -> dict[str, Any]:
         """Get system status and version.
 
         Returns:
@@ -59,7 +60,7 @@ class AudioBookshelfClient(BaseMediaClient):
         # Use /api/me to validate authorization and get basic info
         return await self._get("api/authorize")
 
-    async def get_libraries(self) -> List[Dict[str, Any]]:
+    async def get_libraries(self) -> list[dict[str, Any]]:
         """Get all accessible libraries.
 
         Returns:
@@ -68,7 +69,7 @@ class AudioBookshelfClient(BaseMediaClient):
         result = await self._get("api/libraries")
         return result.get("libraries", []) if isinstance(result, dict) else result
 
-    async def get_library(self, library_id: str) -> Dict[str, Any]:
+    async def get_library(self, library_id: str) -> dict[str, Any]:
         """Get specific library details.
 
         Args:
@@ -84,9 +85,9 @@ class AudioBookshelfClient(BaseMediaClient):
         library_id: str,
         limit: int = 100,
         page: int = 0,
-        sort: Optional[str] = None,
-        filter: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        sort: str | None = None,
+        filter: str | None = None,
+    ) -> dict[str, Any]:
         """Get items from a library.
 
         Args:
@@ -107,7 +108,7 @@ class AudioBookshelfClient(BaseMediaClient):
 
         return await self._get(f"api/libraries/{library_id}/items", params=params)
 
-    async def search(self, query: str) -> List[Dict[str, Any]]:
+    async def search(self, query: str) -> list[dict[str, Any]]:
         """Search for audiobooks across all libraries.
 
         Args:
@@ -123,7 +124,7 @@ class AudioBookshelfClient(BaseMediaClient):
             return result.get("book", [])
         return []
 
-    async def get_item(self, item_id: str) -> Dict[str, Any]:
+    async def get_item(self, item_id: str) -> dict[str, Any]:
         """Get audiobook details by ID.
 
         Args:
@@ -147,7 +148,7 @@ class AudioBookshelfClient(BaseMediaClient):
         await self._delete(f"api/items/{item_id}")
         return True
 
-    async def get_progress(self) -> List[Dict[str, Any]]:
+    async def get_progress(self) -> list[dict[str, Any]]:
         """Get user's listening progress for all items.
 
         Returns:
@@ -160,9 +161,9 @@ class AudioBookshelfClient(BaseMediaClient):
         self,
         item_id: str,
         current_time: float,
-        duration: Optional[float] = None,
+        duration: float | None = None,
         is_finished: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Update playback progress for an audiobook.
 
         Args:
@@ -183,7 +184,7 @@ class AudioBookshelfClient(BaseMediaClient):
 
         return await self._post(f"api/me/progress/{item_id}", data=data)
 
-    async def get_sessions(self) -> List[Dict[str, Any]]:
+    async def get_sessions(self) -> list[dict[str, Any]]:
         """Get listening sessions.
 
         Returns:
@@ -191,7 +192,7 @@ class AudioBookshelfClient(BaseMediaClient):
         """
         return await self._get("api/me/listening-sessions")
 
-    async def get_personalized(self, library_id: str) -> Dict[str, Any]:
+    async def get_personalized(self, library_id: str) -> dict[str, Any]:
         """Get personalized recommendations for a library.
 
         Args:
@@ -202,7 +203,7 @@ class AudioBookshelfClient(BaseMediaClient):
         """
         return await self._get(f"api/libraries/{library_id}/personalized")
 
-    async def get_series(self, library_id: str) -> List[Dict[str, Any]]:
+    async def get_series(self, library_id: str) -> list[dict[str, Any]]:
         """Get series in a library.
 
         Args:
@@ -214,7 +215,7 @@ class AudioBookshelfClient(BaseMediaClient):
         result = await self._get(f"api/libraries/{library_id}/series")
         return result.get("results", []) if isinstance(result, dict) else result
 
-    async def get_collections(self, library_id: str) -> List[Dict[str, Any]]:
+    async def get_collections(self, library_id: str) -> list[dict[str, Any]]:
         """Get collections in a library.
 
         Args:
@@ -227,8 +228,8 @@ class AudioBookshelfClient(BaseMediaClient):
         return result.get("collections", []) if isinstance(result, dict) else result
 
     async def create_collection(
-        self, library_id: str, name: str, book_ids: List[str]
-    ) -> Dict[str, Any]:
+        self, library_id: str, name: str, book_ids: list[str]
+    ) -> dict[str, Any]:
         """Create a new collection.
 
         Args:
@@ -246,7 +247,7 @@ class AudioBookshelfClient(BaseMediaClient):
         }
         return await self._post("api/collections", data=data)
 
-    async def scan_library(self, library_id: str) -> Dict[str, Any]:
+    async def scan_library(self, library_id: str) -> dict[str, Any]:
         """Trigger a library scan.
 
         Args:
@@ -257,7 +258,7 @@ class AudioBookshelfClient(BaseMediaClient):
         """
         return await self._post(f"api/libraries/{library_id}/scan")
 
-    async def match_audiobook(self, item_id: str) -> Dict[str, Any]:
+    async def match_audiobook(self, item_id: str) -> dict[str, Any]:
         """Match audiobook to metadata providers.
 
         Args:
@@ -271,7 +272,7 @@ class AudioBookshelfClient(BaseMediaClient):
     # Implement abstract methods from BaseMediaClient
     # These map AudioBookshelf-specific methods to the generic interface
 
-    async def get_all_series(self) -> List[Dict[str, Any]]:
+    async def get_all_series(self) -> list[dict[str, Any]]:
         """Get all audiobooks across all libraries.
 
         Returns:
@@ -286,11 +287,11 @@ class AudioBookshelfClient(BaseMediaClient):
                 all_items.extend(items)
         return all_items
 
-    async def get_all_movies(self) -> List[Dict[str, Any]]:
+    async def get_all_movies(self) -> list[dict[str, Any]]:
         """Alias for get_all_series (AudioBookshelf doesn't have movies)."""
         return await self.get_all_series()
 
-    async def get_quality_profiles(self) -> List[Dict[str, Any]]:
+    async def get_quality_profiles(self) -> list[dict[str, Any]]:
         """AudioBookshelf doesn't have quality profiles.
 
         Returns:
@@ -298,7 +299,7 @@ class AudioBookshelfClient(BaseMediaClient):
         """
         return []
 
-    async def get_root_folders(self) -> List[Dict[str, Any]]:
+    async def get_root_folders(self) -> list[dict[str, Any]]:
         """Get library folders.
 
         Returns:

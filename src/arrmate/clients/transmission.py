@@ -1,15 +1,22 @@
 """Transmission RPC client."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
 # Transmission status codes
-TRANSMISSION_STATUS = {0: "Stopped", 1: "Check queued", 2: "Checking", 3: "DL queued",
-                       4: "Downloading", 5: "Seed queued", 6: "Seeding"}
+TRANSMISSION_STATUS = {
+    0: "Stopped",
+    1: "Check queued",
+    2: "Checking",
+    3: "DL queued",
+    4: "Downloading",
+    5: "Seed queued",
+    6: "Seeding",
+}
 
 
 class TransmissionClient:
@@ -23,7 +30,7 @@ class TransmissionClient:
         self.password = password
         self.timeout = timeout
         self._session_id = ""
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -37,7 +44,7 @@ class TransmissionClient:
             await self._client.aclose()
             self._client = None
 
-    async def _rpc(self, method: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
+    async def _rpc(self, method: str, arguments: dict[str, Any] | None = None) -> Any:
         url = f"{self.base_url}/transmission/rpc"
         payload = {"method": method, "arguments": arguments or {}}
         headers = {"X-Transmission-Session-Id": self._session_id}
@@ -60,16 +67,28 @@ class TransmissionClient:
         except Exception:
             return False
 
-    async def get_session(self) -> Dict[str, Any]:
+    async def get_session(self) -> dict[str, Any]:
         """Get session info including speed limits."""
         return await self._rpc("session-get")
 
-    async def get_torrents(self) -> Dict[str, Any]:
+    async def get_torrents(self) -> dict[str, Any]:
         """Get list of all torrents with key fields."""
-        return await self._rpc("torrent-get", {
-            "fields": ["id", "name", "status", "rateDownload", "rateUpload",
-                       "percentDone", "totalSize", "error", "errorString"]
-        })
+        return await self._rpc(
+            "torrent-get",
+            {
+                "fields": [
+                    "id",
+                    "name",
+                    "status",
+                    "rateDownload",
+                    "rateUpload",
+                    "percentDone",
+                    "totalSize",
+                    "error",
+                    "errorString",
+                ]
+            },
+        )
 
     async def pause_torrent(self, torrent_id: int) -> bool:
         try:
@@ -88,10 +107,13 @@ class TransmissionClient:
     async def set_speed_limit_down(self, kbps: int) -> bool:
         """Set download speed limit in KB/s (0 = disable limit)."""
         try:
-            await self._rpc("session-set", {
-                "speed-limit-down": kbps,
-                "speed-limit-down-enabled": kbps > 0,
-            })
+            await self._rpc(
+                "session-set",
+                {
+                    "speed-limit-down": kbps,
+                    "speed-limit-down-enabled": kbps > 0,
+                },
+            )
             return True
         except Exception:
             return False
@@ -99,20 +121,26 @@ class TransmissionClient:
     async def set_speed_limit_up(self, kbps: int) -> bool:
         """Set upload speed limit in KB/s (0 = disable limit)."""
         try:
-            await self._rpc("session-set", {
-                "speed-limit-up": kbps,
-                "speed-limit-up-enabled": kbps > 0,
-            })
+            await self._rpc(
+                "session-set",
+                {
+                    "speed-limit-up": kbps,
+                    "speed-limit-up-enabled": kbps > 0,
+                },
+            )
             return True
         except Exception:
             return False
 
     async def delete_torrent(self, torrent_id: int, delete_local_data: bool = False) -> bool:
         try:
-            await self._rpc("torrent-remove", {
-                "ids": [torrent_id],
-                "delete-local-data": delete_local_data,
-            })
+            await self._rpc(
+                "torrent-remove",
+                {
+                    "ids": [torrent_id],
+                    "delete-local-data": delete_local_data,
+                },
+            )
             return True
         except Exception:
             return False
@@ -132,3 +160,26 @@ class TransmissionClient:
             return True
         except Exception:
             return False
+
+    async def get_item_files(self, torrent_id: int) -> list[dict[str, Any]]:
+        """List the files inside a torrent.
+
+        Args:
+            torrent_id: Transmission torrent ID
+
+        Returns:
+            List of file dicts with name and size (bytes)
+        """
+        result = await self._rpc(
+            "torrent-get",
+            {
+                "ids": [torrent_id],
+                "fields": ["id", "name", "files"],
+            },
+        )
+        torrents = result.get("arguments", {}).get("torrents", [])
+        return [
+            {"name": f.get("name", ""), "size": f.get("length", 0)}
+            for t in torrents
+            for f in t.get("files", [])
+        ]

@@ -6,7 +6,7 @@ This client provides read-heavy operations (list, search, refresh) with
 limited write operations (delete to trash, scan, mark watched/unwatched).
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
@@ -47,7 +47,7 @@ class PlexClient(BaseExternalService):
         except Exception:
             return False
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """Get library statistics (library count and section info).
 
         Returns:
@@ -63,7 +63,7 @@ class PlexClient(BaseExternalService):
             ],
         }
 
-    async def get_machine_identifier(self) -> Optional[str]:
+    async def get_machine_identifier(self) -> str | None:
         """Get the server's unique machineIdentifier (needed for sharing via plex.tv).
 
         Returns:
@@ -75,7 +75,7 @@ class PlexClient(BaseExternalService):
         except Exception:
             return None
 
-    async def get_version(self) -> Optional[str]:
+    async def get_version(self) -> str | None:
         """Get server version from identity endpoint.
 
         Returns:
@@ -87,7 +87,7 @@ class PlexClient(BaseExternalService):
         except Exception:
             return None
 
-    async def get_libraries(self) -> List[Dict[str, Any]]:
+    async def get_libraries(self) -> list[dict[str, Any]]:
         """Get all library sections.
 
         Returns:
@@ -97,8 +97,8 @@ class PlexClient(BaseExternalService):
         return data.get("MediaContainer", {}).get("Directory", [])
 
     async def get_library_items(
-        self, section_id: str, libtype: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        self, section_id: str, libtype: str | None = None
+    ) -> list[dict[str, Any]]:
         """Get all items in a library section.
 
         Args:
@@ -108,13 +108,13 @@ class PlexClient(BaseExternalService):
         Returns:
             List of media item dictionaries
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if libtype:
             params["type"] = libtype
         data = await self._get(f"/library/sections/{section_id}/all", params=params)
         return data.get("MediaContainer", {}).get("Metadata", [])
 
-    async def search(self, query: str, limit: int = 25) -> List[Dict[str, Any]]:
+    async def search(self, query: str, limit: int = 25) -> list[dict[str, Any]]:
         """Search across all libraries.
 
         Args:
@@ -128,7 +128,7 @@ class PlexClient(BaseExternalService):
         data = await self._get("/hubs/search/", params=params)
         return data.get("MediaContainer", {}).get("Hub", [])
 
-    async def get_item(self, rating_key: str) -> Dict[str, Any]:
+    async def get_item(self, rating_key: str) -> dict[str, Any]:
         """Get details for a specific media item.
 
         Args:
@@ -218,7 +218,7 @@ class PlexClient(BaseExternalService):
         except Exception:
             return False
 
-    async def get_sessions(self) -> List[Dict[str, Any]]:
+    async def get_sessions(self) -> list[dict[str, Any]]:
         """Get all active streaming sessions.
 
         Returns:
@@ -227,7 +227,7 @@ class PlexClient(BaseExternalService):
         data = await self._get("/status/sessions")
         return data.get("MediaContainer", {}).get("Metadata", [])
 
-    async def get_accounts(self) -> List[Dict[str, Any]]:
+    async def get_accounts(self) -> list[dict[str, Any]]:
         """Get list of server accounts/users.
 
         Returns:
@@ -241,10 +241,10 @@ class PlexClient(BaseExternalService):
 
     async def get_history(
         self,
-        account_id: Optional[int] = None,
+        account_id: int | None = None,
         limit: int = 50,
-        min_date: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        min_date: int | None = None,
+    ) -> list[dict[str, Any]]:
         """Get playback history, optionally filtered by user account and date.
 
         Args:
@@ -263,7 +263,7 @@ class PlexClient(BaseExternalService):
         data = await self._get("/status/sessions/history/all", params=params)
         return data.get("MediaContainer", {}).get("Metadata", [])
 
-    async def get_continue_watching(self) -> List[Dict[str, Any]]:
+    async def get_continue_watching(self) -> list[dict[str, Any]]:
         """Get items currently in progress (continue watching hub).
 
         Returns:
@@ -283,7 +283,7 @@ class PlexClient(BaseExternalService):
         except Exception:
             return []
 
-    async def get_on_deck(self) -> List[Dict[str, Any]]:
+    async def get_on_deck(self) -> list[dict[str, Any]]:
         """Get on-deck items (next episodes to watch for in-progress shows).
 
         Returns:
@@ -292,7 +292,7 @@ class PlexClient(BaseExternalService):
         data = await self._get("/library/onDeck")
         return data.get("MediaContainer", {}).get("Metadata", [])
 
-    async def get_recently_added(self, limit: int = 25) -> List[Dict[str, Any]]:
+    async def get_recently_added(self, limit: int = 25) -> list[dict[str, Any]]:
         """Get recently added items across all libraries.
 
         Args:
@@ -348,7 +348,7 @@ class PlexClient(BaseExternalService):
         except Exception:
             return False
 
-    async def get_butler_tasks(self) -> List[Dict[str, Any]]:
+    async def get_butler_tasks(self) -> list[dict[str, Any]]:
         """Get available Butler maintenance tasks and their status.
 
         Returns:
@@ -411,7 +411,7 @@ class PlexClient(BaseExternalService):
         except Exception:
             return False
 
-    async def get_playlists(self) -> List[Dict[str, Any]]:
+    async def get_playlists(self) -> list[dict[str, Any]]:
         """Get all playlists on this server.
 
         Returns:
@@ -423,7 +423,7 @@ class PlexClient(BaseExternalService):
         except Exception:
             return []
 
-    async def get_playlist_items(self, playlist_id: str) -> List[Dict[str, Any]]:
+    async def get_playlist_items(self, playlist_id: str) -> list[dict[str, Any]]:
         """Get items in a playlist.
 
         Args:

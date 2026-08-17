@@ -1,7 +1,7 @@
 """qBittorrent Web API client."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
@@ -16,7 +16,7 @@ class QBittorrentClient:
         self.username = username
         self.password = password
         self.timeout = timeout
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
         self._logged_in = False
 
     @property
@@ -41,7 +41,7 @@ class QBittorrentClient:
         resp.raise_for_status()
         self._logged_in = True
 
-    async def _get(self, path: str, params: Optional[Dict] = None) -> Any:
+    async def _get(self, path: str, params: dict | None = None) -> Any:
         await self._ensure_logged_in()
         resp = await self.client.get(f"{self.base_url}{path}", params=params)
         resp.raise_for_status()
@@ -50,7 +50,7 @@ class QBittorrentClient:
         except Exception:
             return resp.text
 
-    async def _post(self, path: str, data: Optional[Dict] = None) -> Any:
+    async def _post(self, path: str, data: dict | None = None) -> Any:
         await self._ensure_logged_in()
         resp = await self.client.post(f"{self.base_url}{path}", data=data or {})
         resp.raise_for_status()
@@ -66,11 +66,11 @@ class QBittorrentClient:
         except Exception:
             return False
 
-    async def get_transfer_info(self) -> Dict[str, Any]:
+    async def get_transfer_info(self) -> dict[str, Any]:
         """Get transfer speeds and totals."""
         return await self._get("/api/v2/transfer/info")
 
-    async def get_torrents(self) -> List[Dict[str, Any]]:
+    async def get_torrents(self) -> list[dict[str, Any]]:
         """Get list of all torrents."""
         result = await self._get("/api/v2/torrents/info")
         return result if isinstance(result, list) else []
@@ -107,10 +107,13 @@ class QBittorrentClient:
 
     async def delete_torrent(self, torrent_hash: str, delete_files: bool = False) -> bool:
         try:
-            await self._post("/api/v2/torrents/delete", {
-                "hashes": torrent_hash,
-                "deleteFiles": "true" if delete_files else "false",
-            })
+            await self._post(
+                "/api/v2/torrents/delete",
+                {
+                    "hashes": torrent_hash,
+                    "deleteFiles": "true" if delete_files else "false",
+                },
+            )
             return True
         except Exception:
             return False
@@ -135,11 +138,46 @@ class QBittorrentClient:
     async def add_url(self, url: str, category: str = "", paused: bool = False) -> bool:
         """Add a torrent or magnet link by URL."""
         try:
-            await self._post("/api/v2/torrents/add", {
-                "urls": url,
-                "category": category,
-                "paused": "true" if paused else "false",
-            })
+            await self._post(
+                "/api/v2/torrents/add",
+                {
+                    "urls": url,
+                    "category": category,
+                    "paused": "true" if paused else "false",
+                },
+            )
+            return True
+        except Exception:
+            return False
+
+    async def get_item_files(self, torrent_hash: str) -> list[dict[str, Any]]:
+        """List the files inside a torrent.
+
+        The single highest-value diagnostic call in the downloader layer: a
+        single non-video file, a ``.exe``/``.lnk``/``.scr``/``.zipx``, or a
+        size that does not match the release means a poisoned swarm.
+
+        Args:
+            torrent_hash: Torrent hash
+
+        Returns:
+            List of file dicts with name, size, and progress
+        """
+        result = await self._get("/api/v2/torrents/files", {"hash": torrent_hash})
+        return result if isinstance(result, list) else []
+
+    async def recheck_torrent(self, torrent_hash: str) -> bool:
+        """Force a hash recheck of a torrent."""
+        try:
+            await self._post("/api/v2/torrents/recheck", {"hashes": torrent_hash})
+            return True
+        except Exception:
+            return False
+
+    async def reannounce_torrent(self, torrent_hash: str) -> bool:
+        """Force a tracker reannounce of a torrent."""
+        try:
+            await self._post("/api/v2/torrents/reannounce", {"hashes": torrent_hash})
             return True
         except Exception:
             return False

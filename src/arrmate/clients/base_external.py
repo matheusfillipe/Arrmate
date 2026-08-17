@@ -7,7 +7,7 @@ multiple media services but don't manage media directly. Examples:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
@@ -30,7 +30,7 @@ class BaseExternalService(ABC):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -48,7 +48,7 @@ class BaseExternalService(ABC):
             await self._client.aclose()
             self._client = None
 
-    async def _get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Any:
+    async def _get(self, endpoint: str, params: dict[str, Any] | None = None) -> Any:
         """Make a GET request.
 
         Args:
@@ -72,9 +72,7 @@ class BaseExternalService(ABC):
         response.raise_for_status()
         return response.json()
 
-    async def _post(
-        self, endpoint: str, data: Optional[Dict[str, Any]] = None
-    ) -> Any:
+    async def _post(self, endpoint: str, data: dict[str, Any] | None = None) -> Any:
         """Make a POST request.
 
         Args:
@@ -89,9 +87,7 @@ class BaseExternalService(ABC):
         response.raise_for_status()
         return response.json()
 
-    async def _put(
-        self, endpoint: str, data: Optional[Dict[str, Any]] = None
-    ) -> Any:
+    async def _put(self, endpoint: str, data: dict[str, Any] | None = None) -> Any:
         """Make a PUT request.
 
         Args:
@@ -127,13 +123,11 @@ class BaseExternalService(ABC):
         Returns:
             True if connection is successful, False otherwise
         """
-        pass
 
     @abstractmethod
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """Get statistics or dashboard metrics.
 
         Returns:
             Dictionary of statistics/metrics
         """
-        pass

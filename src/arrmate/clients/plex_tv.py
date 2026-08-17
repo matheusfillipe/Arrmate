@@ -5,10 +5,9 @@ Used for inviting friends, listing existing shares, and revoking access.
 All calls require a valid X-Plex-Token from the server owner's account.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
-
 
 PLEX_TV = "https://plex.tv"
 
@@ -25,7 +24,7 @@ class PlexTVClient:
     def __init__(self, token: str, timeout: int = 20) -> None:
         self.token = token
         self.timeout = timeout
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -41,7 +40,7 @@ class PlexTVClient:
             await self._client.aclose()
             self._client = None
 
-    async def get_friends(self) -> List[Dict[str, Any]]:
+    async def get_friends(self) -> list[dict[str, Any]]:
         """Return all plex.tv friends (users who have been shared any server).
 
         Each dict contains: id, username, title, email, thumb, servers[].
@@ -54,8 +53,8 @@ class PlexTVClient:
         self,
         machine_identifier: str,
         invited_email: str,
-        library_section_ids: List[int],
-    ) -> Dict[str, Any]:
+        library_section_ids: list[int],
+    ) -> dict[str, Any]:
         """Invite a user by email and share selected library sections.
 
         Args:
@@ -94,7 +93,7 @@ class PlexTVClient:
         resp = await self.client.delete(f"{PLEX_TV}/api/v2/friends/{friend_id}")
         return resp.status_code in (200, 204)
 
-    async def get_home_users(self) -> List[Dict[str, Any]]:
+    async def get_home_users(self) -> list[dict[str, Any]]:
         """Return all Plex home users (managed users on this account).
 
         Returns:
@@ -105,7 +104,7 @@ class PlexTVClient:
         data = resp.json()
         return data.get("users", []) if isinstance(data, dict) else data
 
-    async def switch_home_user(self, user_id: int) -> Optional[str]:
+    async def switch_home_user(self, user_id: int) -> str | None:
         """Switch to a home user and return their auth token.
 
         For non-PIN-protected managed users only. Returns None on failure.

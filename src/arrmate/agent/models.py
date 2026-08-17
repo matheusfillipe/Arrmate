@@ -1,0 +1,81 @@
+"""Agent construction: pydantic-ai Agent built from Arrmate settings."""
+
+import logging
+from functools import lru_cache
+
+from pydantic_ai import Agent, RunContext
+from pydantic_ai.models import Model
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.ollama import OllamaModel
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.providers.ollama import OllamaProvider
+from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.usage import UsageLimits
+
+from ..config.settings import settings
+from .deps import AgentDeps
+from .playbooks import register_playbook_tools
+from .system_prompt import build_system_prompt
+from .tools import register_tools
+
+logger = logging.getLogger(__name__)
+
+MAX_TOOL_CALLS_PER_RUN = 25
+
+#: Applied per-run (Agent.iter(usage_limits=...)) — the limit is a property
+#: of a conversation turn, not of the agent.
+RUN_USAGE_LIMITS = UsageLimits(tool_calls_limit=MAX_TOOL_CALLS_PER_RUN)
+
+
+def _build_model() -> Model:
+    provider = settings.llm_provider
+
+    if provider == "ollama":
+        kwargs: dict = {"base_url": settings.ollama_base_url}
+        if settings.ollama_api_key:
+            kwargs["headers"] = {"Authorization": f"Bearer {settings.ollama_api_key}"}
+        return OllamaModel(settings.ollama_model, provider=OllamaProvider(**kwargs))
+
+    if provider == "anthropic":
+        if not settings.anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY is required for the anthropic provider")
+        return AnthropicModel(
+            settings.anthropic_model,
+            provider=AnthropicProvider(api_key=settings.anthropic_api_key),
+        )
+
+    # "openai" also covers any OpenAI-compatible endpoint (Groq, OpenRouter,
+    # z.ai coding plan, LM Studio, ...) via OPENAI_BASE_URL.
+    if not settings.openai_api_key:
+        raise ValueError("OPENAI_API_KEY is required for the openai provider")
+    return OpenAIChatModel(
+        settings.openai_model,
+        provider=OpenAIProvider(
+            base_url=settings.openai_base_url,
+            api_key=settings.openai_api_key,
+        ),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_agent() -> Agent[AgentDeps, str]:
+    """Build (once) the chat agent from current settings.
+
+    The Agent instance is cached per process; a settings change that alters
+    the provider requires a restart (get_agent.cache_clear() on save).
+    """
+    agent: Agent[AgentDeps, str] = Agent(
+        _build_model(),
+        deps_type=AgentDeps,
+        output_type=str,
+    )
+
+    @agent.system_prompt
+    async def _dynamic_system_prompt(ctx: RunContext[AgentDeps]) -> str:
+        return await build_system_prompt()
+
+    register_tools(agent)
+    register_playbook_tools(agent)
+    logger.info("Chat agent built (provider=%s)", settings.llm_provider)
+    return agent
