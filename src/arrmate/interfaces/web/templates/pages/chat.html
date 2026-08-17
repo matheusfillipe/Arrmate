@@ -33,11 +33,11 @@
       <template x-for="(m, i) in messages" :key="i">
         <div>
           <div class="flex" :class="m.role === 'user' ? 'justify-end' : 'justify-start'">
-            <div class="max-w-[85%] rounded-xl px-4 py-2.5 text-sm whitespace-pre-wrap"
+            <div class="max-w-[85%] rounded-xl px-4 py-2.5 text-sm"
                  :class="m.role === 'user'
-                        ? 'bg-indigo-600 text-white'
-                        : 'bg-gray-700 text-gray-100'"
-                 x-text="m.text"></div>
+                        ? 'bg-indigo-600 text-white whitespace-pre-wrap'
+                        : 'bg-gray-700 text-gray-100 chat-markdown'"
+                 x-html="m.role === 'user' ? escapeHtml(m.text) : renderMarkdown(m.text)"></div>
           </div>
 
           <!-- Tool cards -->
@@ -81,7 +81,24 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 <script>
+// Answers arrive as markdown: tables of episodes, release lists, bold verdicts. Rendering it
+// as plain text is what made a good answer look like noise. Model and tool output are
+// untrusted, so everything goes through the sanitizer before it reaches the DOM.
+function renderMarkdown(text) {
+  if (!text) return '';
+  if (!window.marked || !window.DOMPurify) return escapeHtml(text);
+  return DOMPurify.sanitize(marked.parse(text, { breaks: true }));
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text || '';
+  return div.innerHTML;
+}
+
 function chat() {
   return {
     threadId: {{ (thread.id if thread else None) | tojson }},
