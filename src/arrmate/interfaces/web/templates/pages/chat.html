@@ -87,9 +87,17 @@
 // Answers arrive as markdown: tables of episodes, release lists, bold verdicts. Rendering it
 // as plain text is what made a good answer look like noise. Model and tool output are
 // untrusted, so everything goes through the sanitizer before it reaches the DOM.
+// Sizes and counts get written as "~768 GB". GFM reads a second tilde on the line as the
+// close of a strikethrough and crosses out everything between them, so that rule is off:
+// tilde-as-approximately is far more common here than deliberate strikethrough.
+let markedReady = false;
 function renderMarkdown(text) {
   if (!text) return '';
   if (!window.marked || !window.DOMPurify) return escapeHtml(text);
+  if (!markedReady) {
+    marked.use({ tokenizer: { del: () => undefined } });
+    markedReady = true;
+  }
   return DOMPurify.sanitize(marked.parse(text, { breaks: true }));
 }
 
