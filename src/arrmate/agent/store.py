@@ -129,12 +129,20 @@ def add_message(thread_id: str, role: str, content: str) -> None:
 
 
 def list_messages(thread_id: str) -> list[dict]:
+    """Stored turns in the shape the chat page renders.
+
+    The key is ``text`` to match the objects the live stream builds client-side; a reloaded
+    thread and a streaming one then render through the same path.
+    """
     with _get_conn() as conn:
         rows = conn.execute(
             "SELECT role, content, created_at FROM messages WHERE thread_id = ? ORDER BY id",
             (thread_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+    return [
+        {"role": r["role"], "text": r["content"], "cards": [], "created_at": r["created_at"]}
+        for r in rows
+    ]
 
 
 def auto_title(thread_id: str, first_message: str) -> bool:

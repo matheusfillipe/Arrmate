@@ -22,7 +22,10 @@ from .deps import AgentDeps
 
 logger = logging.getLogger(__name__)
 
-_MAX_LIST_ITEMS = 30
+#: A whole homelab library has to fit in one result. Cutting below that made the model try to
+#: defeat the cap by guessing filters one letter at a time until it hit the tool-call limit,
+#: so the cap belongs above a realistic library rather than merely being announced.
+_MAX_LIST_ITEMS = 200
 _MAX_STR_LEN = 400
 
 _DATA_OPEN = "<<<TOOL_DATA"
@@ -37,8 +40,13 @@ def _compact(value: Any) -> Any:
     if isinstance(value, list):
         items = [_compact(v) for v in value if v not in (None, "", [], {})]
         if len(items) > _MAX_LIST_ITEMS:
+            total = len(items)
             items = items[:_MAX_LIST_ITEMS]
-            items.append(f"...{len(value) - _MAX_LIST_ITEMS} more, refine your filter")
+            items.append(
+                f"...{total - _MAX_LIST_ITEMS} of {total} items omitted. "
+                "Report this count to the user. Narrow with a real search term; "
+                "repeating the call with guessed terms will not reveal them."
+            )
         return items
     if isinstance(value, str) and len(value) > _MAX_STR_LEN:
         return value[:_MAX_STR_LEN] + "…"

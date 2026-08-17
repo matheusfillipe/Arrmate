@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic_ai import Agent, FunctionToolCallEvent, FunctionToolResultEvent
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import (
     AgentStreamEvent,
     PartDeltaEvent,
@@ -21,7 +22,7 @@ from arrmate.interfaces.web.routes import templates
 
 from . import store
 from .deps import AgentDeps
-from .models import RUN_USAGE_LIMITS, get_agent
+from .models import MAX_TOOL_CALLS_PER_RUN, RUN_USAGE_LIMITS, get_agent
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +193,11 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                                             {
                                                 "name": ev.part.tool_name,
                                                 "phase": "end",
-                                                "result": str(ev.content)[:_TOOL_RESULT_PREVIEW],
+                                                # The payload rides on the part; the event's
+                                                # own `content` is unset for tool returns.
+                                                "result": str(ev.part.content)[
+                                                    :_TOOL_RESULT_PREVIEW
+                                                ],
                                             }
                                         )
                                         + "\n\n"
@@ -207,6 +212,20 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                     thread_id, result.all_messages_json().decode() if result else "[]"
                 )
                 yield "event: done\ndata: {}\n\n"
+        except UsageLimitExceeded:
+            logger.warning("chat run hit the tool-call ceiling on thread %s", thread_id)
+            yield (
+                "event: error\ndata: "
+                + json.dumps(
+                    {
+                        "message": (
+                            f"Gave up after {MAX_TOOL_CALLS_PER_RUN} tool calls without "
+                            "reaching an answer. Try asking something narrower."
+                        )
+                    }
+                )
+                + "\n\n"
+            )
         except Exception as e:
             logger.exception("chat stream failed for thread %s", thread_id)
             yield (

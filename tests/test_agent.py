@@ -16,17 +16,22 @@ from pydantic_ai.messages import (
 
 from arrmate.agent.chat import _text_chunk
 from arrmate.agent.deps import AgentDeps
-from arrmate.agent.tools import _compact, _wrap
+from arrmate.agent.tools import _MAX_LIST_ITEMS, _compact, _wrap
 
 
 class TestCompact:
     def test_strips_nulls_and_empties(self):
         assert _compact({"a": None, "b": "", "c": [], "d": {}, "e": 1}) == {"e": 1}
 
+    def test_keeps_a_whole_library(self):
+        """A 40-show library must survive intact; capping it sent the model hunting."""
+        assert _compact(list(range(40))) == list(range(40))
+
     def test_truncates_lists_with_marker(self):
-        out = _compact(list(range(40)))
-        assert len(out) == 31
-        assert "more" in out[-1]
+        out = _compact(list(range(_MAX_LIST_ITEMS + 10)))
+        assert len(out) == _MAX_LIST_ITEMS + 1
+        assert "omitted" in out[-1]
+        assert "will not reveal" in out[-1]
 
     def test_truncates_long_strings(self):
         out = _compact("x" * 500)
@@ -147,3 +152,20 @@ class TestTextChunk:
     def test_ignores_final_result_marker(self):
         """Breaking on this event was what silenced the whole answer."""
         assert _text_chunk(FinalResultEvent(tool_name=None, tool_call_id=None)) == ""
+
+
+class TestStoredMessageShape:
+    """A reloaded thread renders through the same keys the live stream builds."""
+
+    def test_list_messages_uses_text_key(self, tmp_chat_db):
+        thread_id = tmp_chat_db.create_thread("u")
+        tmp_chat_db.add_message(thread_id, "user", "hello")
+        tmp_chat_db.add_message(thread_id, "assistant", "hi back")
+
+        messages = tmp_chat_db.list_messages(thread_id)
+
+        assert [(m["role"], m["text"]) for m in messages] == [
+            ("user", "hello"),
+            ("assistant", "hi back"),
+        ]
+        assert all(m["cards"] == [] for m in messages)
