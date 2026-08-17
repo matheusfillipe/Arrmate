@@ -33,6 +33,12 @@ x-arrmate-env: &arrmate-env
   # OpenAI (leave blank to disable)
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+  # Any OpenAI-compatible endpoint (z.ai coding plan, Groq, OpenRouter,
+  # LM Studio, ...) goes through OPENAI_BASE_URL:
+  #   LLM_PROVIDER=openai
+  #   OPENAI_BASE_URL=https://api.z.ai/api/coding/paas/v4
+  #   OPENAI_MODEL=glm-5.1
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
 
   # Anthropic (leave blank to disable)
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
