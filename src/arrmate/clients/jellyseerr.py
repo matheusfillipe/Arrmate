@@ -47,7 +47,7 @@ class JellyseerrClient:
 
     async def test_connection(self) -> bool:
         try:
-            await self._get("/settings/status")
+            await self._get("/status")
             return True
         except (httpx.HTTPError, ValueError):
             return False

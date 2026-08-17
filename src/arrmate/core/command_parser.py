@@ -1,6 +1,6 @@
 """Natural language command parser using LLM."""
 
-from arrmate.llm.base import BaseLLMProvider
+from arrmate.llm.base import BaseLLMProvider, ConversationalReply
 from arrmate.llm.factory import create_llm_provider
 from arrmate.llm.schemas import get_system_prompt, get_tool_schemas
 
@@ -43,6 +43,8 @@ class CommandParser:
 
         try:
             parsed_data = await self.llm_provider.parse_command(user_input, tools, system_prompt)
+        except ConversationalReply:
+            raise
         except Exception as e:
             raise ValueError(f"Failed to parse command: {e!s}") from e
 

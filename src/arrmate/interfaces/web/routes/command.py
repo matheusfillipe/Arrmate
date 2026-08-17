@@ -4,6 +4,7 @@ from ._shared import (  # noqa: F401
     DESTRUCTIVE_ACTIONS,
     USER_BLOCKED_ACTIONS,
     ActionType,
+    ConversationalReply,
     Form,
     HTMLResponse,
     Request,
@@ -47,6 +48,12 @@ async def parse_command(request: Request, command: str = Form(...)):
                 "intent": intent,
                 "command": command,
             },
+        )
+    except ConversationalReply as reply:
+        return templates.TemplateResponse(
+            request,
+            "partials/command_reply.html",
+            {"reply": reply.text},
         )
     except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
         return templates.TemplateResponse(
@@ -161,6 +168,13 @@ async def execute_command(
                     "toast_type": "success" if result.success else "error",
                     "toast_message": result.message,
                 },
+            )
+
+        except ConversationalReply as reply:
+            return templates.TemplateResponse(
+                request,
+                "partials/command_reply.html",
+                {"reply": reply.text},
             )
 
         except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:

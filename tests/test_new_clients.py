@@ -6,6 +6,7 @@ import pytest
 from arrmate.clients.cleanuparr import CleanuparrClient
 from arrmate.clients.jellyfin import JellyfinClient
 from arrmate.clients.jellyseerr import JellyseerrClient
+from arrmate.clients.lidarr import LidarrClient
 
 
 @pytest.mark.asyncio
@@ -110,4 +111,25 @@ async def test_jellyseerr_search(httpx_mock):
     )
     data = await c.search_tmdb("dune")
     assert data["results"][0]["mediaType"] == "movie"
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_jellyseerr_test_connection_uses_status(httpx_mock):
+    """/settings/status is admin-only and 404s for an API key; /status is the public probe."""
+    c = JellyseerrClient("http://js:5055", "key")
+    httpx_mock.add_response(url="http://js:5055/api/v1/status", json={"version": "2.7.3"})
+    assert await c.test_connection() is True
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_lidarr_speaks_v1(httpx_mock):
+    """Lidarr's API is v1; every other *arr in the family is v3."""
+    c = LidarrClient("http://lidarr:8686", "key")
+    httpx_mock.add_response(
+        url="http://lidarr:8686/api/v1/system/status",
+        json={"appName": "Lidarr", "version": "3.1.2.4913"},
+    )
+    assert await c.test_connection() is True
     await c.close()

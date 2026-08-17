@@ -5,7 +5,7 @@ from typing import Any, cast
 
 from openai import AsyncOpenAI
 
-from .base import BaseLLMProvider
+from .base import BaseLLMProvider, ConversationalReply
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -64,6 +64,8 @@ class OpenAIProvider(BaseLLMProvider):
             message = response.choices[0].message
 
             if not message.tool_calls:
+                if message.content:
+                    raise ConversationalReply(message.content)
                 raise ValueError("LLM did not use the parse_media_command function")
 
             # Get the first tool call
@@ -78,6 +80,8 @@ class OpenAIProvider(BaseLLMProvider):
             args: dict[str, Any] = function_args
             return args
 
+        except ConversationalReply:
+            raise
         except Exception as e:
             raise ValueError(f"Failed to parse command with OpenAI: {e!s}") from e
 

@@ -4,7 +4,7 @@ from typing import Any, cast
 
 from anthropic import AsyncAnthropic
 
-from .base import BaseLLMProvider
+from .base import BaseLLMProvider, ConversationalReply
 
 
 class AnthropicProvider(BaseLLMProvider):
@@ -71,6 +71,11 @@ class AnthropicProvider(BaseLLMProvider):
                     break
 
             if not tool_use_block:
+                prose = "".join(
+                    block.text for block in response.content if block.type == "text"
+                ).strip()
+                if prose:
+                    raise ConversationalReply(prose)
                 raise ValueError("Claude did not use the parse_media_command tool")
 
             function_args = tool_use_block.input
@@ -80,6 +85,8 @@ class AnthropicProvider(BaseLLMProvider):
 
             return function_args
 
+        except ConversationalReply:
+            raise
         except Exception as e:
             raise ValueError(f"Failed to parse command with Anthropic: {e!s}") from e
 

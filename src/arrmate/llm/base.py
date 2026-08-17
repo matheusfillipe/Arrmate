@@ -4,6 +4,18 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 
+class ConversationalReply(Exception):
+    """The model answered in prose instead of calling the command tool.
+
+    Small talk and questions are not parse failures, so callers should show
+    ``text`` to the user rather than an error.
+    """
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self.text = text
+
+
 class BaseLLMProvider(ABC):
     """Abstract base class for LLM providers."""
 
@@ -30,6 +42,7 @@ class BaseLLMProvider(ABC):
             Dictionary with parsed intent parameters
 
         Raises:
+            ConversationalReply: If the model replied in prose instead of calling the tool
             ValueError: If parsing fails or LLM doesn't use tools correctly
         """
 

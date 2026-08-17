@@ -58,6 +58,7 @@ from arrmate.core.command_parser import CommandParser
 from arrmate.core.executor import Executor
 from arrmate.core.intent_engine import IntentEngine
 from arrmate.core.models import DESTRUCTIVE_ACTIONS, USER_BLOCKED_ACTIONS, ActionType
+from arrmate.llm.base import ConversationalReply
 
 __all__ = [
     "BUTLER_TASKS",
@@ -72,6 +73,7 @@ __all__ = [
     "ActionType",
     "AuthRedirectException",
     "CommandParser",
+    "ConversationalReply",
     "Depends",
     "Executor",
     "Form",

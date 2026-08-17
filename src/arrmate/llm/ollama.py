@@ -1,11 +1,12 @@
 """Ollama LLM provider implementation."""
 
 import json
+import re
 from typing import Any
 
 import ollama
 
-from .base import BaseLLMProvider
+from .base import BaseLLMProvider, ConversationalReply
 
 
 class OllamaProvider(BaseLLMProvider):
@@ -89,12 +90,15 @@ class OllamaProvider(BaseLLMProvider):
                 extracted = self._extract_json_from_text(content)
                 if extracted:
                     return extracted
+                raise ConversationalReply(content)
 
             raise ValueError(
                 "LLM did not use the parse_media_command function and no "
                 "structured data could be extracted from the response"
             )
 
+        except ConversationalReply:
+            raise
         except Exception as e:
             raise ValueError(f"Failed to parse command with Ollama: {e!s}") from e
 
@@ -104,8 +108,6 @@ class OllamaProvider(BaseLLMProvider):
         Some models respond with JSON in the text instead of using tool calls.
         This attempts to find and parse that JSON.
         """
-        import re
-
         # Try to find JSON object in the text
         # Look for ```json ... ``` blocks first
         json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
@@ -124,7 +126,8 @@ class OllamaProvider(BaseLLMProvider):
             try:
                 data = json.loads(json_match.group(0))
                 if "action" in data and "media_type" in data:
-                    return parsed
+                    bare: dict[str, Any] = data
+                    return bare
             except json.JSONDecodeError:
                 pass
 
