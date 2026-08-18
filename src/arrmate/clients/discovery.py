@@ -112,6 +112,8 @@ class ServiceSpec:
     media_type: str
     capabilities: ServiceCapability
     version_fn: VersionFn | None = None
+    #: True when the service answers unauthenticated requests, so a URL alone configures it.
+    key_optional: bool = False
     is_deprecated: bool = False
     deprecation_message: str | None = None
 
@@ -273,6 +275,9 @@ SERVICE_REGISTRY: dict[str, ServiceSpec] = {
             api_version="v1",
             media_type="Games",
             capabilities=_MANAGE_LIBRARY,
+            # Gamearr only demands a key once an admin account exists; until then it serves
+            # the API unauthenticated and a URL on its own is a working configuration.
+            key_optional=True,
         ),
     )
 }
@@ -325,11 +330,17 @@ async def _probe(spec: ServiceSpec) -> EnhancedServiceInfo:
         return _info(spec, available=False, version=None)
 
 
+def _is_configured(spec: ServiceSpec) -> bool:
+    if not getattr(settings, spec.url_attr):
+        return False
+    return spec.key_optional or bool(getattr(settings, spec.key_attr))
+
+
 async def discover_services() -> dict[str, EnhancedServiceInfo]:
     """Probe every configured service and report availability, version, and metadata."""
     services: dict[str, EnhancedServiceInfo] = {}
     for spec in SERVICE_REGISTRY.values():
-        if getattr(settings, spec.url_attr) and getattr(settings, spec.key_attr):
+        if _is_configured(spec):
             services[spec.name] = await _probe(spec)
     return services
 
@@ -349,7 +360,7 @@ def get_client_for_media_type(media_type: str) -> BaseArrClient:
     entry = SERVICE_REGISTRY[spec]
     url = getattr(settings, entry.url_attr)
     key = getattr(settings, entry.key_attr)
-    if not url or not key:
+    if not _is_configured(entry):
         raise ValueError(
             f"{spec.capitalize()} is not configured. "
             f"Set {spec.upper()}_URL and {spec.upper()}_API_KEY."

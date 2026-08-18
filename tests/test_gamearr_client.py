@@ -100,3 +100,27 @@ async def test_gamearr_get_downloads(httpx_mock):
     downloads = await c.get_downloads()
     assert downloads[0]["progress"] == 50
     await c.close()
+
+
+@pytest.mark.asyncio
+async def test_gamearr_works_without_an_api_key(httpx_mock):
+    """Gamearr only enforces a key once an admin account exists."""
+    c = GamearrClient("http://gamearr:8484", "")
+    httpx_mock.add_response(
+        url="http://gamearr:8484/api/v1/system/status",
+        json={"success": True, "data": {"status": "healthy"}},
+    )
+    assert await c.test_connection() is True
+    await c.close()
+
+
+def test_gamearr_is_configured_by_url_alone(monkeypatch):
+    from arrmate.clients import discovery
+
+    spec = discovery.SERVICE_REGISTRY["gamearr"]
+    monkeypatch.setattr(discovery.settings, "gamearr_url", "http://gamearr:8484")
+    monkeypatch.setattr(discovery.settings, "gamearr_api_key", None)
+    assert discovery._is_configured(spec) is True
+
+    monkeypatch.setattr(discovery.settings, "gamearr_url", "")
+    assert discovery._is_configured(spec) is False

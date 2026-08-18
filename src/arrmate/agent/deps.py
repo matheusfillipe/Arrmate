@@ -128,9 +128,10 @@ class AgentDeps:
 
     @asynccontextmanager
     async def gamearr(self) -> AsyncIterator[GamearrClient]:
-        if not settings.gamearr_url or not settings.gamearr_api_key:
+        # The API key stays optional: gamearr enforces it only once an admin account exists.
+        if not settings.gamearr_url:
             raise ValueError("Gamearr is not configured")
-        client = GamearrClient(settings.gamearr_url, settings.gamearr_api_key)
+        client = GamearrClient(settings.gamearr_url, settings.gamearr_api_key or "")
         try:
             yield client
         finally:
