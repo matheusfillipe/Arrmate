@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
 from arrmate.clients.cleanuparr import CleanuparrClient
+from arrmate.clients.gamearr import GamearrClient
 from arrmate.clients.jellyfin import JellyfinClient
 from arrmate.clients.jellyseerr import JellyseerrClient
 from arrmate.clients.prowlarr import ProwlarrClient
@@ -120,6 +121,16 @@ class AgentDeps:
         if not settings.jellyseerr_url or not settings.jellyseerr_api_key:
             raise ValueError("Jellyseerr is not configured")
         client = JellyseerrClient(settings.jellyseerr_url, settings.jellyseerr_api_key)
+        try:
+            yield client
+        finally:
+            await client.close()
+
+    @asynccontextmanager
+    async def gamearr(self) -> AsyncIterator[GamearrClient]:
+        if not settings.gamearr_url or not settings.gamearr_api_key:
+            raise ValueError("Gamearr is not configured")
+        client = GamearrClient(settings.gamearr_url, settings.gamearr_api_key)
         try:
             yield client
         finally:

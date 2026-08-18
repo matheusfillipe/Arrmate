@@ -15,6 +15,7 @@ from .audiobookshelf import AudioBookshelfClient
 from .base_arr import BaseArrClient
 from .bazarr import BazarrClient
 from .cleanuparr import CleanuparrClient
+from .gamearr import GamearrClient
 from .jellyfin import JellyfinClient
 from .jellyseerr import JellyseerrClient
 from .lazylibrarian import LazyLibrarianClient
@@ -262,6 +263,16 @@ SERVICE_REGISTRY: dict[str, ServiceSpec] = {
             api_version="v1",
             media_type="Request Management",
             capabilities=_REQUESTS,
+        ),
+        ServiceSpec(
+            name="gamearr",
+            url_attr="gamearr_url",
+            key_attr="gamearr_api_key",
+            client_cls=GamearrClient,
+            status=ImplementationStatus.PARTIAL,
+            api_version="v1",
+            media_type="Games",
+            capabilities=_MANAGE_LIBRARY,
         ),
     )
 }

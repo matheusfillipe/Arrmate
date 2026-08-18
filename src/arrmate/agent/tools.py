@@ -699,3 +699,140 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
                 ]
 
         return await _safe(body)
+
+    # ── Gamearr ───────────────────────────────────────────────────────────────
+
+    @agent.tool
+    async def gamearr_library(
+        ctx: RunContext[AgentDeps], title_filter: str = "", store: str = ""
+    ) -> str:
+        """List games already in the Gamearr library, optionally filtered by
+        title or store (e.g. 'steam', 'gog')."""
+
+        async def body() -> Any:
+            async with ctx.deps.gamearr() as client:
+                games = await client.get_games(store=store)
+                out = []
+                for g in games:
+                    if title_filter and title_filter.lower() not in (g.get("title") or "").lower():
+                        continue
+                    out.append(
+                        {
+                            "id": g.get("id"),
+                            "title": g.get("title"),
+                            "platform": g.get("platform"),
+                            "store": g.get("store"),
+                            "status": g.get("status"),
+                            "monitored": g.get("monitored"),
+                            "updateAvailable": g.get("updateAvailable"),
+                        }
+                    )
+                return out
+
+        return await _safe(body)
+
+    @agent.tool
+    async def gamearr_search(ctx: RunContext[AgentDeps], query: str) -> str:
+        """IGDB metadata search for a game title. Use this to find the igdbId
+        needed by gamearr_add before adding something new to the library."""
+
+        async def body() -> Any:
+            async with ctx.deps.gamearr() as client:
+                results = await client.search_games(query)
+                return [
+                    {
+                        "igdbId": r.get("igdbId"),
+                        "title": r.get("title"),
+                        "year": r.get("year") or r.get("releaseYear"),
+                        "existingGameId": r.get("existingGameId"),
+                    }
+                    for r in results
+                ]
+
+        return await _safe(body)
+
+    @agent.tool
+    async def gamearr_add(
+        ctx: RunContext[AgentDeps],
+        igdb_id: int,
+        monitored: bool = True,
+        store: str = "",
+        library_id: int = 0,
+        platform: str = "",
+    ) -> str:
+        """Add a game to the Gamearr library. igdb_id comes from gamearr_search."""
+
+        async def body() -> Any:
+            ctx.deps.require_write("gamearr_add")
+            async with ctx.deps.gamearr() as client:
+                return await client.add_game(
+                    igdb_id,
+                    monitored=monitored,
+                    store=store,
+                    library_id=library_id,
+                    platform=platform,
+                )
+
+        return await _safe(body)
+
+    @agent.tool
+    async def gamearr_releases(ctx: RunContext[AgentDeps], game_id: int) -> str:
+        """Run a live Prowlarr indexer search for releases of a library game.
+        Can take 30-180 seconds. Pass one result's title/downloadUrl/etc to
+        gamearr_grab to download it."""
+
+        async def body() -> Any:
+            async with ctx.deps.gamearr() as client:
+                releases = await client.search_releases(game_id)
+                return [
+                    {
+                        "title": r.get("title"),
+                        "downloadUrl": r.get("downloadUrl"),
+                        "magnetUrl": r.get("magnetUrl"),
+                        "size": r.get("size"),
+                        "seeders": r.get("seeders"),
+                        "leechers": r.get("leechers"),
+                        "indexer": r.get("indexer"),
+                        "protocol": r.get("protocol"),
+                        "score": r.get("score"),
+                    }
+                    for r in releases
+                ]
+
+        return await _safe(body)
+
+    @agent.tool
+    async def gamearr_grab(ctx: RunContext[AgentDeps], game_id: int, release_json: str) -> str:
+        """Grab one specific release previously returned by gamearr_releases.
+
+        Pass that release's JSON object verbatim as release_json.
+        """
+
+        async def body() -> Any:
+            ctx.deps.require_write("gamearr_grab")
+            release = json.loads(release_json)
+            async with ctx.deps.gamearr() as client:
+                return await client.grab_release(game_id, release)
+
+        return await _safe(body)
+
+    @agent.tool
+    async def gamearr_queue(ctx: RunContext[AgentDeps]) -> str:
+        """Get Gamearr's active download queue (progress, speed, ETA)."""
+
+        async def body() -> Any:
+            async with ctx.deps.gamearr() as client:
+                downloads = await client.get_downloads()
+                return [
+                    {
+                        "hash": d.get("hash"),
+                        "name": d.get("name"),
+                        "status": d.get("status"),
+                        "progress": d.get("progress"),
+                        "downSpeed": d.get("downSpeed"),
+                        "eta": d.get("eta"),
+                    }
+                    for d in downloads
+                ]
+
+        return await _safe(body)

@@ -185,6 +185,12 @@ class Settings(BaseSettings):
     )
     jellyseerr_api_key: str | None = Field(default=None, description="Jellyseerr API key")
 
+    # Gamearr settings (game library manager)
+    gamearr_url: str | None = Field(
+        default=None, description="Gamearr base URL (e.g., http://gamearr:3000)"
+    )
+    gamearr_api_key: str | None = Field(default=None, description="Gamearr API key")
+
     # Plex SSO settings (PIN-based OAuth via plex.tv)
     plex_sso_enabled: bool = Field(
         default=False,
