@@ -1,8 +1,10 @@
 """Tests for the agent layer: store, deps, tools."""
 
 import asyncio
+from unittest.mock import MagicMock
 
 import pytest
+from pydantic_ai.exceptions import RunCancelled
 from pydantic_ai.messages import (
     FinalResultEvent,
     ModelMessagesTypeAdapter,
@@ -225,3 +227,148 @@ class TestReleaseProjection:
             "rejections": [],
         }
         assert _compact(release)["indexerId"] == 12
+
+
+class TestDeadline:
+    """A run that runs long enough to matter still has to end somewhere."""
+
+    def test_not_yet_expired(self):
+        assert chat._deadline_expired(started_at=0.0, now=100.0) is False
+
+    def test_expired_at_the_boundary(self):
+        from arrmate.agent.models import RUN_DEADLINE_SECONDS
+
+        assert chat._deadline_expired(started_at=0.0, now=RUN_DEADLINE_SECONDS) is True
+
+    def test_expired_well_past(self):
+        from arrmate.agent.models import RUN_DEADLINE_SECONDS
+
+        assert chat._deadline_expired(started_at=0.0, now=RUN_DEADLINE_SECONDS + 1) is True
+
+
+class TestInbox:
+    @pytest.fixture(autouse=True)
+    def db(self, tmp_chat_db):
+        self.store = tmp_chat_db
+
+    def test_queue_then_take_marks_consumed(self):
+        tid = self.store.create_thread("u1")
+        self.store.queue_message(tid, "first")
+        self.store.queue_message(tid, "second")
+
+        assert self.store.peek_queued_count(tid) == 2
+        assert self.store.take_queued(tid) == ["first", "second"]
+        assert self.store.peek_queued_count(tid) == 0
+        assert self.store.take_queued(tid) == []
+
+    def test_take_is_scoped_to_thread(self):
+        t1 = self.store.create_thread("u1")
+        t2 = self.store.create_thread("u1")
+        self.store.queue_message(t1, "for t1")
+
+        assert self.store.take_queued(t2) == []
+        assert self.store.take_queued(t1) == ["for t1"]
+
+
+class TestStopFlag:
+    @pytest.fixture(autouse=True)
+    def db(self, tmp_chat_db):
+        self.store = tmp_chat_db
+
+    def test_set_is_clear(self):
+        tid = self.store.create_thread("u1")
+        assert self.store.is_stopped(tid) is False
+
+        self.store.set_stop(tid)
+        assert self.store.is_stopped(tid) is True
+
+        self.store.clear_stop(tid)
+        assert self.store.is_stopped(tid) is False
+
+    def test_set_is_idempotent(self):
+        tid = self.store.create_thread("u1")
+        self.store.set_stop(tid)
+        self.store.set_stop(tid)
+        assert self.store.is_stopped(tid) is True
+
+
+class TestDeliverOrQueue:
+    """The queue endpoint routes to a live run when one exists, else falls back to the DB."""
+
+    @pytest.fixture(autouse=True)
+    def db(self, tmp_chat_db):
+        self.store = tmp_chat_db
+
+    def teardown_method(self):
+        chat._active_runs.clear()
+
+    def test_delivers_to_a_live_run(self):
+        tid = self.store.create_thread("u1")
+        run = MagicMock()
+        chat._active_runs[tid] = run
+
+        delivered = chat._deliver_or_queue(tid, "steer this")
+
+        assert delivered is True
+        run.enqueue.assert_called_once_with("steer this", priority="asap")
+        assert self.store.peek_queued_count(tid) == 0
+
+    def test_falls_back_to_the_db_without_a_live_run(self):
+        tid = self.store.create_thread("u1")
+
+        delivered = chat._deliver_or_queue(tid, "no run yet")
+
+        assert delivered is False
+        assert self.store.take_queued(tid) == ["no run yet"]
+
+
+class TestStopRunHelper:
+    @pytest.fixture(autouse=True)
+    def db(self, tmp_chat_db):
+        self.store = tmp_chat_db
+
+    def teardown_method(self):
+        chat._active_runs.clear()
+
+    def test_cancels_a_live_run(self):
+        tid = self.store.create_thread("u1")
+        run = MagicMock()
+        chat._active_runs[tid] = run
+
+        live = chat._stop_run(tid)
+
+        assert live is True
+        run.cancel.assert_called_once()
+        assert self.store.is_stopped(tid) is False
+
+    def test_flags_when_nothing_is_live(self):
+        tid = self.store.create_thread("u1")
+
+        live = chat._stop_run(tid)
+
+        assert live is False
+        assert self.store.is_stopped(tid) is True
+
+
+class TestPersistCancelledRun:
+    """A stopped run must not lose its transcript."""
+
+    @pytest.fixture(autouse=True)
+    def db(self, tmp_chat_db):
+        self.store = tmp_chat_db
+
+    def test_persists_the_cancelled_run_history(self):
+        tid = self.store.create_thread("u1")
+        messages = [
+            ModelRequest(parts=[UserPromptPart(content="diagnose the stuck download")]),
+            ModelResponse(parts=[TextPart(content="checking the queue now")]),
+        ]
+        cancelled = RunCancelled("stopped", messages=messages)
+
+        chat._persist_run_outcome(
+            tid, "checking the queue now", cancelled.all_messages_json().decode()
+        )
+
+        assert [m["text"] for m in self.store.list_messages(tid)] == ["checking the queue now"]
+        history = self.store.load_history(tid)
+        assert [type(m) for m in history] == [ModelRequest, ModelResponse]

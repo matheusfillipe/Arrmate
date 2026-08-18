@@ -7,6 +7,7 @@ instructions. Results are trimmed (nulls stripped, arrays truncated with an
 explicit marker) so a 2000-series library cannot blow the context window.
 """
 
+import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 #: so the cap belongs above a realistic library rather than merely being announced.
 _MAX_LIST_ITEMS = 200
 _MAX_STR_LEN = 400
+_MAX_WAIT_SECONDS = 300
 
 _DATA_OPEN = "<<<TOOL_DATA"
 _DATA_CLOSE = "TOOL_DATA>>>"
@@ -409,6 +411,21 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         async def body() -> Any:
             async with ctx.deps.prowlarr() as client:
                 return await client.get_indexer_stats()
+
+        return await _safe(body)
+
+    @agent.tool
+    async def wait(ctx: RunContext[AgentDeps], seconds: int, reason: str) -> str:
+        """Pause before re-checking something still in progress (a download, an import, a scan).
+
+        Capped at 300 seconds per call. Prefer several short waits over one long one — each
+        call is a chance for progress to have moved, and for a user's message to reach you.
+        """
+
+        async def body() -> Any:
+            delay = max(0, min(seconds, _MAX_WAIT_SECONDS))
+            await asyncio.sleep(delay)
+            return {"waited_seconds": delay, "reason": reason}
 
         return await _safe(body)
 

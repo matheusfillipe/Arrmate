@@ -63,6 +63,17 @@ def init_db() -> None:
                 thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
                 history TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS run_inbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                consumed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS run_flags (
+                thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+                stopped INTEGER NOT NULL DEFAULT 0
+            );
             """)
         conn.commit()
 
@@ -165,6 +176,74 @@ def save_history(thread_id: str, history_json: str) -> None:
             (thread_id, history_json),
         )
         conn.commit()
+
+
+def queue_message(thread_id: str, content: str) -> None:
+    """Store a message a user sent while no run was live for the thread.
+
+    Picked up as extra input the next time a run starts for that thread (see chat.py); a live
+    run instead gets the message injected directly via `AgentRun.enqueue`, bypassing this table.
+    """
+    with _get_conn() as conn:
+        conn.execute(
+            "INSERT INTO run_inbox (thread_id, content, created_at) VALUES (?, ?, ?)",
+            (thread_id, content, _now()),
+        )
+        conn.commit()
+
+
+def take_queued(thread_id: str) -> list[str]:
+    """Return unconsumed queued messages for a thread, marking them consumed."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT content FROM run_inbox WHERE thread_id = ? AND consumed_at IS NULL ORDER BY id",
+            (thread_id,),
+        ).fetchall()
+        if rows:
+            conn.execute(
+                "UPDATE run_inbox SET consumed_at = ? WHERE thread_id = ? AND consumed_at IS NULL",
+                (_now(), thread_id),
+            )
+            conn.commit()
+        return [r["content"] for r in rows]
+
+
+def peek_queued_count(thread_id: str) -> int:
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM run_inbox WHERE thread_id = ? AND consumed_at IS NULL",
+            (thread_id,),
+        ).fetchone()
+        return int(row["n"])
+
+
+def set_stop(thread_id: str) -> None:
+    """Flag a thread to stop its run before it starts (fallback for a run not yet live)."""
+    with _get_conn() as conn:
+        conn.execute(
+            "INSERT INTO run_flags (thread_id, stopped) VALUES (?, 1) "
+            "ON CONFLICT(thread_id) DO UPDATE SET stopped = 1",
+            (thread_id,),
+        )
+        conn.commit()
+
+
+def clear_stop(thread_id: str) -> None:
+    with _get_conn() as conn:
+        conn.execute(
+            "INSERT INTO run_flags (thread_id, stopped) VALUES (?, 0) "
+            "ON CONFLICT(thread_id) DO UPDATE SET stopped = 0",
+            (thread_id,),
+        )
+        conn.commit()
+
+
+def is_stopped(thread_id: str) -> bool:
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT stopped FROM run_flags WHERE thread_id = ?", (thread_id,)
+        ).fetchone()
+        return bool(row and row["stopped"])
 
 
 def load_history(thread_id: str) -> list[ModelMessage] | None:

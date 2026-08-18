@@ -22,7 +22,11 @@ from .tools import register_tools
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_CALLS_PER_RUN = 25
+MAX_TOOL_CALLS_PER_RUN = 1000
+
+#: A long diagnosis/repair run is steerable and stoppable (see chat.py), so the ceiling only
+#: needs to stop a genuinely runaway loop, not a normal multi-step task.
+RUN_DEADLINE_SECONDS = 3 * 60 * 60
 
 #: Applied per-run (Agent.iter(usage_limits=...)) — the limit is a property
 #: of a conversation turn, not of the agent.
