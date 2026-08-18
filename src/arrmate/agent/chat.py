@@ -60,11 +60,14 @@ def _deliver_or_queue(thread_id: str, text: str) -> bool:
 
 def _stop_run(thread_id: str) -> bool:
     """Stop a thread's run. Returns whether a live run was cancelled directly."""
+    # The flag is set either way: cancelling a live run raises RunCancelled without going back
+    # through the node loop, so this is what lets the stream tell "the user stopped it" apart
+    # from an internal cancellation.
+    store.set_stop(thread_id)
     run = _active_runs.get(thread_id)
     if run is not None:
         run.cancel()
         return True
-    store.set_stop(thread_id)
     return False
 
 
@@ -380,6 +383,9 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                 run_cancelled = e
 
             if run_cancelled is not None:
+                if not cancel_notice and store.is_stopped(thread_id):
+                    cancel_notice = "Stopped by the user."
+                store.clear_stop(thread_id)
                 final_text = accumulated_text
                 history_json = run_cancelled.all_messages_json().decode()
                 yield (

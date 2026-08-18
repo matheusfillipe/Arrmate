@@ -339,7 +339,9 @@ class TestStopRunHelper:
 
         assert live is True
         run.cancel.assert_called_once()
-        assert self.store.is_stopped(tid) is False
+        # Also flagged, so the stream can say the user stopped it rather than reporting a
+        # bare cancellation: run.cancel() unwinds without passing back through the node loop.
+        assert self.store.is_stopped(tid) is True
 
     def test_flags_when_nothing_is_live(self):
         tid = self.store.create_thread("u1")
