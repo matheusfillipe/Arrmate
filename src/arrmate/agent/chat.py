@@ -38,10 +38,6 @@ _HEARTBEAT_SECONDS = 5.0
 #: directly instead of only being able to leave it a note for its next turn.
 _active_runs: dict[str, AgentRun[AgentDeps, str]] = {}
 
-#: Producers whose reader went away. Held so the event loop does not garbage-collect a run
-#: that is still working after its tab was closed; the 3-hour deadline bounds them.
-_detached_runs: set[asyncio.Task[None]] = set()
-
 
 def _deadline_expired(started_at: float, now: float) -> bool:
     return now - started_at >= RUN_DEADLINE_SECONDS
@@ -133,9 +129,6 @@ async def _with_heartbeat(events: AsyncIterator[str]) -> AsyncIterator[str]:
             await frames.put(None)
 
     producer = asyncio.create_task(drain())
-    _detached_runs.add(producer)
-    producer.add_done_callback(_detached_runs.discard)
-    finished = False
     try:
         while True:
             try:
@@ -144,17 +137,12 @@ async def _with_heartbeat(events: AsyncIterator[str]) -> AsyncIterator[str]:
                 yield "event: ping\ndata: {}\n\n"
                 continue
             if frame is None:
-                finished = True
                 break
             yield frame
         # The producer is already finished; awaiting it surfaces whatever it raised.
         await producer
     finally:
-        # Closing the tab closes this generator, but the agent keeps working: the run persists
-        # its answer on its own, so the task is left alone and picked up from history on the
-        # next page load. Only a run that already ended has nothing left to protect.
-        if finished:
-            producer.cancel()
+        producer.cancel()
 
 
 def _text_chunk(event: AgentStreamEvent) -> str:
