@@ -16,6 +16,7 @@ from pydantic_ai.usage import UsageLimits
 from arrmate.config.settings import settings
 
 from .deps import AgentDeps
+from .mcp_toolsets import build_mcp_toolsets
 from .playbooks import register_playbook_tools
 from .system_prompt import build_system_prompt
 from .tools import register_tools
@@ -76,10 +77,12 @@ def get_agent() -> Agent[AgentDeps, str]:
     The Agent instance is cached per process; a settings change that alters
     the provider requires a restart (get_agent.cache_clear() on save).
     """
+    mcp_toolsets = build_mcp_toolsets()
     agent: Agent[AgentDeps, str] = Agent(
         _build_model(),
         deps_type=AgentDeps,
         output_type=str,
+        toolsets=mcp_toolsets,
     )
 
     @agent.system_prompt
@@ -88,5 +91,9 @@ def get_agent() -> Agent[AgentDeps, str]:
 
     register_tools(agent)
     register_playbook_tools(agent)
-    logger.info("Chat agent built (provider=%s)", settings.llm_provider)
+    logger.info(
+        "Chat agent built (provider=%s, mcp_servers=%d)",
+        settings.llm_provider,
+        len(mcp_toolsets),
+    )
     return agent

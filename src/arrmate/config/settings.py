@@ -2,8 +2,26 @@
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class MCPServerConfig(BaseModel):
+    """One MCP server Arrmate should expose as agent tools.
+
+    Servers are private extensions: infra-specific tools live in their own service
+    rather than in this repo, and Arrmate discovers whatever they advertise.
+    """
+
+    id: str
+    url: str
+    token: str = ""
+    enabled: bool = True
+    #: Add a request_id argument to every call so this side's audit record and the
+    #: server's can be joined. Only safe for servers whose tools declare it; a strict
+    #: schema elsewhere would reject the extra argument.
+    inject_request_id: bool = True
+    timeout_seconds: float = 30.0
 
 
 class Settings(BaseSettings):
@@ -277,6 +295,15 @@ class Settings(BaseSettings):
             "Allowed root directories for H.265 transcoding (list of absolute paths). "
             "When set, ffmpeg will only process files within these directories. "
             "Set via env var as a comma-separated list: TRANSCODE_ALLOWED_ROOTS=/movies,/tv"
+        ),
+    )
+
+    # MCP servers (private tool extensions)
+    mcp_servers: list[MCPServerConfig] = Field(
+        default=[],
+        description=(
+            "MCP servers whose tools are added to the agent. Set as JSON: "
+            'MCP_SERVERS=[{"id":"media","url":"http://media-mcp:8080/mcp","token":"..."}]'
         ),
     )
 
