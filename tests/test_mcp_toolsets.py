@@ -41,8 +41,8 @@ async def test_apply_call_refused_for_plain_user():
     process = _build_processor(_server())
     ctx = _Ctx(AgentDeps(user_id="1", username="matheus", role=ROLE_USER))
 
-    with pytest.raises(PermissionError):
-        await process(ctx, call_tool, "cleanup_sources", {"path": "/data", "apply": True})
+    result = await process(ctx, call_tool, "cleanup_sources", {"path": "/data", "apply": True})
+    assert result["error"] == "permission-denied"
 
 
 @pytest.mark.asyncio

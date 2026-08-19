@@ -35,6 +35,18 @@ def _is_mutating(args: dict[str, Any]) -> bool:
     return bool(args.get(APPLY_ARG))
 
 
+def _audit_refusal(
+    server: MCPServerConfig, name: str, request_id: str, args: dict[str, Any]
+) -> None:
+    logger.warning(
+        "mcp refusal server=%s tool=%s request_id=%s args=%s",
+        server.id,
+        name,
+        request_id,
+        args,
+    )
+
+
 def _build_processor(server: MCPServerConfig) -> ProcessToolCallback:
     async def process_tool_call(
         ctx: RunContext[AgentDeps],
@@ -46,9 +58,21 @@ def _build_processor(server: MCPServerConfig) -> ProcessToolCallback:
         mutating = _is_mutating(args)
 
         if mutating:
-            # Raises PermissionError, which the agent surfaces to the model as a
-            # refusal rather than a crash.
-            ctx.deps.require_write(f"{server.id}.{name}")
+            try:
+                ctx.deps.require_write(f"{server.id}.{name}")
+            except PermissionError as e:
+                # A refusal is an answer, not a crash: raising here ends the run with
+                # nothing said, where the built-in tools hand the model readable text
+                # and let it explain itself.
+                logger.info(
+                    "mcp call refused server=%s tool=%s user=%s role=%s",
+                    server.id,
+                    name,
+                    ctx.deps.username,
+                    ctx.deps.role,
+                )
+                _audit_refusal(server, name, request_id, args)
+                return {"error": "permission-denied", "detail": str(e)}
 
         if server.inject_request_id:
             args = {**args, "request_id": request_id}
