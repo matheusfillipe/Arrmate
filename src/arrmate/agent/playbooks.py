@@ -24,6 +24,14 @@ _SUSPICIOUS_EXTENSIONS = (".exe", ".lnk", ".scr", ".zipx", ".com", ".pif", ".vbs
 
 _MANUAL_FAIL_MARKERS = ("Manually marked as failed", "manually marked")
 
+_EDITION_NOISE = re.compile(
+    r"\s*[\(\[][^\)\]]*(part \d+ of \d+|dramatized|unabridged|abridged|audiobook|"
+    r"adaptation|edition|movie tie-in)[^\)\]]*[\)\]]",
+    re.IGNORECASE,
+)
+
+_MIN_AUDIOBOOK_BYTES = 20 * 1024 * 1024
+
 _VIDEO_EXTENSIONS = (
     ".mkv",
     ".mp4",
@@ -36,6 +44,43 @@ _VIDEO_EXTENSIONS = (
     ".flv",
     ".webm",
 )
+
+
+def _search_queries(title: str, author: str) -> list[str]:
+    """Query variants for one book, most specific first.
+
+    Listenarr searches its indexers for the full Audible title plus the author,
+    which matches nothing when the title carries an edition parenthetical or the
+    author never appears in release names (upstream issues #801, #527).
+    """
+    clean = _EDITION_NOISE.sub("", title or "").strip()
+    variants = [f"{clean} {author}".strip(), clean, (title or "").strip()]
+    seen: list[str] = []
+    for v in variants:
+        if v and v not in seen:
+            seen.append(v)
+    return seen
+
+
+def _rank_releases(results: list[dict], title: str) -> list[dict]:
+    """Plausible audiobook releases for a title, best first.
+
+    Filters the lesson clips and sample files that dominate language-learning
+    queries, requires the distinctive words of the title to be present, then
+    prefers seeders.
+    """
+    words = [w for w in re.split(r"\W+", _EDITION_NOISE.sub("", title or "").lower()) if len(w) > 3]
+    keep = []
+    for r in results:
+        name = (r.get("title") or "").lower()
+        if (r.get("size") or 0) < _MIN_AUDIOBOOK_BYTES:
+            continue
+        if words and not all(w in name for w in words):
+            continue
+        if not r.get("downloadReference"):
+            continue
+        keep.append(r)
+    return sorted(keep, key=lambda r: r.get("seeders") or 0, reverse=True)
 
 
 def _looks_poisoned(files: list[dict]) -> dict | None:
@@ -90,6 +135,86 @@ def _encode_family(release_title: str) -> str:
 
 def register_playbook_tools(agent: Agent[AgentDeps, str]) -> None:
     """Register the composite playbook tools on the given Agent."""
+
+    @agent.tool
+    async def listenarr_fill_missing(
+        ctx: RunContext[AgentDeps], limit: int = 10, grab: bool = False
+    ) -> str:
+        """Find monitored Listenarr books with no file and get them downloading.
+
+        Listenarr's own search asks its indexers for the full Audible title plus
+        the author, which returns nothing for titles carrying an edition
+        parenthetical, so those books sit missing forever. This retries each one
+        with progressively looser queries, discards clips too small to be an
+        audiobook, and reports the best release per book.
+
+        Read-only by default: pass grab=True to actually send them to the
+        download client.
+        """
+
+        async def body() -> dict[str, Any]:
+            report: dict[str, Any] = {"checked": 0, "grabbed": 0, "items": []}
+            if grab:
+                ctx.deps.require_write("listenarr_fill_missing")
+
+            async with ctx.deps.listenarr() as client:
+                books = await client.get_all_items()
+                missing = [
+                    b
+                    for b in books
+                    if b.get("monitored") and (b.get("status") or "") in ("no-file", "missing")
+                ][:limit]
+                report["checked"] = len(missing)
+
+                for book in missing:
+                    title = book.get("title") or ""
+                    authors = book.get("authors") or []
+                    author = authors[0] if authors else (book.get("author") or "")
+                    item: dict[str, Any] = {"id": book.get("id"), "title": title, "tried": []}
+
+                    best = None
+                    for query in _search_queries(title, author):
+                        results = await client.search(query, limit=50)
+                        ranked = _rank_releases(results, title)
+                        item["tried"].append(
+                            {"query": query, "results": len(results), "usable": len(ranked)}
+                        )
+                        if ranked:
+                            best = ranked[0]
+                            break
+
+                    if not best:
+                        item["outcome"] = "no-release-found"
+                        report["items"].append(item)
+                        continue
+
+                    item["release"] = {
+                        "title": best.get("title"),
+                        "sizeMB": round((best.get("size") or 0) / 1_000_000),
+                        "seeders": best.get("seeders"),
+                        "indexer": best.get("indexer"),
+                    }
+                    if not grab:
+                        item["outcome"] = "candidate"
+                    else:
+                        await client.grab_release(
+                            best["downloadReference"], audiobook_id=book.get("id")
+                        )
+                        item["outcome"] = "sent-to-download-client"
+                        report["grabbed"] += 1
+                    report["items"].append(item)
+
+            return report
+
+        try:
+            return _wrap(await body())
+        except PermissionError as e:
+            return _wrap({"error": "permission-denied", "detail": str(e)})
+        except ValueError as e:
+            return _wrap({"error": "not-configured", "detail": str(e)})
+        except (httpx.HTTPError, KeyError, AttributeError, TypeError) as e:
+            logger.warning("listenarr_fill_missing failed: %s", e)
+            return _wrap({"error": "playbook-failed", "detail": str(e)[:200]})
 
     @agent.tool
     async def diagnose_failed_grabs(
