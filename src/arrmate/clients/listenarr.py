@@ -72,19 +72,20 @@ class ListenarrClient(BaseMediaClient):
         """Search the configured indexers for releases.
 
         This hits indexers directly, unlike the *arr ``lookup`` endpoints which
-        search a metadata catalogue.
+        search a metadata catalogue, so it runs on the extended timeout: a search
+        fanned out over every configured indexer routinely outlives the default.
         """
         params: dict[str, Any] = {"query": query}
         if category:
             params["category"] = category
-        results = await self._get(f"{self.api_prefix}/search", params=params)
+        results = await self._get_with_timeout(f"{self.api_prefix}/search", params=params)
         if isinstance(results, dict):
             results = results.get("indexerResults") or results.get("results") or []
         return cast("list[dict[str, Any]]", results)[:limit]
 
     async def search_metadata(self, query: str, limit: int = 25) -> list[dict[str, Any]]:
         """Search Audible/metadata providers for books, for the add workflow."""
-        results = await self._get(
+        results = await self._get_with_timeout(
             f"{self.api_prefix}/search/intelligent",
             params={"query": query, "returnLimit": limit},
         )
