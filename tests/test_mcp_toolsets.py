@@ -94,3 +94,9 @@ def test_enabled_server_builds_a_toolset(monkeypatch):
     monkeypatch.setattr(settings, "mcp_servers", [_server(token="secret")])
     toolsets = build_mcp_toolsets()
     assert len(toolsets) == 1
+
+
+def test_read_timeout_allows_a_long_install():
+    """A single install call can run for many minutes; the default must not cut it off."""
+    assert _server().read_timeout_seconds >= 1800
+    assert _server().init_timeout_seconds <= 30

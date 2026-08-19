@@ -131,8 +131,8 @@ def build_mcp_toolsets() -> list[AbstractToolset[AgentDeps]]:
                     id=server.id,
                     headers=headers,
                     process_tool_call=_build_processor(server),
-                    init_timeout=server.timeout_seconds,
-                    read_timeout=server.timeout_seconds,
+                    init_timeout=server.init_timeout_seconds,
+                    read_timeout=server.read_timeout_seconds,
                 )
             )
         except (ValueError, TypeError, OSError) as e:

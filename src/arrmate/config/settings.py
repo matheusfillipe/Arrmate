@@ -21,7 +21,11 @@ class MCPServerConfig(BaseModel):
     #: server's can be joined. Only safe for servers whose tools declare it; a strict
     #: schema elsewhere would reject the extra argument.
     inject_request_id: bool = True
-    timeout_seconds: float = 30.0
+    #: Fail fast when the server is not there.
+    init_timeout_seconds: float = 15.0
+    #: A single call can be an install moving tens of gigabytes, so the read timeout
+    #: is a runaway guard rather than a latency budget.
+    read_timeout_seconds: float = 3600.0
 
 
 class Settings(BaseSettings):
