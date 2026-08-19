@@ -16,10 +16,11 @@ from pydantic_ai.messages import (
     TextPart,
     TextPartDelta,
     ThinkingPart,
+    ToolReturnPart,
     UserPromptPart,
 )
 
-from arrmate.agent import chat
+from arrmate.agent import chat, compaction
 from arrmate.agent.chat import _text_chunk
 from arrmate.agent.deps import AgentDeps
 from arrmate.agent.tools import _MAX_LIST_ITEMS, _compact, _wrap
@@ -389,3 +390,43 @@ class TestContextTokens:
         run = MagicMock()
         run.usage = SimpleNamespace(input_tokens=0, requests=0)
         assert chat._context_tokens(run) == 0
+
+
+class TestCompaction:
+    """Tool payloads are what fill a window; conversation is noise by comparison."""
+
+    def _history(self, tool_payload: str, n: int = 40):
+        msgs = []
+        for i in range(n):
+            msgs.append(ModelRequest(parts=[UserPromptPart(content=f"turn {i}")]))
+            msgs.append(
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name="get_library", content=tool_payload, tool_call_id=f"c{i}"
+                        )
+                    ]
+                )
+            )
+        return msgs
+
+    def test_leaves_a_small_history_alone(self):
+        msgs = self._history("small", n=2)
+        out, stripped = compaction.compact(msgs, 128_000)
+        assert stripped == 0
+        assert out[1].parts[0].content == "small"
+
+    def test_strips_old_tool_payloads_when_over_budget(self):
+        msgs = self._history("x" * 4000)
+        _out, stripped = compaction.compact(msgs, 8_000)
+        assert stripped > 0
+
+    def test_keeps_the_most_recent_tool_output(self):
+        msgs = self._history("y" * 4000)
+        out, _ = compaction.compact(msgs, 8_000)
+        assert out[-1].parts[0].content == "y" * 4000
+
+    def test_never_removes_messages(self):
+        msgs = self._history("z" * 4000)
+        out, _ = compaction.compact(msgs, 8_000)
+        assert len(out) == len(msgs)

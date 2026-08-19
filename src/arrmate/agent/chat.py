@@ -24,6 +24,7 @@ from arrmate.config.settings import settings
 from arrmate.interfaces.web.routes import templates
 
 from . import store
+from .compaction import compact
 from .deps import AgentDeps
 from .models import MAX_TOOL_CALLS_PER_RUN, RUN_DEADLINE_SECONDS, RUN_USAGE_LIMITS, get_agent
 
@@ -37,6 +38,45 @@ _HEARTBEAT_SECONDS = 5.0
 #: Runs currently streaming, keyed by thread_id, so /queue and /stop can reach a live run
 #: directly instead of only being able to leave it a note for its next turn.
 _active_runs: dict[str, AgentRun[AgentDeps, str]] = {}
+
+
+class RunSession:
+    """A run in flight, decoupled from whoever is watching it.
+
+    Frames are appended to a log rather than written straight to a socket, so a reader can
+    join late and replay everything it missed, and a reader leaving costs the run nothing.
+    """
+
+    def __init__(self, thread_id: str) -> None:
+        self.thread_id = thread_id
+        self.frames: list[str] = []
+        self.finished = False
+        self.updated = asyncio.Event()
+        self.task: asyncio.Task[None] | None = None
+
+    def emit(self, frame: str) -> None:
+        self.frames.append(frame)
+        self.updated.set()
+
+    def close(self) -> None:
+        self.finished = True
+        self.updated.set()
+
+    async def follow(self, start: int = 0) -> AsyncIterator[str]:
+        """Yield every frame from `start` onwards, waiting for more until the run ends."""
+        cursor = start
+        while True:
+            while cursor < len(self.frames):
+                yield self.frames[cursor]
+                cursor += 1
+            if self.finished:
+                return
+            self.updated.clear()
+            await self.updated.wait()
+
+
+#: Runs in flight, keyed by thread_id. Outlives any particular HTTP request.
+_sessions: dict[str, RunSession] = {}
 
 
 def _deadline_expired(started_at: float, now: float) -> bool:
@@ -262,6 +302,42 @@ async def stop_run(request: Request) -> dict | JSONResponse:
     return {"stopped": True, "live": live}
 
 
+@router.post("/attach", response_model=None)
+async def attach_run(request: Request) -> StreamingResponse | JSONResponse:
+    """Re-join a run that is still going, replaying everything emitted so far."""
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"detail": "authentication required"})
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse(status_code=400, content={"detail": "invalid JSON body"})
+
+    thread_id = str(body.get("thread_id") or "")
+    if not store.get_thread(thread_id, user["user_id"]):
+        return JSONResponse(status_code=404, content={"detail": "thread not found"})
+
+    session = _sessions.get(thread_id)
+    if session is None:
+        return JSONResponse(status_code=409, content={"detail": "no run in flight"})
+
+    return StreamingResponse(
+        _with_heartbeat(session.follow()),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/{thread_id}/live", response_model=None)
+async def run_is_live(request: Request, thread_id: str) -> dict | JSONResponse:
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"detail": "authentication required"})
+    session = _sessions.get(thread_id)
+    return {"live": session is not None and not session.finished}
+
+
 @router.post("/stream", response_model=None)
 async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
     user = get_current_user(request)
@@ -309,6 +385,21 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
         try:
             agent: Agent[AgentDeps, str] = get_agent()
             history = store.load_history(thread_id)
+            if history:
+                history, stripped = compact(history, settings.context_window_tokens)
+                if stripped:
+                    yield (
+                        "event: notice\ndata: "
+                        + json.dumps(
+                            {
+                                "message": (
+                                    f"Context was filling up; cleared {stripped} older tool "
+                                    "results to make room."
+                                )
+                            }
+                        )
+                        + "\n\n"
+                    )
             run_cancelled: RunCancelled | None = None
 
             try:
@@ -453,8 +544,23 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                 + "\n\n"
             )
 
+    session = RunSession(thread_id)
+    _sessions[thread_id] = session
+
+    async def pump() -> None:
+        try:
+            async for frame in event_stream():
+                session.emit(frame)
+        finally:
+            session.close()
+            _sessions.pop(thread_id, None)
+
+    # The run owns its own task. Nothing about it is tied to this response, so the tab can go
+    # away mid-task and the work still finishes and persists.
+    session.task = asyncio.create_task(pump())
+
     return StreamingResponse(
-        _with_heartbeat(event_stream()),
+        _with_heartbeat(session.follow()),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

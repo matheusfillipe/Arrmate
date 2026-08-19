@@ -148,6 +148,26 @@ function chat() {
       // Opening a thread should land on the latest turn, not the top of the transcript.
       this.scrollDown();
       this.focusInput();
+      this.reattach();
+    },
+
+    // A run keeps going with nobody watching, so coming back to the tab should rejoin it
+    // rather than show a thread that looks finished.
+    reattach() {
+      if (!this.threadId) return;
+      fetch('/web/chat/' + this.threadId + '/live')
+        .then(r => r.json())
+        .then(d => {
+          if (!d.live) return;
+          this.streaming = true;
+          this.startWaiting();
+          this.consume(fetch('/web/chat/attach', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ thread_id: this.threadId }),
+          }));
+        })
+        .catch(() => {});
     },
 
     focusInput() {
@@ -201,9 +221,19 @@ function chat() {
       }
       this.input = '';
       this.messages.push({ role: 'user', text: text, cards: [] });
-      // Reassigned to the array's reactive proxy once pushed (see openAssistant): writing to
-      // the plain object updates the data but never notifies Alpine, so the bubble stays
-      // blank until a reload re-renders from the server.
+      this.streaming = true;
+      this.startWaiting();
+      this.scrollDown();
+
+      this.consume(fetch('/web/chat/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ thread_id: this.threadId, message: text }),
+      }));
+    },
+
+    // Reads an SSE response, whether it came from starting a run or rejoining one.
+    consume(request) {
       let assistant = { role: 'assistant', text: '', cards: [] };
       let started = false;
 
@@ -216,15 +246,7 @@ function chat() {
         started = true;
       };
 
-      this.streaming = true;
-      this.startWaiting();
-      this.scrollDown();
-
-      fetch('/web/chat/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ thread_id: this.threadId, message: text }),
-      }).then(response => {
+      request.then(response => {
         if (!response.ok || !response.body) {
           throw new Error('stream failed: HTTP ' + response.status);
         }
@@ -305,6 +327,7 @@ function chat() {
         this.stopWaiting();
       });
     },
+
 
     // While a run is live the message goes straight into its conversation; otherwise the
     // server holds it and folds it into the next turn. Either way it shows as a pending
