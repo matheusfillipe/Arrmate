@@ -717,6 +717,162 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
 
         return await _safe(body)
 
+    # ── Listenarr ─────────────────────────────────────────────────────────────
+
+    @agent.tool
+    async def listenarr_library(ctx: RunContext[AgentDeps], title_filter: str = "") -> str:
+        """List audiobooks already in the Listenarr library, optionally filtered
+        by title or author."""
+
+        async def body() -> Any:
+            async with ctx.deps.listenarr() as client:
+                books = await client.get_all_items()
+                needle = title_filter.lower()
+                out = []
+                for b in books:
+                    haystack = f"{b.get('title') or ''} {b.get('author') or ''}".lower()
+                    if needle and needle not in haystack:
+                        continue
+                    out.append(
+                        {
+                            "id": b.get("id"),
+                            "title": b.get("title"),
+                            "author": b.get("author"),
+                            "narrator": b.get("narrator"),
+                            "status": b.get("status"),
+                            "monitored": b.get("monitored"),
+                        }
+                    )
+                return out
+
+        return await _safe(body)
+
+    @agent.tool
+    async def listenarr_lookup(ctx: RunContext[AgentDeps], query: str) -> str:
+        """Search Audible/Audnexus metadata for an audiobook. Use this to find the
+        book to hand to listenarr_add; it does not search indexers."""
+
+        async def body() -> Any:
+            async with ctx.deps.listenarr() as client:
+                results = await client.search_metadata(query, limit=10)
+                return [
+                    {
+                        "asin": r.get("asin"),
+                        "title": r.get("title"),
+                        "subtitle": r.get("subtitle"),
+                        "author": r.get("author") or r.get("authors"),
+                        "narrator": r.get("narrator"),
+                        "publisher": r.get("publisher"),
+                        "releaseDate": r.get("releaseDate"),
+                        "runtimeMinutes": r.get("runtimeMinutes") or r.get("lengthMinutes"),
+                    }
+                    for r in results
+                ]
+
+        return await _safe(body)
+
+    @agent.tool
+    async def listenarr_search(ctx: RunContext[AgentDeps], query: str, category: str = "") -> str:
+        """Search Listenarr's configured indexers for downloadable audiobook
+        releases. Returns candidates for listenarr_grab."""
+
+        async def body() -> Any:
+            async with ctx.deps.listenarr() as client:
+                results = await client.search(query, category=category or None, limit=25)
+                return [
+                    {
+                        "downloadReference": r.get("downloadReference"),
+                        "title": r.get("title"),
+                        "indexer": r.get("indexer"),
+                        "indexerId": r.get("indexerId"),
+                        "size": r.get("size"),
+                        "seeders": r.get("seeders"),
+                        "leechers": r.get("leechers"),
+                        "protocol": r.get("protocol"),
+                        "ageHours": r.get("ageHours"),
+                    }
+                    for r in results
+                ]
+
+        return await _safe(body)
+
+    @agent.tool
+    async def listenarr_add(
+        ctx: RunContext[AgentDeps],
+        metadata_json: str,
+        quality_profile_id: int = 0,
+        monitored: bool = True,
+        auto_search: bool = False,
+    ) -> str:
+        """Add an audiobook to the Listenarr library.
+
+        Pass the chosen listenarr_lookup result's JSON object verbatim as
+        metadata_json. Leave quality_profile_id at 0 to let Listenarr decide.
+        """
+
+        async def body() -> Any:
+            ctx.deps.require_write("listenarr_add")
+            async with ctx.deps.listenarr() as client:
+                return await client.add_book(
+                    json.loads(metadata_json),
+                    quality_profile_id=quality_profile_id or None,
+                    monitored=monitored,
+                    auto_search=auto_search,
+                )
+
+        return await _safe(body)
+
+    @agent.tool
+    async def listenarr_grab(
+        ctx: RunContext[AgentDeps], download_reference: str, audiobook_id: int = 0
+    ) -> str:
+        """Send one release from listenarr_search to a download client.
+
+        download_reference is the downloadReference field of the chosen search
+        result. Pass audiobook_id to attach the grab to a library entry.
+        """
+
+        async def body() -> Any:
+            ctx.deps.require_write("listenarr_grab")
+            async with ctx.deps.listenarr() as client:
+                return await client.grab_release(
+                    download_reference, audiobook_id=audiobook_id or None
+                )
+
+        return await _safe(body)
+
+    @agent.tool
+    async def listenarr_queue(ctx: RunContext[AgentDeps]) -> str:
+        """Get Listenarr's active download queue (progress, state, client)."""
+
+        async def body() -> Any:
+            async with ctx.deps.listenarr() as client:
+                downloads = await client.get_queue()
+                return [
+                    {
+                        "id": d.get("id"),
+                        "title": d.get("title") or d.get("name"),
+                        "status": d.get("status"),
+                        "progress": d.get("progress"),
+                        "downloadClient": d.get("downloadClient"),
+                        "errorMessage": d.get("errorMessage"),
+                    }
+                    for d in downloads
+                ]
+
+        return await _safe(body)
+
+    @agent.tool
+    async def listenarr_health(ctx: RunContext[AgentDeps]) -> str:
+        """Listenarr health: whether its indexers, download clients and metadata
+        providers are reachable. Check this first when a grab or import fails."""
+
+        async def body() -> Any:
+            async with ctx.deps.listenarr() as client:
+                return await client.get_health()
+
+        return await _safe(body)
+
     # ── Gamearr ───────────────────────────────────────────────────────────────
 
     @agent.tool

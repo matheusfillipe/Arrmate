@@ -8,6 +8,7 @@ from arrmate.clients.cleanuparr import CleanuparrClient
 from arrmate.clients.gamearr import GamearrClient
 from arrmate.clients.jellyfin import JellyfinClient
 from arrmate.clients.jellyseerr import JellyseerrClient
+from arrmate.clients.listenarr import ListenarrClient
 from arrmate.clients.prowlarr import ProwlarrClient
 from arrmate.clients.qbittorrent import QBittorrentClient
 from arrmate.clients.radarr import RadarrClient
@@ -121,6 +122,16 @@ class AgentDeps:
         if not settings.jellyseerr_url or not settings.jellyseerr_api_key:
             raise ValueError("Jellyseerr is not configured")
         client = JellyseerrClient(settings.jellyseerr_url, settings.jellyseerr_api_key)
+        try:
+            yield client
+        finally:
+            await client.close()
+
+    @asynccontextmanager
+    async def listenarr(self) -> AsyncIterator[ListenarrClient]:
+        if not settings.listenarr_url or not settings.listenarr_api_key:
+            raise ValueError("Listenarr is not configured")
+        client = ListenarrClient(settings.listenarr_url, settings.listenarr_api_key)
         try:
             yield client
         finally:

@@ -20,6 +20,7 @@ from .jellyfin import JellyfinClient
 from .jellyseerr import JellyseerrClient
 from .lazylibrarian import LazyLibrarianClient
 from .lidarr import LidarrClient
+from .listenarr import ListenarrClient
 from .plex import PlexClient
 from .prowlarr import ProwlarrClient
 from .radarr import RadarrClient
@@ -37,6 +38,7 @@ DEFAULT_PORTS = {
     "bazarr": 6767,
     "audiobookshelf": 13378,
     "lazylibrarian": 5299,
+    "listenarr": 4545,
     "readmeabook": 3030,
     "plex": 32400,
     "prowlarr": 9696,
@@ -265,6 +267,17 @@ SERVICE_REGISTRY: dict[str, ServiceSpec] = {
             api_version="v1",
             media_type="Request Management",
             capabilities=_REQUESTS,
+        ),
+        ServiceSpec(
+            name="listenarr",
+            url_attr="listenarr_url",
+            key_attr="listenarr_api_key",
+            client_cls=ListenarrClient,
+            status=ImplementationStatus.PARTIAL,
+            api_version="v1",
+            media_type="Audiobooks",
+            capabilities=_MANAGE_LIBRARY,
+            version_fn=_system_status_version,
         ),
         ServiceSpec(
             name="gamearr",

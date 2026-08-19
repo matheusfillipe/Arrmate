@@ -192,6 +192,12 @@ class Settings(BaseSettings):
     )
     jellyseerr_api_key: str | None = Field(default=None, description="Jellyseerr API key")
 
+    # Listenarr settings (audiobook manager)
+    listenarr_url: str | None = Field(
+        default=None, description="Listenarr base URL (e.g., http://listenarr:4545)"
+    )
+    listenarr_api_key: str | None = Field(default=None, description="Listenarr API key")
+
     # Gamearr settings (game library manager)
     gamearr_url: str | None = Field(
         default=None, description="Gamearr base URL (e.g., http://gamearr:3000)"
