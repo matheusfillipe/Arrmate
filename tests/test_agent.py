@@ -1,6 +1,7 @@
 """Tests for the agent layer: store, deps, tools."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -374,3 +375,17 @@ class TestPersistCancelledRun:
         assert [m["text"] for m in self.store.list_messages(tid)] == ["checking the queue now"]
         history = self.store.load_history(tid)
         assert [type(m) for m in history] == [ModelRequest, ModelResponse]
+
+
+class TestContextTokens:
+    """input_tokens accumulates across requests; the window only holds the latest request."""
+
+    def test_averages_input_tokens_per_request(self):
+        run = MagicMock()
+        run.usage = SimpleNamespace(input_tokens=30_000, requests=3)
+        assert chat._context_tokens(run) == 10_000
+
+    def test_zero_before_any_request(self):
+        run = MagicMock()
+        run.usage = SimpleNamespace(input_tokens=0, requests=0)
+        assert chat._context_tokens(run) == 0

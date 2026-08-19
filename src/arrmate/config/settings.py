@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, description="OpenAI API key")
     openai_model: str = Field(default="gpt-4-turbo-preview", description="OpenAI model to use")
     openai_base_url: str | None = Field(default=None, description="Custom OpenAI API base URL")
+    context_window_tokens: int = Field(
+        default=128_000,
+        description=(
+            "Context size of the chat model, used only to show how full the window is. "
+            "No API reports this, so it is configured rather than discovered."
+        ),
+    )
 
     # Anthropic settings
     anthropic_api_key: str | None = Field(default=None, description="Anthropic API key")

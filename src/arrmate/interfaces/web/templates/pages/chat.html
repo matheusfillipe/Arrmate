@@ -38,19 +38,6 @@
 
           <template x-if="m.role !== 'notice'">
             <div>
-              <div class="flex" :class="m.role === 'user' || m.role === 'queued' ? 'justify-end' : 'justify-start'">
-                <div class="max-w-[85%] rounded-xl px-4 py-2.5 text-sm"
-                     :class="m.role === 'user'
-                            ? 'bg-indigo-600 text-white whitespace-pre-wrap'
-                            : m.role === 'queued'
-                            ? 'bg-indigo-950 text-indigo-300 whitespace-pre-wrap border border-dashed border-indigo-500/40 italic'
-                            : 'bg-gray-700 text-gray-100 chat-markdown'"
-                     x-html="m.role === 'user' || m.role === 'queued' ? escapeHtml(m.text) : renderMarkdown(m.text)"></div>
-              </div>
-              <div x-show="m.role === 'queued'" class="text-right text-xs text-indigo-400/70 pr-1 mt-0.5">
-                queued — will be delivered at the next step
-              </div>
-
               <!-- Tool cards -->
               <template x-for="(c, j) in m.cards" :key="j">
                 <div class="mt-2 rounded-lg border border-gray-700 bg-gray-900 overflow-hidden text-sm">
@@ -67,6 +54,19 @@
                   </div>
                 </div>
               </template>
+
+              <div class="flex" x-show="m.text" :class="m.role === 'user' || m.role === 'queued' ? 'justify-end' : 'justify-start'">
+                <div class="max-w-[85%] rounded-xl px-4 py-2.5 text-sm"
+                     :class="m.role === 'user'
+                            ? 'bg-indigo-600 text-white whitespace-pre-wrap'
+                            : m.role === 'queued'
+                            ? 'bg-indigo-950 text-indigo-300 whitespace-pre-wrap border border-dashed border-indigo-500/40 italic'
+                            : 'bg-gray-700 text-gray-100 chat-markdown'"
+                     x-html="m.role === 'user' || m.role === 'queued' ? escapeHtml(m.text) : renderMarkdown(m.text)"></div>
+              </div>
+              <div x-show="m.role === 'queued'" class="text-right text-xs text-indigo-400/70 pr-1 mt-0.5">
+                queued — will be delivered at the next step
+              </div>
             </div>
           </template>
         </div>
@@ -77,6 +77,9 @@
         <span x-show="waited > 4" x-text="waited + 's'" class="text-gray-500"></span>
         <span x-show="toolCalls > 0" class="text-gray-500"
               x-text="toolCalls + ' tool call' + (toolCalls === 1 ? '' : 's') + ' · ' + elapsedSeconds + 's'"></span>
+        <span x-show="contextWindow > 0" class="text-gray-500"
+              :class="contextTokens / contextWindow > 0.8 ? 'text-amber-400' : ''"
+              x-text="'· context ' + Math.round(100 * contextTokens / contextWindow) + '%'"></span>
       </div>
     </div>
 
@@ -138,6 +141,8 @@ function chat() {
     waitTimer: null,
     toolCalls: 0,
     elapsedSeconds: 0,
+    contextTokens: 0,
+    contextWindow: 0,
 
     init() {
       // Opening a thread should land on the latest turn, not the top of the transcript.
@@ -267,6 +272,8 @@ function chat() {
               }
               this.scrollDown();
             } else if (ev.event === 'progress') {
+              this.contextTokens = ev.data.context_tokens || this.contextTokens;
+              this.contextWindow = ev.data.context_window || this.contextWindow;
               this.toolCalls = ev.data.tool_calls;
               this.elapsedSeconds = ev.data.elapsed_seconds;
             } else if (ev.event === 'notice') {
@@ -274,6 +281,13 @@ function chat() {
             } else if (ev.event === 'done') {
               openAssistant();
               this.stopWaiting();
+            } else if (ev.event === 'delivered') {
+              // The agent has actually read it, so it stops being a pending note and becomes
+              // an ordinary turn, in the place it was said.
+              for (let n = ev.data.count || 1; n > 0; n--) {
+                const q = this.messages.find(m => m.role === 'queued');
+                if (q) q.role = 'user';
+              }
             } else if (ev.event === 'error') {
               openAssistant();
               assistant.text += (assistant.text ? '\n\n' : '') +

@@ -20,6 +20,7 @@ from pydantic_ai.messages import (
 
 from arrmate.auth import user_db
 from arrmate.auth.dependencies import get_current_user
+from arrmate.config.settings import settings
 from arrmate.interfaces.web.routes import templates
 
 from . import store
@@ -37,9 +38,25 @@ _HEARTBEAT_SECONDS = 5.0
 #: directly instead of only being able to leave it a note for its next turn.
 _active_runs: dict[str, AgentRun[AgentDeps, str]] = {}
 
+#: Producers whose reader went away. Held so the event loop does not garbage-collect a run
+#: that is still working after its tab was closed; the 3-hour deadline bounds them.
+_detached_runs: set[asyncio.Task[None]] = set()
+
 
 def _deadline_expired(started_at: float, now: float) -> bool:
     return now - started_at >= RUN_DEADLINE_SECONDS
+
+
+def _context_tokens(run: AgentRun[AgentDeps, str]) -> int:
+    """Tokens sitting in the model's context on the most recent request.
+
+    `usage.input_tokens` accumulates over every request in the run, so the latest request's
+    input — the part that has to fit in the window — is the difference between requests.
+    """
+    usage = run.usage
+    if not usage or not usage.requests:
+        return 0
+    return int(usage.input_tokens // usage.requests)
 
 
 def _deliver_or_queue(thread_id: str, text: str) -> bool:
@@ -116,6 +133,9 @@ async def _with_heartbeat(events: AsyncIterator[str]) -> AsyncIterator[str]:
             await frames.put(None)
 
     producer = asyncio.create_task(drain())
+    _detached_runs.add(producer)
+    producer.add_done_callback(_detached_runs.discard)
+    finished = False
     try:
         while True:
             try:
@@ -124,12 +144,17 @@ async def _with_heartbeat(events: AsyncIterator[str]) -> AsyncIterator[str]:
                 yield "event: ping\ndata: {}\n\n"
                 continue
             if frame is None:
+                finished = True
                 break
             yield frame
         # The producer is already finished; awaiting it surfaces whatever it raised.
         await producer
     finally:
-        producer.cancel()
+        # Closing the tab closes this generator, but the agent keeps working: the run persists
+        # its answer on its own, so the task is left alone and picked up from history on the
+        # next page load. Only a run that already ended has nothing left to protect.
+        if finished:
+            producer.cancel()
 
 
 def _text_chunk(event: AgentStreamEvent) -> str:
@@ -306,8 +331,20 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                     usage_limits=RUN_USAGE_LIMITS,
                 ) as run:
                     _active_runs[thread_id] = run
+                    pending_seen = 0
                     try:
                         async for node in run:
+                            # pending_messages drains when the library hands a queued message
+                            # to the model. Telling the client the moment that happens is the
+                            # difference between "queued" and "it has read it".
+                            depth = len(run.pending_messages)
+                            if depth < pending_seen:
+                                yield (
+                                    "event: delivered\ndata: "
+                                    + json.dumps({"count": pending_seen - depth})
+                                    + "\n\n"
+                                )
+                            pending_seen = depth
                             if store.is_stopped(thread_id):
                                 store.clear_stop(thread_id)
                                 cancel_notice = "Stopped by the user."
@@ -372,6 +409,10 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                                                         "tool_calls": tool_calls,
                                                         "elapsed_seconds": int(
                                                             time.monotonic() - started_at
+                                                        ),
+                                                        "context_tokens": _context_tokens(run),
+                                                        "context_window": (
+                                                            settings.context_window_tokens
                                                         ),
                                                     }
                                                 )
