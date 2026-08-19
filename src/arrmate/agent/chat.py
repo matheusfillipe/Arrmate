@@ -373,6 +373,7 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
         streamed = False
         started_at = time.monotonic()
         tool_calls = 0
+        compacted_total = 0
         accumulated_text = ""
         cancel_notice = ""
         store.clear_stop(thread_id)
@@ -416,6 +417,27 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                             # pending_messages drains when the library hands a queued message
                             # to the model. Telling the client the moment that happens is the
                             # difference between "queued" and "it has read it".
+                            # A single long task can fill the window on its own, so the
+                            # history the run is carrying gets compacted in place as it goes,
+                            # not only between turns.
+                            live_history = getattr(run.ctx.state, "message_history", None)
+                            if live_history:
+                                _, freed = compact(live_history, settings.context_window_tokens)
+                                if freed:
+                                    compacted_total += freed
+                                    yield (
+                                        "event: notice\ndata: "
+                                        + json.dumps(
+                                            {
+                                                "message": (
+                                                    "Context was nearly full; cleared "
+                                                    f"{freed} older tool results to keep going."
+                                                )
+                                            }
+                                        )
+                                        + "\n\n"
+                                    )
+
                             depth = len(run.pending_messages)
                             if depth < pending_seen:
                                 yield (

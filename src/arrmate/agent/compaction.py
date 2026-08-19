@@ -16,8 +16,9 @@ logger = logging.getLogger(__name__)
 #: Rough bytes-per-token for English JSON. Only used to decide when to act, never reported.
 _BYTES_PER_TOKEN = 4
 
-#: Start compacting well before the window is full; the next reply and its tools need room too.
-_BUDGET_FRACTION = 0.6
+#: Leave a tenth of the window free. The reply being generated and the tool results it pulls in
+#: all have to land somewhere, and overflowing costs the whole run.
+_BUDGET_FRACTION = 0.9
 
 #: Recent tool output is what the model is actively reasoning about, so it is never stripped.
 _KEEP_RECENT_MESSAGES = 12

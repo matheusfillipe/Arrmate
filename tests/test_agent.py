@@ -416,6 +416,16 @@ class TestCompaction:
         assert stripped == 0
         assert out[1].parts[0].content == "small"
 
+    def test_leaves_a_tenth_of_the_window_free(self):
+        """Compaction must trigger before the window is full: the reply needs room too."""
+        window = 10_000
+        msgs = self._history("q" * 2000, n=30)
+        before = compaction.estimate_tokens(msgs)
+        assert before > window * 0.9, "fixture is not big enough to trip the budget"
+        out, stripped = compaction.compact(msgs, window)
+        assert stripped > 0
+        assert compaction.estimate_tokens(out) <= window * 0.9
+
     def test_strips_old_tool_payloads_when_over_budget(self):
         msgs = self._history("x" * 4000)
         _out, stripped = compaction.compact(msgs, 8_000)

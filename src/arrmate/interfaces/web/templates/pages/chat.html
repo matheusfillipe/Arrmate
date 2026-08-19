@@ -77,6 +77,8 @@
         <span x-show="waited > 4" x-text="waited + 's'" class="text-gray-500"></span>
         <span x-show="toolCalls > 0" class="text-gray-500"
               x-text="toolCalls + ' tool call' + (toolCalls === 1 ? '' : 's') + ' · ' + elapsedSeconds + 's'"></span>
+        <span x-show="compacted > 0" class="text-amber-400"
+              x-text="'· compacted ' + compacted"></span>
         <span x-show="contextWindow > 0" class="text-gray-500"
               :class="contextTokens / contextWindow > 0.8 ? 'text-amber-400' : ''"
               x-text="'· context ' + Math.round(100 * contextTokens / contextWindow) + '%'"></span>
@@ -143,6 +145,7 @@ function chat() {
     elapsedSeconds: 0,
     contextTokens: 0,
     contextWindow: 0,
+    compacted: 0,
 
     init() {
       // Opening a thread should land on the latest turn, not the top of the transcript.
@@ -180,6 +183,7 @@ function chat() {
       this.waited = 0;
       this.toolCalls = 0;
       this.elapsedSeconds = 0;
+      this.compacted = 0;
       clearInterval(this.waitTimer);
       this.waitTimer = setInterval(() => this.waited++, 1000);
     },
@@ -299,6 +303,7 @@ function chat() {
               this.toolCalls = ev.data.tool_calls;
               this.elapsedSeconds = ev.data.elapsed_seconds;
             } else if (ev.event === 'notice') {
+              if ((ev.data.message || '').includes('cleared')) this.compacted++;
               this.messages.push({ role: 'notice', text: ev.data.message, cards: [] });
             } else if (ev.event === 'done') {
               openAssistant();
