@@ -23,7 +23,37 @@ from pydantic_ai.messages import (
 from arrmate.agent import chat, compaction
 from arrmate.agent.chat import _text_chunk
 from arrmate.agent.deps import AgentDeps
-from arrmate.agent.tools import _MAX_LIST_ITEMS, _compact, _wrap
+from arrmate.agent.tools import (
+    _MAX_LIST_ITEMS,
+    _RELEASE_CACHE,
+    _cached_release,
+    _compact,
+    _wrap,
+)
+
+
+class TestReleaseCache:
+    """A grab must never depend on the model reproducing an indexer download URL."""
+
+    def setup_method(self):
+        _RELEASE_CACHE.clear()
+
+    def test_indexer_urls_do_not_survive_the_trip_to_the_model(self):
+        url = "http://prowlarr:9696/22/download?apikey=k&link=" + "A" * 2000
+        assert _compact({"downloadUrl": url})["downloadUrl"] != url
+
+    def test_returns_the_release_the_search_found(self):
+        url = "http://prowlarr:9696/22/download?apikey=k&link=" + "A" * 2000
+        _RELEASE_CACHE[7] = [{"title": "a"}, {"title": "b", "downloadUrl": url}]
+        assert _cached_release(7, 1)["downloadUrl"] == url
+
+    def test_reports_a_grab_before_any_search(self):
+        assert _cached_release(7, 0)["error"] == "no-search"
+
+    def test_reports_an_index_outside_the_results(self):
+        _RELEASE_CACHE[7] = [{"title": "a"}]
+        assert _cached_release(7, 5)["error"] == "bad-index"
+        assert _cached_release(7, -1)["error"] == "bad-index"
 
 
 class TestCompact:

@@ -30,6 +30,24 @@ _MAX_LIST_ITEMS = 200
 _MAX_STR_LEN = 400
 _MAX_WAIT_SECONDS = 300
 
+#: Releases from the last search per game, held here so a grab never depends on the model
+#: reproducing a download URL. Indexer proxy links run to thousands of characters and are
+#: truncated on the way out to the model, so a URL that makes the round trip is a corrupted
+#: one: the indexer then answers an error, and a torrent client accepts the dead link and
+#: silently discards it, which reads as a successful grab that never downloads anything.
+_RELEASE_CACHE: dict[int, list[dict[str, Any]]] = {}
+
+
+def _cached_release(game_id: int, index: int) -> dict[str, Any] | dict[str, str]:
+    """The chosen release from the last search, or an error the model can act on."""
+    releases = _RELEASE_CACHE.get(game_id)
+    if releases is None:
+        return {"error": "no-search", "detail": "run gamearr_releases for this game first"}
+    if not 0 <= index < len(releases):
+        return {"error": "bad-index", "detail": f"pick 0..{len(releases) - 1}"}
+    return releases[index]
+
+
 _DATA_OPEN = "<<<TOOL_DATA"
 _DATA_CLOSE = "TOOL_DATA>>>"
 
@@ -951,39 +969,41 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     @agent.tool
     async def gamearr_releases(ctx: RunContext[AgentDeps], game_id: int) -> str:
         """Run a live Prowlarr indexer search for releases of a library game.
-        Can take 30-180 seconds. Pass one result's title/downloadUrl/etc to
-        gamearr_grab to download it."""
+        Can take 30-180 seconds. Pass a result's index to gamearr_grab to
+        download it."""
 
         async def body() -> Any:
             async with ctx.deps.gamearr() as client:
                 releases = await client.search_releases(game_id)
-                return [
-                    {
-                        "title": r.get("title"),
-                        "downloadUrl": r.get("downloadUrl"),
-                        "magnetUrl": r.get("magnetUrl"),
-                        "size": r.get("size"),
-                        "seeders": r.get("seeders"),
-                        "leechers": r.get("leechers"),
-                        "indexer": r.get("indexer"),
-                        "protocol": r.get("protocol"),
-                        "score": r.get("score"),
-                    }
-                    for r in releases
-                ]
+            _RELEASE_CACHE[game_id] = releases
+            return [
+                {
+                    "index": i,
+                    "title": r.get("title"),
+                    "size": r.get("size"),
+                    "seeders": r.get("seeders"),
+                    "leechers": r.get("leechers"),
+                    "indexer": r.get("indexer"),
+                    "protocol": r.get("protocol"),
+                    "score": r.get("score"),
+                }
+                for i, r in enumerate(releases)
+            ]
 
         return await _safe(body)
 
     @agent.tool
-    async def gamearr_grab(ctx: RunContext[AgentDeps], game_id: int, release_json: str) -> str:
-        """Grab one specific release previously returned by gamearr_releases.
+    async def gamearr_grab(ctx: RunContext[AgentDeps], game_id: int, index: int) -> str:
+        """Grab one release from the last gamearr_releases search for this game.
 
-        Pass that release's JSON object verbatim as release_json.
+        Pass the index of the chosen result.
         """
 
         async def body() -> Any:
             ctx.deps.require_write("gamearr_grab")
-            release = json.loads(release_json)
+            release = _cached_release(game_id, index)
+            if "error" in release:
+                return release
             async with ctx.deps.gamearr() as client:
                 return await client.grab_release(game_id, release)
 
