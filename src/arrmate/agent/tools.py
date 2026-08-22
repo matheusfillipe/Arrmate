@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 #: so the cap belongs above a realistic library rather than merely being announced.
 _MAX_LIST_ITEMS = 200
 _MAX_STR_LEN = 400
-_MAX_WAIT_SECONDS = 300
+_MAX_WAIT_SECONDS = 900
 
 #: Releases from the last search, held here so a grab never depends on the model
 #: reproducing the identifier that keys it. Indexer proxy links and guids run to thousands
@@ -438,8 +438,10 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def wait(ctx: RunContext[AgentDeps], seconds: int, reason: str) -> str:
         """Pause before re-checking something still in progress (a download, an import, a scan).
 
-        Capped at 300 seconds per call. Prefer several short waits over one long one — each
-        call is a chance for progress to have moved, and for a user's message to reach you.
+        Capped at 900 seconds per call. A wait long enough to matter is fine: the stream
+        emits pings through the silence. Still prefer several waits over one enormous one,
+        since each call is a chance for progress to have moved and for a user's message to
+        reach you.
         """
 
         async def body() -> Any:
