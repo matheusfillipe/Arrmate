@@ -1,6 +1,7 @@
 """Tests for the agent layer: store, deps, tools."""
 
 import asyncio
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -30,6 +31,35 @@ from arrmate.agent.tools import (
     _compact,
     _wrap,
 )
+
+
+class TestHistoryCheckpoint:
+    """A restart mid-run must not throw away the tool calls the run already made."""
+
+    class _Run:
+        def __init__(self, payload: bytes = b'[{"kind": "request"}]'):
+            self._payload = payload
+
+        def all_messages_json(self) -> bytes:
+            return self._payload
+
+    def test_saves_the_messages_so_far(self, monkeypatch):
+        saved: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            chat.store, "save_history", lambda tid, js: saved.append((tid, js))
+        )
+
+        chat._checkpoint_history("t1", self._Run())
+
+        assert saved == [("t1", '[{"kind": "request"}]')]
+
+    def test_a_failed_save_does_not_take_the_run_with_it(self, monkeypatch):
+        def boom(_tid, _js):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(chat.store, "save_history", boom)
+
+        chat._checkpoint_history("t1", self._Run())
 
 
 class TestReleaseCache:

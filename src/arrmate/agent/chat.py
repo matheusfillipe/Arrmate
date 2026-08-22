@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import sqlite3
 import time
 from collections.abc import AsyncIterator
 
@@ -122,6 +123,21 @@ def _stop_run(thread_id: str) -> bool:
         run.cancel()
         return True
     return False
+
+
+def _checkpoint_history(thread_id: str, run: AgentRun[AgentDeps, str]) -> None:
+    """Save the run's messages so far, between batches of tool calls.
+
+    History was only written when a run finished, so a restart in the middle of a long one
+    threw away every tool call it had made and left the next turn reading the previous run's
+    messages: the agent answered about whatever it had been doing before. Between tool
+    batches the message list is complete (no call is left without its return), which makes it
+    the one point that is always safe to save. A failure here must not take the run with it.
+    """
+    try:
+        store.save_history(thread_id, run.all_messages_json().decode())
+    except sqlite3.Error as e:
+        logger.warning("could not checkpoint history on thread %s: %s", thread_id, e)
 
 
 def _persist_run_outcome(thread_id: str, final_text: str, history_json: str) -> None:
@@ -519,6 +535,7 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                                                 )
                                                 + "\n\n"
                                             )
+                                _checkpoint_history(thread_id, run)
                     finally:
                         _active_runs.pop(thread_id, None)
             except RunCancelled as e:
