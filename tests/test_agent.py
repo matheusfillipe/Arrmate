@@ -45,9 +45,7 @@ class TestHistoryCheckpoint:
 
     def test_saves_the_messages_so_far(self, monkeypatch):
         saved: list[tuple[str, str]] = []
-        monkeypatch.setattr(
-            chat.store, "save_history", lambda tid, js: saved.append((tid, js))
-        )
+        monkeypatch.setattr(chat.store, "save_history", lambda tid, js: saved.append((tid, js)))
 
         chat._checkpoint_history("t1", self._Run())
 
