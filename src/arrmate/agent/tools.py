@@ -30,19 +30,20 @@ _MAX_LIST_ITEMS = 200
 _MAX_STR_LEN = 400
 _MAX_WAIT_SECONDS = 300
 
-#: Releases from the last search per game, held here so a grab never depends on the model
-#: reproducing a download URL. Indexer proxy links run to thousands of characters and are
-#: truncated on the way out to the model, so a URL that makes the round trip is a corrupted
-#: one: the indexer then answers an error, and a torrent client accepts the dead link and
-#: silently discards it, which reads as a successful grab that never downloads anything.
-_RELEASE_CACHE: dict[int, list[dict[str, Any]]] = {}
+#: Releases from the last search, held here so a grab never depends on the model
+#: reproducing the identifier that keys it. Indexer proxy links and guids run to thousands
+#: of characters and are truncated on the way out to the model, so one that makes the round
+#: trip is a corrupted one: the indexer then answers an error, and a torrent client accepts
+#: the dead link and silently discards it, which reads as a successful grab that never
+#: downloads anything. Keyed by tool and subject; the last search for a subject wins.
+_RELEASE_CACHE: dict[str, list[dict[str, Any]]] = {}
 
 
-def _cached_release(game_id: int, index: int) -> dict[str, Any] | dict[str, str]:
+def _cached_release(key: str, index: int, search_tool: str) -> dict[str, Any] | dict[str, str]:
     """The chosen release from the last search, or an error the model can act on."""
-    releases = _RELEASE_CACHE.get(game_id)
+    releases = _RELEASE_CACHE.get(key)
     if releases is None:
-        return {"error": "no-search", "detail": "run gamearr_releases for this game first"}
+        return {"error": "no-search", "detail": f"run {search_tool} for this first"}
     if not 0 <= index < len(releases):
         return {"error": "bad-index", "detail": f"pick 0..{len(releases) - 1}"}
     return releases[index]
@@ -338,6 +339,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
 
         async def body() -> Any:
             def slim(releases: list) -> list:
+                _RELEASE_CACHE[f"arr:{media_type}"] = releases
                 return [
                     {
                         # guid and indexerId together are what a grab is keyed on. Dropping
@@ -483,20 +485,19 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     # ── Write tools (power_user/admin only) ───────────────────────────────────
 
     @agent.tool
-    async def push_release(ctx: RunContext[AgentDeps], media_type: str, release_json: str) -> str:
-        """Grab one specific release previously returned by interactive_search.
+    async def push_release(ctx: RunContext[AgentDeps], media_type: str, index: int) -> str:
+        """Grab one release from the last interactive_search for this media type.
 
-        Pass that release's JSON object verbatim as release_json; its guid and indexerId are
-        what identify the grab.
+        Pass the index of the chosen result.
         """
 
         async def body() -> Any:
             ctx.deps.require_write("push_release")
-            release = json.loads(release_json)
+            release = _cached_release(f"arr:{media_type}", index, "interactive_search")
+            if "error" in release:
+                return release
             if not release.get("indexerId"):
-                raise ValueError(
-                    "release_json needs the indexerId from interactive_search, not just a guid"
-                )
+                raise ValueError("that release carries no indexerId, so it cannot be grabbed")
             if media_type == "tv":
                 async with ctx.deps.sonarr() as c:
                     return await c.push_release(release)
@@ -975,7 +976,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         async def body() -> Any:
             async with ctx.deps.gamearr() as client:
                 releases = await client.search_releases(game_id)
-            _RELEASE_CACHE[game_id] = releases
+            _RELEASE_CACHE[f"gamearr:{game_id}"] = releases
             return [
                 {
                     "index": i,
@@ -1001,7 +1002,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
 
         async def body() -> Any:
             ctx.deps.require_write("gamearr_grab")
-            release = _cached_release(game_id, index)
+            release = _cached_release(f"gamearr:{game_id}", index, "gamearr_releases")
             if "error" in release:
                 return release
             async with ctx.deps.gamearr() as client:

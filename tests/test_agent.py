@@ -44,16 +44,21 @@ class TestReleaseCache:
 
     def test_returns_the_release_the_search_found(self):
         url = "http://prowlarr:9696/22/download?apikey=k&link=" + "A" * 2000
-        _RELEASE_CACHE[7] = [{"title": "a"}, {"title": "b", "downloadUrl": url}]
-        assert _cached_release(7, 1)["downloadUrl"] == url
+        _RELEASE_CACHE["gamearr:7"] = [{"title": "a"}, {"title": "b", "downloadUrl": url}]
+        assert _cached_release("gamearr:7", 1, "gamearr_releases")["downloadUrl"] == url
+
+    def test_arr_guids_are_kept_out_of_the_model_too(self):
+        guid = "https://indexer.example/download?token=" + "B" * 2000
+        _RELEASE_CACHE["arr:tv"] = [{"guid": guid, "indexerId": 3}]
+        assert _cached_release("arr:tv", 0, "interactive_search")["guid"] == guid
 
     def test_reports_a_grab_before_any_search(self):
-        assert _cached_release(7, 0)["error"] == "no-search"
+        assert _cached_release("gamearr:7", 0, "gamearr_releases")["error"] == "no-search"
 
     def test_reports_an_index_outside_the_results(self):
-        _RELEASE_CACHE[7] = [{"title": "a"}]
-        assert _cached_release(7, 5)["error"] == "bad-index"
-        assert _cached_release(7, -1)["error"] == "bad-index"
+        _RELEASE_CACHE["gamearr:7"] = [{"title": "a"}]
+        assert _cached_release("gamearr:7", 5, "gamearr_releases")["error"] == "bad-index"
+        assert _cached_release("gamearr:7", -1, "gamearr_releases")["error"] == "bad-index"
 
 
 class TestCompact:
