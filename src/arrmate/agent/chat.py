@@ -13,6 +13,7 @@ from pydantic_ai import Agent, AgentRun, FunctionToolCallEvent, FunctionToolResu
 from pydantic_ai.exceptions import RunCancelled, UsageLimitExceeded
 from pydantic_ai.messages import (
     AgentStreamEvent,
+    ModelMessagesTypeAdapter,
     PartDeltaEvent,
     PartStartEvent,
     TextPart,
@@ -25,7 +26,7 @@ from arrmate.config.settings import settings
 from arrmate.interfaces.web.routes import templates
 
 from . import store
-from .compaction import compact
+from .compaction import compact, settle_tool_calls
 from .deps import AgentDeps
 from .models import MAX_TOOL_CALLS_PER_RUN, RUN_DEADLINE_SECONDS, RUN_USAGE_LIMITS, get_agent
 
@@ -403,6 +404,26 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
             agent: Agent[AgentDeps, str] = get_agent()
             history = store.load_history(thread_id)
             if history:
+                # A run stopped mid-tool leaves its last call unanswered, which makes
+                # every later prompt on this thread fail outright. Repair on load so
+                # threads already saved in that state come back to life too.
+                settled = settle_tool_calls(history)
+                if settled:
+                    store.save_history(
+                        thread_id, ModelMessagesTypeAdapter.dump_json(history).decode()
+                    )
+                    yield (
+                        "event: notice\ndata: "
+                        + json.dumps(
+                            {
+                                "message": (
+                                    "The previous run was stopped mid-tool; picking up "
+                                    "from where it left off."
+                                )
+                            }
+                        )
+                        + "\n\n"
+                    )
                 history, stripped = compact(history, settings.context_window_tokens)
                 if stripped:
                     yield (

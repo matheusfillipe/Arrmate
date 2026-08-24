@@ -9,7 +9,13 @@ tool call with no matching return is not a valid history to resume from.
 
 import logging
 
-from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +30,61 @@ _BUDGET_FRACTION = 0.9
 _KEEP_RECENT_MESSAGES = 12
 
 _STRIPPED = "[older tool output removed to stay within the context window]"
+
+
+_CANCELLED = "Tool call did not finish: the run was stopped before it returned."
+
+
+def settle_tool_calls(messages: list[ModelMessage]) -> int:
+    """Give a return to every tool call that never got one. Returns how many.
+
+    A run stopped while a tool was still in flight is persisted with that call
+    unanswered, and pydantic-ai then rejects every later prompt on the thread with
+    "Cannot provide a new user prompt when the message history contains unprocessed
+    tool calls" - the conversation is bricked, not merely interrupted. Answering the
+    orphans restores a valid call/return alternation and tells the model plainly that
+    the tool was cut off rather than leaving it to infer a result it never saw.
+    """
+    answered = {
+        part.tool_call_id
+        for msg in messages
+        if isinstance(msg, ModelRequest)
+        for part in msg.parts
+        if isinstance(part, ToolReturnPart)
+    }
+
+    settled = 0
+    for index in range(len(messages) - 1, -1, -1):
+        msg = messages[index]
+        if not isinstance(msg, ModelResponse):
+            continue
+        orphans = [
+            part
+            for part in msg.parts
+            if isinstance(part, ToolCallPart) and part.tool_call_id not in answered
+        ]
+        if not orphans:
+            continue
+        # The return has to sit directly after the call it answers, so it is inserted
+        # rather than appended: a later message would leave the pairing out of order.
+        messages.insert(
+            index + 1,
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name=part.tool_name,
+                        content=_CANCELLED,
+                        tool_call_id=part.tool_call_id,
+                    )
+                    for part in orphans
+                ]
+            ),
+        )
+        settled += len(orphans)
+
+    if settled:
+        logger.info("settled %d unanswered tool call(s) from an interrupted run", settled)
+    return settled
 
 
 def estimate_tokens(messages: list[ModelMessage]) -> int:
