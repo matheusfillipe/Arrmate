@@ -996,6 +996,62 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         return await _safe(body)
 
     @agent.tool
+    async def gamearr_nps_search(
+        ctx: RunContext[AgentDeps],
+        query: str,
+        platform: str = "PSV",
+        kind: str = "GAMES",
+    ) -> str:
+        """Search NoPayStation for PlayStation downloads. platform is one of PSV,
+        PSP, PS3, PSX, PSM and kind one of GAMES, DLCS, UPDATES, DEMOS. Rows are
+        keyed by title id, so passing a title id searches for that exact title.
+        A Vita result needs its zRIF, which travels with the download."""
+
+        async def body() -> Any:
+            async with ctx.deps.gamearr() as client:
+                results = await client.nps_search(query, platform, kind)
+            return [
+                {
+                    "titleId": r.get("titleId"),
+                    "name": r.get("name"),
+                    "region": r.get("region"),
+                    "size": r.get("size"),
+                    "kind": r.get("kind"),
+                }
+                for r in results
+            ]
+
+        return await _safe(body)
+
+    @agent.tool
+    async def gamearr_nps_download(
+        ctx: RunContext[AgentDeps],
+        title_id: str,
+        platform: str = "PSV",
+        kind: str = "GAMES",
+    ) -> str:
+        """Download one NoPayStation title by title id, writing the PKG and its
+        zRIF key side by side. This downloads only: nothing is installed into an
+        emulator. Use gamearr_nps_search first to get the title id."""
+
+        async def body() -> Any:
+            ctx.deps.require_write("gamearr_nps_download")
+            async with ctx.deps.gamearr() as client:
+                return await client.nps_download(title_id, platform, kind)
+
+        return await _safe(body)
+
+    @agent.tool
+    async def gamearr_nps_downloads(ctx: RunContext[AgentDeps]) -> str:
+        """Progress of NoPayStation downloads started since gamearr last restarted."""
+
+        async def body() -> Any:
+            async with ctx.deps.gamearr() as client:
+                return await client.nps_downloads()
+
+        return await _safe(body)
+
+    @agent.tool
     async def gamearr_grab(ctx: RunContext[AgentDeps], game_id: int, index: int) -> str:
         """Grab one release from the last gamearr_releases search for this game.
 

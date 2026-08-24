@@ -100,6 +100,39 @@ class GamearrClient:
             body["platform"] = platform
         return cast(dict[str, Any], await self._post("/games", json=body))
 
+    async def nps_search(
+        self, query: str, platform: str = "PSV", kind: str = "GAMES", limit: int = 25
+    ) -> list[Any]:
+        """Search the NoPayStation catalogue, which is keyed by title id rather than name."""
+        return cast(
+            list[Any],
+            await self._get(
+                "/nps/search",
+                params={"q": query, "platform": platform, "kind": kind, "limit": limit},
+            ),
+        )
+
+    async def nps_title(self, title_id: str, platform: str = "PSV") -> list[Any]:
+        """Every NoPayStation row for one title id: the game plus any update and DLC."""
+        return cast(
+            list[Any], await self._get(f"/nps/title/{title_id}", params={"platform": platform})
+        )
+
+    async def nps_download(
+        self, title_id: str, platform: str = "PSV", kind: str = "GAMES"
+    ) -> dict[str, Any]:
+        """Download one PKG and its zRIF key. Downloads only; nothing is installed."""
+        return cast(
+            dict[str, Any],
+            await self._post(
+                "/nps/download", json={"titleId": title_id, "platform": platform, "kind": kind}
+            ),
+        )
+
+    async def nps_downloads(self) -> list[Any]:
+        """Progress for NoPayStation downloads requested since the server started."""
+        return cast(list[Any], await self._get("/nps/downloads"))
+
     async def search_releases(self, game_id: int) -> list[Any]:
         """Prowlarr indexer search for candidate releases of a library game."""
         return cast(list[Any], await self._get(f"/search/releases/{game_id}"))
