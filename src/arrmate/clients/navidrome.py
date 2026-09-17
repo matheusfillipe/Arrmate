@@ -87,8 +87,9 @@ class NavidromeClient:
         except (httpx.HTTPError, ValueError):
             return False
 
-    async def search_songs(self, title: str, limit: int = 50) -> list[dict[str, Any]]:
-        """Songs whose title contains the given text."""
+    async def search_songs(self, title: str, limit: int = _PAGE_END) -> list[dict[str, Any]]:
+        """Songs whose title contains the given text. A short common title ('Heaven') matches
+        hundreds of songs and there is no artist filter, so the page has to hold them all."""
         songs = await self._api("GET", "song", params={"title": title, "_end": limit})
         return cast("list[dict[str, Any]]", songs)
 
