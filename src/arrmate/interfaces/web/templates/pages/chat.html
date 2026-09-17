@@ -243,11 +243,11 @@ function chat() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ thread_id: this.threadId, message: text }),
-      }));
+      }), text);
     },
 
     // Reads an SSE response, whether it came from starting a run or rejoining one.
-    consume(request) {
+    consume(request, prompt = '') {
       let assistant = { role: 'assistant', parts: [] };
       let started = false;
 
@@ -290,7 +290,7 @@ function chat() {
             if (ev.event === 'meta') {
               this.threadId = ev.data.thread_id;
               if (!this.threads.some(t => t.id === this.threadId)) {
-                this.threads.unshift({ id: this.threadId, title: text.slice(0, 60) });
+                this.threads.unshift({ id: this.threadId, title: prompt.slice(0, 60) || 'New chat' });
               }
             } else if (ev.event === 'delta') {
               appendText(ev.data.text);
