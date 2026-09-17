@@ -38,24 +38,34 @@
 
           <template x-if="m.role !== 'notice'">
             <div>
-              <!-- Tool cards -->
-              <template x-for="(c, j) in m.cards" :key="j">
-                <div class="mt-2 rounded-lg border border-gray-700 bg-gray-900 overflow-hidden text-sm">
-                  <button @click="c.open = !c.open"
-                          class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-gray-750">
-                    <span x-text="c.phase === 'start' ? '⚙️' : (c.ok ? '✅' : '⚠️')"></span>
-                    <span class="font-mono text-indigo-300" x-text="c.name"></span>
-                    <span class="text-gray-400 truncate flex-1" x-text="c.summary"></span>
-                    <span class="text-gray-500 text-xs" x-text="c.open ? '▾' : '▸'"></span>
-                  </button>
-                  <div x-show="c.open" x-cloak class="border-t border-gray-700 px-3 py-2">
-                    <pre class="text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap"
-                         x-text="c.detail"></pre>
-                  </div>
+              <!-- A live assistant turn is text and tool calls in the order they happened -->
+              <template x-for="(p, j) in (m.parts || [])" :key="j">
+                <div>
+                  <template x-if="p.kind === 'tool'">
+                    <div class="mt-2 rounded-lg border border-gray-700 bg-gray-900 overflow-hidden text-sm">
+                      <button @click="p.open = !p.open"
+                              class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-gray-750">
+                        <span x-text="p.phase === 'start' ? '⚙️' : (p.ok ? '✅' : '⚠️')"></span>
+                        <span class="font-mono text-indigo-300" x-text="p.name"></span>
+                        <span class="text-gray-400 truncate flex-1" x-text="p.summary"></span>
+                        <span class="text-gray-500 text-xs" x-text="p.open ? '▾' : '▸'"></span>
+                      </button>
+                      <div x-show="p.open" x-cloak class="border-t border-gray-700 px-3 py-2">
+                        <pre class="text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap"
+                             x-text="p.detail"></pre>
+                      </div>
+                    </div>
+                  </template>
+                  <template x-if="p.kind === 'text' && p.text">
+                    <div class="flex justify-start mt-2">
+                      <div class="max-w-[85%] rounded-xl px-4 py-2.5 text-sm bg-gray-700 text-gray-100 chat-markdown"
+                           x-html="renderMarkdown(p.text)"></div>
+                    </div>
+                  </template>
                 </div>
               </template>
 
-              <div class="flex" x-show="m.text" :class="m.role === 'user' || m.role === 'queued' ? 'justify-end' : 'justify-start'">
+              <div class="flex" x-show="m.text && !m.parts" :class="m.role === 'user' || m.role === 'queued' ? 'justify-end' : 'justify-start'">
                 <div class="max-w-[85%] rounded-xl px-4 py-2.5 text-sm"
                      :class="m.role === 'user'
                             ? 'bg-indigo-600 text-white whitespace-pre-wrap'
@@ -238,16 +248,25 @@ function chat() {
 
     // Reads an SSE response, whether it came from starting a run or rejoining one.
     consume(request) {
-      let assistant = { role: 'assistant', text: '', cards: [] };
+      let assistant = { role: 'assistant', parts: [] };
       let started = false;
 
       // Alpine hands back a proxy for what the array holds; only writes through that proxy
-      // re-render. Swap the plain object for it the moment it is pushed.
+      // re-render. Swap the plain object for it the moment it is pushed, and read every new
+      // part back out of its array for the same reason.
       const openAssistant = () => {
         if (started) return;
         this.messages.push(assistant);
         assistant = this.messages[this.messages.length - 1];
         started = true;
+      };
+      const lastPart = () => assistant.parts[assistant.parts.length - 1];
+      const appendText = (text) => {
+        openAssistant();
+        if (!lastPart() || lastPart().kind !== 'text') {
+          assistant.parts.push({ kind: 'text', text: '' });
+        }
+        lastPart().text += text;
       };
 
       request.then(response => {
@@ -274,22 +293,23 @@ function chat() {
                 this.threads.unshift({ id: this.threadId, title: text.slice(0, 60) });
               }
             } else if (ev.event === 'delta') {
-              openAssistant();
-              assistant.text += ev.data.text;
+              appendText(ev.data.text);
               this.scrollDown();
             } else if (ev.event === 'tool') {
               openAssistant();
               if (ev.data.phase === 'start') {
-                assistant.cards.push({
-                  name: ev.data.name, phase: 'start', ok: true, open: false,
+                assistant.parts.push({
+                  kind: 'tool', name: ev.data.name, phase: 'start', ok: true, open: false,
                   summary: summarizeArgs(ev.data.args),
                   detail: 'args:\n' + pretty(ev.data.args),
                 });
               } else {
-                let card = assistant.cards.find(c => c.name === ev.data.name && c.phase === 'start');
+                let card = assistant.parts.find(
+                  p => p.kind === 'tool' && p.name === ev.data.name && p.phase === 'start');
                 if (!card) {
-                  card = { name: ev.data.name, phase: 'end', ok: true, open: false, summary: '', detail: '' };
-                  assistant.cards.push(card);
+                  assistant.parts.push(
+                    { kind: 'tool', name: ev.data.name, phase: 'end', ok: true, open: false, summary: '', detail: '' });
+                  card = lastPart();
                 }
                 card.phase = 'end';
                 card.ok = !/permission-denied|tool-failed|not-configured/.test(String(ev.data.result));
@@ -316,9 +336,7 @@ function chat() {
                 if (q) q.role = 'user';
               }
             } else if (ev.event === 'error') {
-              openAssistant();
-              assistant.text += (assistant.text ? '\n\n' : '') +
-                '⚠️ ' + ev.data.message;
+              appendText('\n\n⚠️ ' + ev.data.message);
               this.stopWaiting();
             }
           }
@@ -327,8 +345,7 @@ function chat() {
         });
         return pump();
       }).catch(err => {
-        openAssistant();
-        assistant.text += (assistant.text ? '\n\n' : '') + '⚠️ ' + err;
+        appendText('\n\n⚠️ ' + err);
         this.stopWaiting();
       });
     },
