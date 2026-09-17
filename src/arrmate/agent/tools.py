@@ -49,6 +49,12 @@ def _cached_release(key: str, index: int, search_tool: str) -> dict[str, Any] | 
     return releases[index]
 
 
+def _unsupported_media_type(media_type: str) -> str:
+    if media_type == "music":
+        return "music is not handled here: use the music_* tools"
+    return f"unsupported media_type: {media_type}"
+
+
 _DATA_OPEN = "<<<TOOL_DATA"
 _DATA_CLOSE = "TOOL_DATA>>>"
 
@@ -149,7 +155,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
             elif media_type == "movie":
                 async with ctx.deps.radarr(service_id) as radarr_client:
                     return slim(await radarr_client.search(title))
-            raise ValueError(f"unsupported media_type: {media_type}")
+            raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
 
@@ -188,7 +194,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
             if media_type == "movie":
                 async with ctx.deps.radarr(service_id) as radarr_client:
                     return slim(await radarr_client.get_all_items())
-            raise ValueError(f"unsupported media_type: {media_type}")
+            raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
 
@@ -205,7 +211,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
             if media_type == "movie":
                 async with ctx.deps.radarr(service_id) as c:
                     return await c.get_item(item_id)
-            raise ValueError(f"unsupported media_type: {media_type}")
+            raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
 
@@ -281,7 +287,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
                         }
                         for r in data.get("records", [])
                     ]
-            raise ValueError(f"unsupported media_type: {media_type}")
+            raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
 
@@ -296,7 +302,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
             if media_type == "movie":
                 async with ctx.deps.radarr(service_id) as c:
                     return (await c.get_queue()).get("records", [])
-            raise ValueError(f"unsupported media_type: {media_type}")
+            raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
 
@@ -371,7 +377,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
                             await sonarr_client.interactive_search_season(series_id, season_number)
                         )
                     raise ValueError("pass episode_id, or series_id and season_number")
-            raise ValueError(f"unsupported media_type: {media_type}")
+            raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
 
@@ -386,7 +392,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
             if media_type == "movie":
                 async with ctx.deps.radarr() as c:
                     return (await c.get_blocklist()).get("records", [])
-            raise ValueError(f"unsupported media_type: {media_type}")
+            raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
 
@@ -480,7 +486,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
                             for r in await c.get_root_folders()
                         ],
                     }
-            raise ValueError(f"unsupported media_type: {media_type}")
+            raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
 
@@ -506,7 +512,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
             if media_type == "movie":
                 async with ctx.deps.radarr() as c:
                     return await c.push_release(release)
-            raise ValueError(f"unsupported media_type: {media_type}")
+            raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
 
@@ -533,7 +539,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
             if media_type == "movie":
                 async with ctx.deps.radarr() as c:
                     return await c.trigger_item_search(item_id)
-            raise ValueError(f"unsupported media_type: {media_type}")
+            raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
 
@@ -557,7 +563,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
             if media_type == "movie":
                 async with ctx.deps.radarr(service_id) as c:
                     return await add_first_match(c, media_type, title, monitored=monitored)
-            raise ValueError(f"unsupported media_type: {media_type}")
+            raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
 
@@ -581,7 +587,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
                 async with ctx.deps.radarr(service_id) as c:
                     ok = await c.delete_item(item_id, delete_files)
             else:
-                raise ValueError(f"unsupported media_type: {media_type}")
+                raise ValueError(_unsupported_media_type(media_type))
             return {"removed": ok, "filesDeleted": delete_files}
 
         return await _safe(body)
@@ -600,7 +606,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
             if media_type == "movie":
                 async with ctx.deps.radarr() as c:
                     return await c.set_movie_monitored(item_id, monitored)
-            raise ValueError(f"unsupported media_type: {media_type}")
+            raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
 

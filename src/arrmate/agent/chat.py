@@ -515,6 +515,7 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                                                 "event: tool\ndata: "
                                                 + json.dumps(
                                                     {
+                                                        "id": ev.part.tool_call_id,
                                                         "name": ev.part.tool_name,
                                                         "phase": "start",
                                                         "args": ev.part.args,
@@ -528,6 +529,7 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                                                 "event: tool\ndata: "
                                                 + json.dumps(
                                                     {
+                                                        "id": ev.part.tool_call_id,
                                                         "name": ev.part.tool_name,
                                                         "phase": "end",
                                                         # The payload rides on the part; the

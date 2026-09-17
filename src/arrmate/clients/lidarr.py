@@ -51,6 +51,29 @@ class LidarrClient(BaseArrClient):
         """Get every track across an artist's albums, each carrying its albumId and hasFile."""
         return await self._get(f"{self.api_prefix}/track", params={"artistId": artist_id})
 
+    async def set_artist_monitored(self, artist_id: int, monitored: bool) -> dict[str, Any]:
+        artist = await self.get_item(artist_id)
+        artist["monitored"] = monitored
+        return await self._put(f"{self.api_prefix}/artist/{artist_id}", data=artist)
+
+    async def get_album(self, album_id: int) -> dict[str, Any]:
+        return await self._get(f"{self.api_prefix}/album/{album_id}")
+
+    async def import_download(self, path: str, download_id: str) -> dict[str, Any]:
+        """Import one finished download now; returns the queued command."""
+        return await self._post(
+            f"{self.api_prefix}/command",
+            data={
+                "name": "DownloadedAlbumsScan",
+                "path": path,
+                "downloadClientId": download_id,
+                "importMode": "auto",
+            },
+        )
+
+    async def get_commands(self) -> list[dict[str, Any]]:
+        return await self._get(f"{self.api_prefix}/command")
+
     async def set_albums_monitored(self, album_ids: list[int], monitored: bool) -> Any:
         """Monitor or unmonitor albums."""
         return await self._put(

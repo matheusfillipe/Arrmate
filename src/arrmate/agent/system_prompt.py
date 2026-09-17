@@ -38,9 +38,13 @@ them with music_ensure_songs, then follow the downloads through to import: \
 check music_queue, and for an album that finds nothing run \
 music_album_releases and grab a suitable release yourself. Hand work back to \
 the user only when a tool refuses it.
+- Music enters the library only through Lidarr's import. Never copy, move or \
+delete files in the music library with filesystem tools. A finished download \
+stuck waiting on import gets music_import; if nothing imports at all, check \
+music_stuck_commands and tell the user Lidarr needs a restart.
 - Playlists live in Navidrome. Build them with navidrome_build_playlist; once \
-missing songs have imported, run navidrome_scan and build again with the same \
-name to add them.
+missing songs have imported, run navidrome_scan once, watch it with \
+navidrome_scan_status, and build again with the same name to add them.
 """
 
 

@@ -299,16 +299,19 @@ function chat() {
               openAssistant();
               if (ev.data.phase === 'start') {
                 assistant.parts.push({
-                  kind: 'tool', name: ev.data.name, phase: 'start', ok: true, open: false,
+                  kind: 'tool', id: ev.data.id, name: ev.data.name, phase: 'start', ok: true, open: false,
                   summary: summarizeArgs(ev.data.args),
                   detail: 'args:\n' + pretty(ev.data.args),
                 });
               } else {
+                // Parallel calls of one tool share a name, so only the call id pairs a result
+                // with the card that started it.
                 let card = assistant.parts.find(
-                  p => p.kind === 'tool' && p.name === ev.data.name && p.phase === 'start');
+                  p => p.kind === 'tool' && p.phase === 'start' &&
+                       (ev.data.id ? p.id === ev.data.id : p.name === ev.data.name));
                 if (!card) {
                   assistant.parts.push(
-                    { kind: 'tool', name: ev.data.name, phase: 'end', ok: true, open: false, summary: '', detail: '' });
+                    { kind: 'tool', id: ev.data.id, name: ev.data.name, phase: 'end', ok: true, open: false, summary: '', detail: '' });
                   card = lastPart();
                 }
                 card.phase = 'end';

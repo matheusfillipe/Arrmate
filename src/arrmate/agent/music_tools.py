@@ -8,6 +8,7 @@ by matching paths. Navidrome serves the same files and holds the playlists.
 import asyncio
 import re
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from pydantic_ai import Agent, RunContext
@@ -23,6 +24,12 @@ _NON_ALNUM = re.compile(r"[^0-9a-z]+")
 _TRACK_WAIT_SECONDS = 180
 _TRACK_POLL_SECONDS = 5
 _HEALTHY_QUEUE_STATES = {"downloading", "importing"}
+_SINGLE_FILE_IMAGE = re.compile(r"image\s*\+|[\(\[]image[\)\]]|\+\s*\.?cue\b", re.IGNORECASE)
+
+
+def is_single_file_image(release_title: str) -> bool:
+    """Release names mark whole-album rips as 'image+.cue', '(image)' or 'APE+CUE'."""
+    return bool(_SINGLE_FILE_IMAGE.search(release_title))
 
 
 def _normalize(text: str) -> str:
@@ -142,21 +149,36 @@ async def _library_defaults(client: LidarrClient) -> dict[str, Any]:
     }
 
 
+async def add_monitored_artist(
+    client: LidarrClient, foreign_artist_id: str, name: str, monitor: str
+) -> dict[str, Any]:
+    """Add an artist that stays monitored whichever albums start monitored.
+
+    Lidarr unmonitors the artist itself when added with monitor='none', and an unmonitored
+    artist's albums are never picked up by automatic searches or RSS.
+    """
+    added = await client.add_artist(
+        foreign_artist_id=foreign_artist_id,
+        artist_name=name,
+        monitored=True,
+        search_for_missing=False,
+        monitor=monitor,
+        **await _library_defaults(client),
+    )
+    if not added.get("monitored"):
+        added = await client.set_artist_monitored(added["id"], True)
+    return added
+
+
 async def _add_artist(client: LidarrClient, name: str) -> dict[str, Any] | None:
-    """Add the artist a name looks up to, with nothing monitored yet."""
+    """Add the artist a name looks up to, with no albums monitored yet."""
     results = await client.search(name)
     if not results:
         return None
     exact = [r for r in results if _artist_key(r.get("artistName") or "") == _artist_key(name)]
     chosen = (exact or results)[0]
-    defaults = await _library_defaults(client)
-    return await client.add_artist(
-        foreign_artist_id=chosen["foreignArtistId"],
-        artist_name=chosen["artistName"],
-        monitored=True,
-        search_for_missing=False,
-        monitor="none",
-        **defaults,
+    return await add_monitored_artist(
+        client, chosen["foreignArtistId"], chosen["artistName"], "none"
     )
 
 
@@ -412,15 +434,12 @@ def register_music_tools(agent: Agent[AgentDeps, str]) -> None:
         async def body() -> Any:
             ctx.deps.require_write("music_add_artist")
             async with ctx.deps.lidarr() as client:
-                added = await client.add_artist(
-                    foreign_artist_id=foreign_artist_id,
-                    artist_name=name,
-                    monitored=True,
-                    search_for_missing=False,
-                    monitor=monitor,
-                    **await _library_defaults(client),
-                )
-            return {"artistId": added.get("id"), "name": added.get("artistName")}
+                added = await add_monitored_artist(client, foreign_artist_id, name, monitor)
+            return {
+                "artistId": added.get("id"),
+                "name": added.get("artistName"),
+                "monitored": added.get("monitored"),
+            }
 
         return await _safe(body)
 
@@ -451,26 +470,35 @@ def register_music_tools(agent: Agent[AgentDeps, str]) -> None:
         Rejected releases come back with their reasons. Lidarr's automatic search only takes
         approved ones, so a release rejected for a fixable reason (an edition label, a size
         check) can still be the right one: grab it by index with music_grab_release.
+        Never grab one marked singleFileImage: it is the whole album as one audio file plus a
+        .cue sheet, which Lidarr cannot import and Navidrome cannot split into songs.
+        Check the album and artist in the result before grabbing.
         """
 
         async def body() -> Any:
             async with ctx.deps.lidarr() as client:
+                album = await client.get_album(album_id)
                 releases = await client.interactive_search_album(album_id)
             _RELEASE_CACHE[f"lidarr:{album_id}"] = releases
-            return [
-                {
-                    "index": i,
-                    "title": r.get("title"),
-                    "indexer": r.get("indexer"),
-                    "protocol": r.get("protocol"),
-                    "quality": ((r.get("quality") or {}).get("quality") or {}).get("name"),
-                    "size": r.get("size"),
-                    "seeders": r.get("seeders"),
-                    "approved": r.get("approved"),
-                    "rejections": r.get("rejections"),
-                }
-                for i, r in enumerate(releases)
-            ]
+            return {
+                "album": album.get("title"),
+                "artist": (album.get("artist") or {}).get("artistName"),
+                "releases": [
+                    {
+                        "index": i,
+                        "title": r.get("title"),
+                        "indexer": r.get("indexer"),
+                        "protocol": r.get("protocol"),
+                        "quality": ((r.get("quality") or {}).get("quality") or {}).get("name"),
+                        "size": r.get("size"),
+                        "seeders": r.get("seeders"),
+                        "approved": r.get("approved"),
+                        "rejections": r.get("rejections"),
+                        "singleFileImage": is_single_file_image(r.get("title") or ""),
+                    }
+                    for i, r in enumerate(releases)
+                ],
+            }
 
         return await _safe(body)
 
@@ -506,6 +534,58 @@ def register_music_tools(agent: Agent[AgentDeps, str]) -> None:
                 "byClientAndState": dict(counts),
                 "items": [_slim_queue_item(r) for r in shown],
             }
+
+        return await _safe(body)
+
+    @agent.tool
+    async def music_import(ctx: RunContext[AgentDeps], queue_ids: list[int]) -> str:
+        """Import finished downloads that sit in the queue waiting on import. This is the only
+        way music gets into the library: never copy files into the library folder by hand,
+        Lidarr does not track copies and keeps searching for the album."""
+
+        async def body() -> Any:
+            ctx.deps.require_write("music_import")
+            async with ctx.deps.lidarr() as client:
+                by_id = {r.get("id"): r for r in (await client.get_queue()).get("records", [])}
+                started = []
+                for queue_id in queue_ids:
+                    record = by_id.get(queue_id)
+                    if record is None or not record.get("outputPath"):
+                        started.append(
+                            {"queueId": queue_id, "error": "not in queue or no files yet"}
+                        )
+                        continue
+                    command = await client.import_download(
+                        record["outputPath"], record.get("downloadId") or ""
+                    )
+                    started.append({"queueId": queue_id, "commandId": command.get("id")})
+            return started
+
+        return await _safe(body)
+
+    @agent.tool
+    async def music_stuck_commands(ctx: RunContext[AgentDeps]) -> str:
+        """Lidarr background commands that have been queued or running for over an hour. A
+        command stuck in 'started' blocks every later import; restarting Lidarr clears it."""
+
+        async def body() -> Any:
+            cutoff = datetime.now(UTC) - timedelta(hours=1)
+            async with ctx.deps.lidarr() as client:
+                commands = await client.get_commands()
+            stuck = []
+            for command in commands:
+                since = command.get("started") or command.get("queued")
+                if command.get("status") not in ("queued", "started") or not since:
+                    continue
+                if datetime.fromisoformat(since.replace("Z", "+00:00")) < cutoff:
+                    stuck.append(
+                        {
+                            "name": command.get("name"),
+                            "status": command.get("status"),
+                            "since": since,
+                        }
+                    )
+            return stuck
 
         return await _safe(body)
 
@@ -570,15 +650,26 @@ def register_music_tools(agent: Agent[AgentDeps, str]) -> None:
 
     @agent.tool
     async def navidrome_scan(ctx: RunContext[AgentDeps]) -> str:
-        """Make Navidrome pick up newly imported music now instead of at its next scheduled
-        scan. Returns the scan state; call again to see when it has finished."""
+        """Start a Navidrome scan so newly imported music shows up now. Call it once after
+        imports land; a quick scan finishes in seconds. Every call starts a new scan, so
+        follow progress with navidrome_scan_status instead of calling this again."""
 
         async def body() -> Any:
             ctx.deps.require_write("navidrome_scan")
             async with ctx.deps.navidrome() as client:
                 status = await client.scan_status()
-                if not status.get("scanning"):
-                    status = await client.start_scan()
-            return status
+                if status.get("scanning"):
+                    return {"started": False, "reason": "a scan is already running", **status}
+                return {"started": True, **await client.start_scan()}
+
+        return await _safe(body)
+
+    @agent.tool
+    async def navidrome_scan_status(ctx: RunContext[AgentDeps]) -> str:
+        """Whether a Navidrome scan is running, and when the last one finished. Read-only."""
+
+        async def body() -> Any:
+            async with ctx.deps.navidrome() as client:
+                return await client.scan_status()
 
         return await _safe(body)

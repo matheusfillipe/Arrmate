@@ -8,6 +8,7 @@ from arrmate.agent.music_tools import (
     best_song,
     build_playlist,
     ensure_tracks,
+    is_single_file_image,
     matching_tracks,
     parse_track_line,
     preferred_album,
@@ -229,3 +230,17 @@ async def test_existing_playlist_gains_only_new_songs_and_goes_to_the_owner():
     assert result["notInNavidrome"] == ["Berlin - Take My Breath Away"]
     assert [t["mediaFileId"] for t in navidrome.tracks["p1"]] == ["wings", "studio"]
     assert navidrome.updates == [("p1", True, "id-mattf")]
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("DeBarge - Rhythm Of The Night (1985) [FLAC image+.cue]", True),
+        ("Simply Red - Picture Book (1985) (image)", True),
+        ("Berlin - Count Three & Pray [APE+CUE]", True),
+        ("Simply Red - Picture Book - 1985, FLAC (tracks)", False),
+        ("Anthrax - Among the Living (Image of the Beast Remaster)", False),
+    ],
+)
+def test_single_file_image_rips_are_recognised(title: str, expected: bool):
+    assert is_single_file_image(title) is expected
