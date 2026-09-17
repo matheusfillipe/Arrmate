@@ -87,6 +87,10 @@ class NavidromeClient:
         except (httpx.HTTPError, ValueError):
             return False
 
+    async def get_version(self) -> str | None:
+        version = (await self._subsonic("ping")).get("serverVersion")
+        return str(version) if version else None
+
     async def search_songs(self, title: str, limit: int = _PAGE_END) -> list[dict[str, Any]]:
         """Songs whose title contains the given text. A short common title ('Heaven') matches
         hundreds of songs and there is no artist filter, so the page has to hold them all."""

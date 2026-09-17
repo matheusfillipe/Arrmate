@@ -21,6 +21,7 @@ from .jellyseerr import JellyseerrClient
 from .lazylibrarian import LazyLibrarianClient
 from .lidarr import LidarrClient
 from .listenarr import ListenarrClient
+from .navidrome import NavidromeClient
 from .plex import PlexClient
 from .prowlarr import ProwlarrClient
 from .radarr import RadarrClient
@@ -67,6 +68,10 @@ _READ_ONLY = ServiceCapability(
 )
 _CLEANUP = ServiceCapability(
     can_search=False, can_add=False, can_remove=True, can_upgrade=False, can_list=True
+)
+#: Managed through chat tools only (playlists, scans), so no command-page actions.
+_PLAYLISTS = ServiceCapability(
+    can_search=False, can_add=False, can_remove=False, can_upgrade=False, can_list=False
 )
 
 VersionFn = Callable[[Any], Awaitable[str | None]]
@@ -118,6 +123,9 @@ class ServiceSpec:
     key_optional: bool = False
     is_deprecated: bool = False
     deprecation_message: str | None = None
+    #: Set for services that sign in with a username and password; key_attr then holds the
+    #: password and the client is built as (url, username, password).
+    user_attr: str | None = None
 
 
 SERVICE_REGISTRY: dict[str, ServiceSpec] = {
@@ -248,6 +256,18 @@ SERVICE_REGISTRY: dict[str, ServiceSpec] = {
             capabilities=_CLEANUP,
         ),
         ServiceSpec(
+            name="navidrome",
+            url_attr="navidrome_url",
+            key_attr="navidrome_password",
+            user_attr="navidrome_username",
+            client_cls=NavidromeClient,
+            status=ImplementationStatus.PARTIAL,
+            api_version="native + subsonic",
+            media_type="Music Server",
+            capabilities=_PLAYLISTS,
+            version_fn=_client_get_version,
+        ),
+        ServiceSpec(
             name="jellyfin",
             url_attr="jellyfin_url",
             key_attr="jellyfin_api_key",
@@ -322,10 +342,10 @@ def _info(spec: ServiceSpec, available: bool, version: str | None) -> EnhancedSe
 async def _probe(spec: ServiceSpec) -> EnhancedServiceInfo:
     """Probe one service and build its info card."""
     try:
-        client = spec.client_cls(
-            str(getattr(settings, spec.url_attr)),
-            str(getattr(settings, spec.key_attr)),
-        )
+        credentials = [str(getattr(settings, spec.key_attr))]
+        if spec.user_attr:
+            credentials.insert(0, str(getattr(settings, spec.user_attr)))
+        client = spec.client_cls(str(getattr(settings, spec.url_attr)), *credentials)
         try:
             available = bool(await client.test_connection())
             version = None
