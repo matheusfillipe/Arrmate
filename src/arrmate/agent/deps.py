@@ -8,7 +8,9 @@ from arrmate.clients.cleanuparr import CleanuparrClient
 from arrmate.clients.gamearr import GamearrClient
 from arrmate.clients.jellyfin import JellyfinClient
 from arrmate.clients.jellyseerr import JellyseerrClient
+from arrmate.clients.lidarr import LidarrClient
 from arrmate.clients.listenarr import ListenarrClient
+from arrmate.clients.navidrome import NavidromeClient
 from arrmate.clients.prowlarr import ProwlarrClient
 from arrmate.clients.qbittorrent import QBittorrentClient
 from arrmate.clients.radarr import RadarrClient
@@ -132,6 +134,28 @@ class AgentDeps:
         if not settings.listenarr_url or not settings.listenarr_api_key:
             raise ValueError("Listenarr is not configured")
         client = ListenarrClient(settings.listenarr_url, settings.listenarr_api_key)
+        try:
+            yield client
+        finally:
+            await client.close()
+
+    @asynccontextmanager
+    async def lidarr(self) -> AsyncIterator[LidarrClient]:
+        if not settings.lidarr_url or not settings.lidarr_api_key:
+            raise ValueError("Lidarr is not configured")
+        client = LidarrClient(settings.lidarr_url, settings.lidarr_api_key)
+        try:
+            yield client
+        finally:
+            await client.close()
+
+    @asynccontextmanager
+    async def navidrome(self) -> AsyncIterator[NavidromeClient]:
+        if not settings.navidrome_url or not settings.navidrome_username:
+            raise ValueError("Navidrome is not configured")
+        client = NavidromeClient(
+            settings.navidrome_url, settings.navidrome_username, settings.navidrome_password or ""
+        )
         try:
             yield client
         finally:

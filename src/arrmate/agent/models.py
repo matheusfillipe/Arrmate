@@ -17,6 +17,7 @@ from arrmate.config.settings import settings
 
 from .deps import AgentDeps
 from .mcp_toolsets import build_mcp_toolsets
+from .music_tools import register_music_tools
 from .playbooks import register_playbook_tools
 from .system_prompt import build_system_prompt
 from .tools import register_tools
@@ -91,6 +92,7 @@ def get_agent() -> Agent[AgentDeps, str]:
 
     register_tools(agent)
     register_playbook_tools(agent)
+    register_music_tools(agent)
     logger.info(
         "Chat agent built (provider=%s, mcp_servers=%d)",
         settings.llm_provider,

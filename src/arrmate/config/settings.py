@@ -220,6 +220,19 @@ class Settings(BaseSettings):
     )
     listenarr_api_key: str | None = Field(default=None, description="Listenarr API key")
 
+    # Navidrome settings (music server; playlists)
+    navidrome_url: str | None = Field(
+        default=None, description="Navidrome base URL (e.g., http://navidrome:4533)"
+    )
+    navidrome_username: str | None = Field(
+        default=None, description="Navidrome admin user Arrmate signs in as"
+    )
+    navidrome_password: str | None = Field(default=None, description="Navidrome password")
+    navidrome_playlist_owner: str | None = Field(
+        default=None,
+        description="Navidrome user who owns created playlists (defaults to the sign-in user)",
+    )
+
     # Gamearr settings (game library manager)
     gamearr_url: str | None = Field(
         default=None, description="Gamearr base URL (e.g., http://gamearr:3000)"
