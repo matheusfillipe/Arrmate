@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
+from arrmate.clients.bazarr import BazarrClient
 from arrmate.clients.cleanuparr import CleanuparrClient
 from arrmate.clients.gamearr import GamearrClient
 from arrmate.clients.jellyfin import JellyfinClient
@@ -134,6 +135,16 @@ class AgentDeps:
         if not settings.listenarr_url or not settings.listenarr_api_key:
             raise ValueError("Listenarr is not configured")
         client = ListenarrClient(settings.listenarr_url, settings.listenarr_api_key)
+        try:
+            yield client
+        finally:
+            await client.close()
+
+    @asynccontextmanager
+    async def bazarr(self) -> AsyncIterator[BazarrClient]:
+        if not settings.bazarr_url or not settings.bazarr_api_key:
+            raise ValueError("Bazarr is not configured")
+        client = BazarrClient(settings.bazarr_url, settings.bazarr_api_key)
         try:
             yield client
         finally:

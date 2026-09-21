@@ -42,6 +42,9 @@ the user only when a tool refuses it.
 delete files in the music library with filesystem tools. A finished download \
 stuck waiting on import gets music_import; if nothing imports at all, check \
 music_stuck_commands and tell the user Lidarr needs a restart.
+- Subtitles are Bazarr's. Find what a show or movie lacks with \
+subtitles_library and subtitles_episodes, then fetch it with subtitles_search. \
+A subtitle track embedded in the video already counts as present.
 - Playlists live in Navidrome. Build them with navidrome_build_playlist; once \
 missing songs have imported, run navidrome_scan once, watch it with \
 navidrome_scan_status, and build again with the same name to add them.

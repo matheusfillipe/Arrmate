@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
+from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 
 from arrmate.clients.discovery import discover_services
@@ -61,6 +62,8 @@ _DATA_CLOSE = "TOOL_DATA>>>"
 
 def _compact(value: Any) -> Any:
     """Strip nulls/empties and truncate arrays/strings for model consumption."""
+    if isinstance(value, BaseModel):
+        return _compact(value.model_dump(mode="json"))
     if isinstance(value, dict):
         cleaned = {k: _compact(v) for k, v in value.items() if v not in (None, "", [], {})}
         return cleaned or None

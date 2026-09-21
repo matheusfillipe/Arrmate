@@ -1,206 +1,192 @@
-"""Bazarr API client implementation.
+"""Bazarr subtitle manager client.
 
-Bazarr is a companion service that manages subtitles for Sonarr and Radarr.
-It integrates with existing Sonarr/Radarr instances to download and manage
-subtitle files for movies and TV shows.
+Bazarr follows the Sonarr and Radarr libraries and addresses items by their ids there:
+``sonarrSeriesId``/``sonarrEpisodeId`` for TV and ``radarrId`` for movies. Its write
+endpoints take form fields.
 """
 
-from typing import Any
+from typing import Any, Literal
 
 import httpx
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, TypeAdapter
 
 from .base_companion import BaseCompanionClient
 
+JobStatus = Literal["pending", "running", "failed", "completed"]
+
+
+class _BazarrRecord(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
+class Subtitle(_BazarrRecord):
+    code2: str
+    hi: bool = False
+    forced: bool = False
+    #: Bazarr stores a path only for subtitle files it finds beside the video.
+    path: str | None = None
+
+    @property
+    def is_embedded(self) -> bool:
+        return self.path is None
+
+
+class Episode(_BazarrRecord):
+    season: int
+    episode: int
+    sonarr_episode_id: int = Field(alias="sonarrEpisodeId")
+    subtitles: list[Subtitle] = []
+    missing_subtitles: list[Subtitle] = []
+
+
+class Series(_BazarrRecord):
+    sonarr_series_id: int = Field(alias="sonarrSeriesId")
+    title: str
+    profile_id: int | None = Field(default=None, alias="profileId")
+    episode_file_count: int = Field(default=0, alias="episodeFileCount")
+    episode_missing_count: int = Field(default=0, alias="episodeMissingCount")
+
+
+class Movie(_BazarrRecord):
+    radarr_id: int = Field(alias="radarrId")
+    title: str
+    profile_id: int | None = Field(default=None, alias="profileId")
+    subtitles: list[Subtitle] = []
+    missing_subtitles: list[Subtitle] = []
+
+
+class WantedEpisode(_BazarrRecord):
+    series_title: str = Field(alias="seriesTitle")
+    sonarr_series_id: int = Field(alias="sonarrSeriesId")
+    episode_number: str
+    missing_subtitles: list[Subtitle] = []
+
+
+class HistoryEntry(_BazarrRecord):
+    title: str | None = Field(default=None, validation_alias=AliasChoices("seriesTitle", "title"))
+    episode_number: str | None = None
+    parsed_timestamp: str | None = None
+    description: str | None = None
+    provider: str | None = None
+    score: str | None = None
+    subtitles_path: str | None = None
+
+
+class ProfileLanguage(_BazarrRecord):
+    language: str
+
+
+class LanguageProfile(_BazarrRecord):
+    profile_id: int = Field(alias="profileId")
+    name: str
+    items: list[ProfileLanguage] = []
+
+
+class Provider(_BazarrRecord):
+    name: str
+    status: str
+    retry: str
+
+
+class Job(_BazarrRecord):
+    job_name: str
+    status: JobStatus
+    progress_value: int = 0
+    progress_max: int = 0
+    progress_message: str | None = None
+
+
+_EPISODES = TypeAdapter(list[Episode])
+_SERIES = TypeAdapter(list[Series])
+_MOVIES = TypeAdapter(list[Movie])
+_WANTED_EPISODES = TypeAdapter(list[WantedEpisode])
+_HISTORY = TypeAdapter(list[HistoryEntry])
+_PROFILES = TypeAdapter(list[LanguageProfile])
+_PROVIDERS = TypeAdapter(list[Provider])
+_JOBS = TypeAdapter(list[Job])
+
+
+def _profile_field(profile_id: int | None) -> int | str:
+    """Bazarr reads an empty profile id as "no profile", which stops it wanting subtitles."""
+    return "" if profile_id is None else profile_id
+
 
 class BazarrClient(BaseCompanionClient):
-    """Client for Bazarr API (Subtitle management).
-
-    Bazarr works as a companion to Sonarr and Radarr, managing subtitle
-    downloads for existing media in those libraries.
-    """
+    """Client for the Bazarr API."""
 
     async def test_connection(self) -> bool:
-        """Test connection to Bazarr.
-
-        Returns:
-            True if connection successful
-        """
         try:
             await self.get_system_status()
             return True
         except (httpx.HTTPError, ValueError):
             return False
 
-    async def get_system_status(self) -> dict[str, Any]:
-        """Get system status and version.
+    async def _send_form(self, method: str, endpoint: str, form: dict[str, int | str]) -> None:
+        response = await self.client.request(method, f"{self.base_url}/{endpoint}", data=form)
+        response.raise_for_status()
 
-        Returns:
-            System status information including version
-        """
-        return await self._get("api/system/status")
+    async def _get_data(self, endpoint: str, params: dict[str, int | str] | None = None) -> Any:
+        return (await self._get(endpoint, params=params))["data"]
 
     async def get_missing_items(self, service_type: str) -> list[dict[str, Any]]:
-        """Get items missing subtitles.
-
-        Args:
-            service_type: "sonarr" for episodes or "radarr" for movies
-
-        Returns:
-            List of items missing subtitles
-        """
         if service_type.lower() == "sonarr":
-            return await self.get_episodes_with_missing_subtitles()
+            return await self._get_data("api/episodes/wanted")
         if service_type.lower() == "radarr":
-            return await self.get_movies_with_missing_subtitles()
+            return await self._get_data("api/movies/wanted")
         raise ValueError(f"Unsupported service type: {service_type}")
 
-    async def get_episodes(self) -> list[dict[str, Any]]:
-        """Get all episodes tracked by Bazarr.
+    async def get_series(self) -> list[Series]:
+        return _SERIES.validate_python(await self._get_data("api/series"))
 
-        Returns:
-            List of all episodes
-        """
-        return await self._get("api/episodes")
+    async def get_movies(self) -> list[Movie]:
+        return _MOVIES.validate_python(await self._get_data("api/movies"))
 
-    async def get_episodes_with_missing_subtitles(self) -> list[dict[str, Any]]:
-        """Get episodes that are missing subtitles.
+    async def get_episodes(self, series_id: int) -> list[Episode]:
+        data = await self._get_data("api/episodes", params={"seriesid[]": series_id})
+        return _EPISODES.validate_python(data)
 
-        Returns:
-            List of episodes with missing subtitles
-        """
-        all_episodes = await self.get_episodes()
-        # Filter for episodes with missing subtitles
-        return [ep for ep in all_episodes if ep.get("missing_subtitles") or not ep.get("subtitles")]
+    async def get_wanted_episodes(self) -> list[WantedEpisode]:
+        return _WANTED_EPISODES.validate_python(await self._get_data("api/episodes/wanted"))
 
-    async def get_movies(self) -> list[dict[str, Any]]:
-        """Get all movies tracked by Bazarr.
+    async def get_wanted_movies(self) -> list[Movie]:
+        return _MOVIES.validate_python(await self._get_data("api/movies/wanted"))
 
-        Returns:
-            List of all movies
-        """
-        return await self._get("api/movies")
+    async def get_episode_history(self, length: int) -> list[HistoryEntry]:
+        data = await self._get_data("api/episodes/history", params={"length": length})
+        return _HISTORY.validate_python(data)
 
-    async def get_movies_with_missing_subtitles(self) -> list[dict[str, Any]]:
-        """Get movies that are missing subtitles.
+    async def get_movie_history(self, length: int) -> list[HistoryEntry]:
+        data = await self._get_data("api/movies/history", params={"length": length})
+        return _HISTORY.validate_python(data)
 
-        Returns:
-            List of movies with missing subtitles
-        """
-        all_movies = await self.get_movies()
-        # Filter for movies with missing subtitles
-        return [
-            movie
-            for movie in all_movies
-            if movie.get("missing_subtitles") or not movie.get("subtitles")
-        ]
+    async def get_providers(self) -> list[Provider]:
+        return _PROVIDERS.validate_python(await self._get_data("api/providers"))
 
-    async def search_episode_subtitles(
-        self, episode_id: int, language: str | None = None
-    ) -> list[dict[str, Any]]:
-        """Search for subtitles for an episode.
+    async def get_language_profiles(self) -> list[LanguageProfile]:
+        return _PROFILES.validate_python(await self._get("api/system/languages/profiles"))
 
-        Args:
-            episode_id: Bazarr episode ID
-            language: Language code (e.g., "en", "es") - optional
+    async def get_jobs(self, status: JobStatus) -> list[Job]:
+        return _JOBS.validate_python(
+            await self._get_data("api/system/jobs", params={"status": status})
+        )
 
-        Returns:
-            List of available subtitles
-        """
-        params: dict[str, int | str] = {"episodeid": episode_id}
-        if language:
-            params["language"] = language
-        return await self._post("api/episodes/search", data=params)
+    async def search_series(self, series_id: int) -> None:
+        """Queue a provider search for every subtitle a series is missing."""
+        await self._send_form(
+            "PATCH", "api/series", {"seriesid": series_id, "action": "search-missing"}
+        )
 
-    async def search_movie_subtitles(
-        self, movie_id: int, language: str | None = None
-    ) -> list[dict[str, Any]]:
-        """Search for subtitles for a movie.
+    async def search_movie(self, radarr_id: int) -> None:
+        await self._send_form(
+            "PATCH", "api/movies", {"radarrid": radarr_id, "action": "search-missing"}
+        )
 
-        Args:
-            movie_id: Bazarr movie ID
-            language: Language code (e.g., "en", "es") - optional
+    async def set_series_profile(self, series_id: int, profile_id: int | None) -> None:
+        await self._send_form(
+            "POST", "api/series", {"seriesid": series_id, "profileid": _profile_field(profile_id)}
+        )
 
-        Returns:
-            List of available subtitles
-        """
-        params: dict[str, int | str] = {"movieid": movie_id}
-        if language:
-            params["language"] = language
-        return await self._post("api/movies/search", data=params)
-
-    async def download_episode_subtitle(
-        self, episode_id: int, subtitle_id: str, language: str
-    ) -> dict[str, Any]:
-        """Download a subtitle for an episode.
-
-        Args:
-            episode_id: Bazarr episode ID
-            subtitle_id: Subtitle provider ID
-            language: Language code
-
-        Returns:
-            Download result
-        """
-        data = {
-            "episodeid": episode_id,
-            "subtitleid": subtitle_id,
-            "language": language,
-        }
-        return await self._post("api/episodes/subtitles", data=data)
-
-    async def download_movie_subtitle(
-        self, movie_id: int, subtitle_id: str, language: str
-    ) -> dict[str, Any]:
-        """Download a subtitle for a movie.
-
-        Args:
-            movie_id: Bazarr movie ID
-            subtitle_id: Subtitle provider ID
-            language: Language code
-
-        Returns:
-            Download result
-        """
-        data = {
-            "movieid": movie_id,
-            "subtitleid": subtitle_id,
-            "language": language,
-        }
-        return await self._post("api/movies/subtitles", data=data)
-
-    async def get_languages(self) -> list[dict[str, Any]]:
-        """Get available subtitle languages configured in Bazarr.
-
-        Returns:
-            List of configured languages
-        """
-        status = await self.get_system_status()
-        # Extract languages from settings
-        return status.get("data", {}).get("settings", {}).get("languages", [])
-
-    async def sync_with_sonarr(self) -> dict[str, Any]:
-        """Trigger a sync with Sonarr to update episode list.
-
-        Returns:
-            Sync command result
-        """
-        return await self._post("api/system/tasks", data={"taskid": "update_series"})
-
-    async def sync_with_radarr(self) -> dict[str, Any]:
-        """Trigger a sync with Radarr to update movie list.
-
-        Returns:
-            Sync command result
-        """
-        return await self._post("api/system/tasks", data={"taskid": "update_movies"})
-
-    async def get_subtitle_history(self, limit: int = 100) -> list[dict[str, Any]]:
-        """Get recent subtitle download history.
-
-        Args:
-            limit: Maximum number of history entries to return
-
-        Returns:
-            List of recent subtitle downloads
-        """
-        return await self._get("api/history", params={"length": limit})
+    async def set_movie_profile(self, radarr_id: int, profile_id: int | None) -> None:
+        await self._send_form(
+            "POST", "api/movies", {"radarrid": radarr_id, "profileid": _profile_field(profile_id)}
+        )
