@@ -66,7 +66,6 @@ from arrmate.core.models import DESTRUCTIVE_ACTIONS, USER_BLOCKED_ACTIONS, Actio
 from arrmate.llm.base import ConversationalReply
 
 __all__ = [
-    "BUTLER_TASKS",
     "DESTRUCTIVE_ACTIONS",
     "USER_BLOCKED_ACTIONS",
     "_AUDIOBOOK_CATEGORIES",
@@ -314,68 +313,6 @@ _WIZARD_STEPS = [
 ]
 
 
-BUTLER_TASKS = [
-    {"name": "CleanOldBundles", "label": "Clean Old Bundles", "desc": "Remove unused bundle data"},
-    {
-        "name": "CleanOldCacheFiles",
-        "label": "Clean Cache Files",
-        "desc": "Delete stale cached files",
-    },
-    {"name": "BackupDatabase", "label": "Backup Database", "desc": "Back up the Plex database"},
-    {
-        "name": "DeepMediaAnalysis",
-        "label": "Deep Media Analysis",
-        "desc": "Re-analyse loudness & bitrate",
-    },
-    {
-        "name": "RefreshLocalMedia",
-        "label": "Refresh Local Media",
-        "desc": "Scan for local metadata/artwork",
-    },
-    {
-        "name": "SearchForSubtitles",
-        "label": "Search for Subtitles",
-        "desc": "Find missing subtitle files",
-    },
-    {"name": "GenerateAutoTags", "label": "Generate Auto Tags", "desc": "Auto-tag music files"},
-    {
-        "name": "UpgradeMediaAnalysis",
-        "label": "Upgrade Media Analysis",
-        "desc": "Update media analysis data",
-    },
-    {
-        "name": "GenerateChapterImageThumbnails",
-        "label": "Chapter Thumbnails",
-        "desc": "Generate chapter image thumbnails",
-    },
-    {
-        "name": "ScanAndAnalyzeFiles",
-        "label": "Scan & Analyze Files",
-        "desc": "Scan all files and run media analysis",
-    },
-    {
-        "name": "GenerateIntroVideoMarkers",
-        "label": "Detect Intros",
-        "desc": "Detect intro sequences across all libraries",
-    },
-    {
-        "name": "GenerateEndCreditsMarkers",
-        "label": "Detect Credits",
-        "desc": "Detect end-credit sequences (PlexPass)",
-    },
-    {
-        "name": "GenerateMediaIndexFiles",
-        "label": "Generate Index Files",
-        "desc": "Generate media index files for faster seeking",
-    },
-    {
-        "name": "RecheckPendingIntroVideoMarkers",
-        "label": "Recheck Intro Markers",
-        "desc": "Re-check pending intro detection tasks",
-    },
-]
-
-
 def _plex_client() -> PlexClient | None:
     """Return a PlexClient if Plex is configured, else None."""
     if settings.plex_url and settings.plex_token:
@@ -414,9 +351,7 @@ async def _plex_client_for_user(user_id: int) -> PlexClient | None:
 
 def _plex_thumb_url(path: str) -> str:
     """Build a proxied Plex thumbnail URL (keeps token server-side)."""
-    import urllib.parse
-
-    return f"/web/plex/thumb?path={urllib.parse.quote(path, safe='')}"
+    return f"/web/plex/thumb?path={quote_plus(path, safe='')}"
 
 
 def _prowlarr_client() -> ProwlarrClient | None:

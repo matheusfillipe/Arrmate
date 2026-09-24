@@ -4,9 +4,71 @@ Requires a free Last.fm API key: https://www.last.fm/api/account/create
 Set LASTFM_API_KEY in your environment.
 """
 
-from typing import Any
+from typing import Any, Literal
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
+
+_IMAGE_SIZES_LARGEST_FIRST = ("extralarge", "large", "medium", "small")
+
+
+class _LastFMRecord(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
+class LastFMImage(_LastFMRecord):
+    url: str = Field(alias="#text")
+    size: str
+
+
+class LastFMArtistRef(_LastFMRecord):
+    name: str
+
+
+class LastFMArtist(_LastFMRecord):
+    name: str
+    listeners: str | None = None
+    mbid: str | None = None
+    url: str | None = None
+    image: list[LastFMImage] = []
+
+
+class LastFMTrack(_LastFMRecord):
+    name: str
+    listeners: str | None = None
+    url: str | None = None
+    artist: LastFMArtistRef
+    image: list[LastFMImage] = []
+
+
+class _ArtistList(_LastFMRecord):
+    artist: list[LastFMArtist]
+
+
+class _ArtistChart(_LastFMRecord):
+    artists: _ArtistList
+
+
+class _TrackList(_LastFMRecord):
+    track: list[LastFMTrack]
+
+
+class _TrackChart(_LastFMRecord):
+    tracks: _TrackList
+
+
+class MusicCard(BaseModel):
+    """One Discover page card for an artist or a track."""
+
+    display_title: str
+    artist: str
+    listeners: str
+    poster: str | None = None
+    url: str | None = None
+    mbid: str | None = None
+    overview: str
+    media_type: Literal["music"] = "music"
+    in_library: bool = False
 
 
 class LastFMClient:
@@ -29,76 +91,66 @@ class LastFMClient:
             await self._client.aclose()
             self._client = None
 
-    async def _get(self, method: str, extra: dict[str, Any] | None = None) -> Any:
-        params: dict[str, Any] = {
+    async def _get(self, method: str) -> Any:
+        params: dict[str, str | int] = {
             "method": method,
             "api_key": self.api_key,
             "format": "json",
             "limit": 24,
         }
-        if extra:
-            params.update(extra)
         resp = await self.client.get(self.BASE_URL, params=params)
         resp.raise_for_status()
         return resp.json()
 
-    def _image_url(self, images: list) -> str | None:
-        """Return the largest non-empty image URL from a Last.fm image list."""
-        for size in ("extralarge", "large", "medium", "small"):
-            for img in images:
-                if img.get("size") == size and img.get("#text"):
-                    return img["#text"]
-        return None
-
-    async def get_top_artists(self) -> list[dict[str, Any]]:
+    async def get_top_artists(self) -> list[MusicCard]:
         """Global top artists chart."""
-        data = await self._get("chart.gettopartists")
-        raw = data.get("artists", {}).get("artist", [])
+        chart = _ArtistChart.model_validate(await self._get("chart.gettopartists"))
         return [
-            {
-                "display_title": a["name"],
-                "artist": a["name"],
-                "listeners": _fmt_listeners(a.get("listeners", "")),
-                "poster": self._image_url(a.get("image", [])),
-                "url": a.get("url", ""),
-                "mbid": a.get("mbid", ""),
-                "media_type": "music",
-                "year": "",
-                "overview": f"{_fmt_listeners(a.get('listeners', ''))} listeners",
-            }
-            for a in raw
+            MusicCard(
+                display_title=a.name,
+                artist=a.name,
+                listeners=_fmt_listeners(a.listeners or ""),
+                poster=_largest_image(a.image),
+                url=a.url,
+                mbid=a.mbid,
+                overview=f"{_fmt_listeners(a.listeners or '')} listeners",
+            )
+            for a in chart.artists.artist
         ]
 
-    async def get_top_tracks(self) -> list[dict[str, Any]]:
+    async def get_top_tracks(self) -> list[MusicCard]:
         """Global top tracks chart."""
-        data = await self._get("chart.gettoptracks")
-        raw = data.get("tracks", {}).get("track", [])
+        chart = _TrackChart.model_validate(await self._get("chart.gettoptracks"))
         return [
-            {
-                "display_title": t["name"],
-                "artist": t.get("artist", {}).get("name", ""),
-                "listeners": _fmt_listeners(t.get("listeners", "")),
-                "poster": self._image_url(t.get("image", [])),
-                "url": t.get("url", ""),
-                "media_type": "music",
-                "year": "",
-                "overview": (
-                    f"by {t.get('artist', {}).get('name', '')} · "
-                    f"{_fmt_listeners(t.get('listeners', ''))} listeners"
-                ),
-            }
-            for t in raw
+            MusicCard(
+                display_title=t.name,
+                artist=t.artist.name,
+                listeners=_fmt_listeners(t.listeners or ""),
+                poster=_largest_image(t.image),
+                url=t.url,
+                overview=f"by {t.artist.name} · {_fmt_listeners(t.listeners or '')} listeners",
+            )
+            for t in chart.tracks.track
         ]
+
+
+def _largest_image(images: list[LastFMImage]) -> str | None:
+    """Return the largest non-empty image URL from a Last.fm image list."""
+    for size in _IMAGE_SIZES_LARGEST_FIRST:
+        for image in images:
+            if image.size == size and image.url:
+                return image.url
+    return None
 
 
 def _fmt_listeners(raw: str) -> str:
     """Format a raw listener count string, e.g. '5234567' → '5.2M'."""
     try:
         n = int(raw)
-        if n >= 1_000_000:
-            return f"{n / 1_000_000:.1f}M"
-        if n >= 1_000:
-            return f"{n // 1_000}K"
-        return str(n)
-    except (ValueError, TypeError):
+    except ValueError:
         return raw
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n // 1_000}K"
+    return str(n)

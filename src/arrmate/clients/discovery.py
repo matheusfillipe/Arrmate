@@ -103,9 +103,7 @@ async def _client_get_version(client: Any) -> str | None:
 
 
 async def _jellyfin_version(client: JellyfinClient) -> str | None:
-    info = await client.get_system_info()
-    version: str | None = info.get("Version")
-    return version
+    return (await client.get_system_info()).version
 
 
 @dataclass(frozen=True)
