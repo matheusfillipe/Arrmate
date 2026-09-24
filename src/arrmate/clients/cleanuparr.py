@@ -4,15 +4,50 @@ Cleanuparr has no published API. Routes verified by inspection on 2.10.3:
 they live under ``/api/...`` (not ``/api/v1/...``), the UI is JWT-gated but
 each row in its users.db carries a 64-hex api_key that works as an
 ``X-Api-Key`` header, and unknown paths return the Angular index.html with
-HTTP 200 — so response body shape must be validated, never the status code.
+HTTP 200, so response body shape must be validated, never the status code.
 """
 
 import logging
-from typing import Any, cast
+from collections.abc import Mapping
+from typing import Any
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 logger = logging.getLogger(__name__)
+
+
+class _CleanuparrRecord(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
+class DownloadClientHealth(_CleanuparrRecord):
+    client_name: str = Field(alias="clientName")
+    client_type_name: str | None = Field(default=None, alias="clientTypeName")
+    is_healthy: bool = Field(alias="isHealthy")
+    last_checked: str | None = Field(default=None, alias="lastChecked")
+    error_message: str | None = Field(default=None, alias="errorMessage")
+
+
+class Event(_CleanuparrRecord):
+    id: str
+    timestamp: str
+    event_type: str = Field(alias="eventType")
+    message: str | None = None
+    severity: str | None = None
+    item_title: str | None = Field(default=None, alias="itemTitle")
+    item_hash: str | None = Field(default=None, alias="itemHash")
+    strike_count: int | None = Field(default=None, alias="strikeCount")
+    download_client_id: str | None = Field(default=None, alias="downloadClientId")
+    failed_import_reasons: list[str] = Field(default=[], alias="failedImportReasons")
+    delete_reason: str | None = Field(default=None, alias="deleteReason")
+
+
+class _EventPage(_CleanuparrRecord):
+    items: list[Event]
+
+
+_HEALTH = TypeAdapter(dict[str, DownloadClientHealth])
 
 
 class CleanuparrClient:
@@ -38,7 +73,7 @@ class CleanuparrClient:
             await self._client.aclose()
             self._client = None
 
-    async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    async def _get(self, path: str, params: Mapping[str, int] | None = None) -> Any:
         resp = await self.client.get(f"{self.base_url}{path}", params=params)
         resp.raise_for_status()
         data = resp.json()
@@ -49,23 +84,21 @@ class CleanuparrClient:
 
     async def test_connection(self) -> bool:
         try:
-            await self._get("/api/health")
+            await self.get_health()
             return True
         except (httpx.HTTPError, ValueError):
             return False
 
-    async def get_health(self) -> dict[str, Any]:
-        """Per download-client health map."""
-        return cast(dict[str, Any], await self._get("/api/health"))
+    async def get_health(self) -> dict[str, DownloadClientHealth]:
+        """Health of each download client, keyed by client id."""
+        return _HEALTH.validate_python(await self._get("/api/health"))
 
-    async def get_events(self, page_size: int = 50, page: int = 0) -> list[dict[str, Any]]:
-        """Recent strike/block events, newest first (paged envelope).
+    async def get_events(self, page_size: int = 50, page: int = 0) -> list[Event]:
+        """Recent strike/block events, newest first.
 
         The events list is what turns an unexplained arr failure into a named
         cause: Cleanuparr striking a blocked extension reports to Sonarr as
         "Manually marked as failed".
         """
         data = await self._get("/api/events", params={"pageSize": page_size, "page": page})
-        if isinstance(data, dict):
-            return data.get("items") or data.get("results") or []
-        return data if isinstance(data, list) else []
+        return _EventPage.model_validate(data).items

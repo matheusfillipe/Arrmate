@@ -30,9 +30,9 @@
         <div class="flex flex-wrap gap-2">
             {% for idx in indexers %}
             <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs
-                         {% if idx.get('enable', True) %}bg-green-900/40 text-green-300{% else %}bg-gray-700 text-gray-500{% endif %}">
-                {% if idx.get('enable', True) %}●{% else %}○{% endif %}
-                {{ idx.get('name', 'Unknown') }}
+                         {% if idx.enable %}bg-green-900/40 text-green-300{% else %}bg-gray-700 text-gray-500{% endif %}">
+                {% if idx.enable %}●{% else %}○{% endif %}
+                {{ idx.name }}
             </span>
             {% endfor %}
         </div>

@@ -17,10 +17,28 @@ async def test_cleanuparr_events(httpx_mock):
             "http://cleanuparr:11011/api/events",
             params={"pageSize": "50", "page": "0"},
         ),
-        json={"items": [{"id": 1, "action": "struck"}]},
+        json={
+            "items": [
+                {
+                    "id": "01a0d20d-d9b4-7bc2-89ad-8ae845ad3202",
+                    "timestamp": "2026-09-24T06:15:18.1964702+00:00",
+                    "eventType": "StalledStrike",
+                    "message": "Item 'x' has been struck 4 times for reason 'Stalled'",
+                    "severity": "Important",
+                    "itemHash": "d74364628a793d4a93ada88555fbb17c8454f692",
+                    "strikeCount": 4,
+                    "failedImportReasons": [],
+                }
+            ],
+            "page": 1,
+            "pageSize": 50,
+            "totalCount": 1,
+            "totalPages": 1,
+        },
     )
     events = await c.get_events()
-    assert events[0]["action"] == "struck"
+    assert events[0].event_type == "StalledStrike"
+    assert events[0].strike_count == 4
     await c.close()
 
 
@@ -40,9 +58,21 @@ async def test_cleanuparr_health(httpx_mock):
     c = CleanuparrClient("http://cleanuparr:11011", "k" * 64)
     httpx_mock.add_response(
         url="http://cleanuparr:11011/api/health",
-        json={"qbit": "up"},
+        json={
+            "3a49": {
+                "isHealthy": True,
+                "lastChecked": "2026-09-24T10:20:08.4293609+00:00",
+                "errorMessage": None,
+                "responseTime": "00:00:06.9361512",
+                "clientId": "3a49",
+                "clientName": "qbittorrent",
+                "clientTypeName": "qBittorrent",
+            }
+        },
     )
-    assert await c.get_health() == {"qbit": "up"}
+    health = await c.get_health()
+    assert health["3a49"].is_healthy is True
+    assert health["3a49"].client_name == "qbittorrent"
     await c.close()
 
 

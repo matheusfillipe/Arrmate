@@ -703,7 +703,7 @@ class Executor:
                 message="ffmpeg is not installed on the host or in the image.",
             )
 
-        media_type = intent.media_type or "movie"
+        media_type = intent.media_type
         title = intent.title
 
         try:
@@ -728,7 +728,7 @@ class Executor:
         task.add_done_callback(_background_tasks.discard)
 
         scope = f"'{title}'" if title else f"your {media_type} library"
-        total_size = sum(f.get("size", 0) for f in files)
+        total_size = sum(f.size for f in files)
         size_str = _fmt_bytes(total_size)
 
         return ExecutionResult(

@@ -29,39 +29,39 @@
                 {% else %}
 
                 {# ── SABnzbd stats ── #}
-                {% if mgr.type == "sabnzbd" and mgr.status %}
-                {% set s = mgr.status.get("status", mgr.status) %}
+                {% if mgr.type == "sabnzbd" %}
+                {% set s = mgr.status %}
                 <p class="text-xs text-gray-400">
-                    {% set speed = s.get("kbpersec", 0) | float %}
+                    {% set speed = s.kbpersec %}
                     {% if speed > 1024 %}{{ "%.1f"|format(speed/1024) }} MB/s
                     {% else %}{{ "%.0f"|format(speed) }} KB/s{% endif %}
-                    {% if s.get("paused") %} · ⏸ Paused{% endif %}
-                    {% if s.get("speedlimit_abs") and s.get("speedlimit_abs") != "0" %}
-                     · Limit: {{ s.get("speedlimit_abs") }}{% endif %}
+                    {% if s.paused %} · ⏸ Paused{% endif %}
+                    {% if s.speedlimit_abs and s.speedlimit_abs != "0" %}
+                     · Limit: {{ s.speedlimit_abs }}{% endif %}
                 </p>
                 {% endif %}
 
                 {# ── NZBget stats ── #}
-                {% if mgr.type == "nzbget" and mgr.status %}
-                {% set s = mgr.status.get("result", mgr.status) if mgr.status.get("result") else mgr.status %}
+                {% if mgr.type == "nzbget" %}
+                {% set s = mgr.status %}
                 <p class="text-xs text-gray-400">
-                    {% set speed = s.get("DownloadRate", 0) | int %}
+                    {% set speed = s.download_rate %}
                     {% if speed > 1048576 %}{{ "%.1f"|format(speed/1048576) }} MB/s
                     {% elif speed > 1024 %}{{ "%.0f"|format(speed/1024) }} KB/s
                     {% else %}{{ speed }} B/s{% endif %}
-                    {% if s.get("DownloadPaused") %} · ⏸ Paused{% endif %}
+                    {% if s.download_paused %} · ⏸ Paused{% endif %}
                 </p>
                 {% endif %}
 
                 {# ── qBittorrent stats ── #}
-                {% if mgr.type == "qbittorrent" and mgr.status %}
+                {% if mgr.type == "qbittorrent" %}
                 {% set s = mgr.status %}
                 <p class="text-xs text-gray-400">
-                    ↓ {% set dl = s.get("dl_info_speed", 0) | int %}
+                    ↓ {% set dl = s.dl_info_speed %}
                     {% if dl > 1048576 %}{{ "%.1f"|format(dl/1048576) }} MB/s
                     {% elif dl > 1024 %}{{ "%.0f"|format(dl/1024) }} KB/s
                     {% else %}{{ dl }} B/s{% endif %}
-                    · ↑ {% set ul = s.get("up_info_speed", 0) | int %}
+                    · ↑ {% set ul = s.up_info_speed %}
                     {% if ul > 1048576 %}{{ "%.1f"|format(ul/1048576) }} MB/s
                     {% elif ul > 1024 %}{{ "%.0f"|format(ul/1024) }} KB/s
                     {% else %}{{ ul }} B/s{% endif %}
@@ -69,11 +69,11 @@
                 {% endif %}
 
                 {# ── Transmission stats ── #}
-                {% if mgr.type == "transmission" and mgr.status %}
-                {% set s = mgr.status.get("arguments", mgr.status) %}
+                {% if mgr.type == "transmission" %}
+                {% set s = mgr.status %}
                 <p class="text-xs text-gray-400">
-                    Speed limit: {{ s.get("speed-limit-down", "∞") }} KB/s ↓
-                    · {{ s.get("speed-limit-up", "∞") }} KB/s ↑
+                    Speed limit: {{ s.speed_limit_down if s.speed_limit_down_enabled else "∞" }} KB/s ↓
+                    · {{ s.speed_limit_up if s.speed_limit_up_enabled else "∞" }} KB/s ↑
                 </p>
                 {% endif %}
 
@@ -97,16 +97,15 @@
             </thead>
             <tbody class="divide-y divide-gray-800">
             {% if mgr.type == "sabnzbd" %}
-                {% set slots = mgr.queue.get("queue", {}).get("slots", []) %}
-                {% for item in slots[:20] %}
-                {% set item_id = item.get("nzo_id", "") %}
+                {% for item in mgr.queue[:20] %}
+                {% set item_id = item.nzo_id %}
                 <tr class="hover:bg-gray-800/50">
                     <td class="py-2 px-2 text-gray-200 max-w-0 w-full">
-                        <div class="truncate" title="{{ item.get('filename', '') }}">{{ item.get("filename", "—") }}</div>
+                        <div class="truncate" title="{{ item.filename }}">{{ item.filename }}</div>
                     </td>
-                    <td class="py-2 px-2 text-right text-gray-400 text-xs whitespace-nowrap">{{ item.get("size", "—") }}</td>
+                    <td class="py-2 px-2 text-right text-gray-400 text-xs whitespace-nowrap">{{ item.size or "—" }}</td>
                     <td class="py-2 px-2">
-                        {% set pct = item.get("percentage", 0) | int %}
+                        {% set pct = item.percentage %}
                         <div class="flex items-center gap-2">
                             <div class="flex-1 bg-gray-700 rounded-full h-1.5">
                                 <div class="bg-primary-500 h-1.5 rounded-full" style="width: {{ pct }}%"></div>
@@ -114,7 +113,7 @@
                             <span class="text-xs text-gray-500 w-8 text-right">{{ pct }}%</span>
                         </div>
                     </td>
-                    <td class="py-2 px-2 text-right text-xs text-gray-400 whitespace-nowrap">{{ item.get("status", "—") }}</td>
+                    <td class="py-2 px-2 text-right text-xs text-gray-400 whitespace-nowrap">{{ item.status }}</td>
                     {% if can_control %}
                     <td class="py-2 px-2">
                         <div class="flex items-center justify-end gap-1">
@@ -150,7 +149,7 @@
                                     title="Move down" class="px-1 py-0.5 text-xs text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded"
                                     {% if loop.last %}disabled{% endif %}>↓</button>
                             <!-- Pause/Resume -->
-                            {% if item.get("status") == "Paused" %}
+                            {% if item.status == "Paused" %}
                             <button hx-post="/web/downloads/item/resume"
                                     hx-vals='{"manager":"sabnzbd","item_id":{{ item_id | tojson }}}'
                                     hx-target="#toast-container"
@@ -170,21 +169,18 @@
                 {% endfor %}
 
             {% elif mgr.type == "nzbget" %}
-                {% set slots = mgr.queue if mgr.queue is iterable and mgr.queue is not mapping else mgr.queue.get("result", []) %}
-                {% for item in slots[:20] %}
-                {% set item_id = item.get("NZBID", "") | string %}
+                {% for item in mgr.queue[:20] %}
+                {% set item_id = item.nzb_id | string %}
                 <tr class="hover:bg-gray-800/50">
                     <td class="py-2 px-2 text-gray-200 max-w-0 w-full">
-                        <div class="truncate" title="{{ item.get('NZBName', '') }}">{{ item.get("NZBName", "—") }}</div>
+                        <div class="truncate" title="{{ item.nzb_name }}">{{ item.nzb_name }}</div>
                     </td>
                     <td class="py-2 px-2 text-right text-gray-400 text-xs whitespace-nowrap">
-                        {% set mb = item.get("FileSizeMB", 0) | int %}
+                        {% set mb = item.file_size_mb %}
                         {% if mb > 1024 %}{{ "%.1f"|format(mb/1024) }} GB{% else %}{{ mb }} MB{% endif %}
                     </td>
                     <td class="py-2 px-2">
-                        {% set total = item.get("FileSizeMB", 1) | float %}
-                        {% set rem = item.get("RemainingSizeMB", total) | float %}
-                        {% set pct = ((total - rem) / total * 100) | int if total > 0 else 0 %}
+                        {% set pct = item.percent_done %}
                         <div class="flex items-center gap-2">
                             <div class="flex-1 bg-gray-700 rounded-full h-1.5">
                                 <div class="bg-primary-500 h-1.5 rounded-full" style="width: {{ pct }}%"></div>
@@ -192,7 +188,7 @@
                             <span class="text-xs text-gray-500 w-8 text-right">{{ pct }}%</span>
                         </div>
                     </td>
-                    <td class="py-2 px-2 text-right text-xs text-gray-400">{{ item.get("Status", "—") }}</td>
+                    <td class="py-2 px-2 text-right text-xs text-gray-400">{{ item.status }}</td>
                     {% if can_control %}
                     <td class="py-2 px-2">
                         <div class="flex items-center justify-end gap-1">
@@ -228,7 +224,7 @@
                                     title="Move down" class="px-1 py-0.5 text-xs text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded"
                                     {% if loop.last %}disabled{% endif %}>↓</button>
                             <!-- Pause/Resume -->
-                            {% if item.get("Status") == "PAUSED" %}
+                            {% if item.status == "PAUSED" %}
                             <button hx-post="/web/downloads/item/resume"
                                     hx-vals='{"manager":"nzbget","item_id":{{ item_id | tojson }}}'
                                     hx-target="#toast-container"
@@ -249,19 +245,19 @@
 
             {% elif mgr.type == "qbittorrent" %}
                 {% for item in mgr.queue[:20] %}
-                {% set item_hash = item.get("hash", "") %}
+                {% set item_hash = item.hash %}
                 <tr class="hover:bg-gray-800/50">
                     <td class="py-2 px-2 text-gray-200 max-w-0 w-full">
-                        <div class="truncate" title="{{ item.get('name', '') }}">{{ item.get("name", "—") }}</div>
+                        <div class="truncate" title="{{ item.name }}">{{ item.name }}</div>
                     </td>
                     <td class="py-2 px-2 text-right text-gray-400 text-xs whitespace-nowrap">
-                        {% set sz = item.get("total_size", 0) | int %}
+                        {% set sz = item.total_size or item.size %}
                         {% if sz > 1073741824 %}{{ "%.1f"|format(sz/1073741824) }} GB
                         {% elif sz > 1048576 %}{{ "%.0f"|format(sz/1048576) }} MB
                         {% else %}{{ sz }} B{% endif %}
                     </td>
                     <td class="py-2 px-2">
-                        {% set pct = (item.get("progress", 0) * 100) | int %}
+                        {% set pct = (item.progress * 100) | int %}
                         <div class="flex items-center gap-2">
                             <div class="flex-1 bg-gray-700 rounded-full h-1.5">
                                 <div class="bg-primary-500 h-1.5 rounded-full" style="width: {{ pct }}%"></div>
@@ -269,7 +265,7 @@
                             <span class="text-xs text-gray-500 w-8 text-right">{{ pct }}%</span>
                         </div>
                     </td>
-                    <td class="py-2 px-2 text-right text-xs text-gray-400">{{ item.get("state", "—") }}</td>
+                    <td class="py-2 px-2 text-right text-xs text-gray-400">{{ item.state }}</td>
                     {% if can_control %}
                     <td class="py-2 px-2">
                         <div class="flex items-center justify-end gap-1">
@@ -301,21 +297,20 @@
                 {% endfor %}
 
             {% elif mgr.type == "transmission" %}
-                {% set torrents = mgr.queue.get("arguments", {}).get("torrents", []) if mgr.queue is mapping else mgr.queue %}
-                {% for item in torrents[:20] %}
-                {% set item_id = item.get("id", "") | string %}
+                {% for item in mgr.queue[:20] %}
+                {% set item_id = item.id | string %}
                 <tr class="hover:bg-gray-800/50">
                     <td class="py-2 px-2 text-gray-200 max-w-0 w-full">
-                        <div class="truncate" title="{{ item.get('name', '') }}">{{ item.get("name", "—") }}</div>
+                        <div class="truncate" title="{{ item.name }}">{{ item.name }}</div>
                     </td>
                     <td class="py-2 px-2 text-right text-gray-400 text-xs whitespace-nowrap">
-                        {% set sz = item.get("totalSize", 0) | int %}
+                        {% set sz = item.total_size or 0 %}
                         {% if sz > 1073741824 %}{{ "%.1f"|format(sz/1073741824) }} GB
                         {% elif sz > 1048576 %}{{ "%.0f"|format(sz/1048576) }} MB
                         {% else %}{{ sz }} B{% endif %}
                     </td>
                     <td class="py-2 px-2">
-                        {% set pct = (item.get("percentDone", 0) * 100) | int %}
+                        {% set pct = (item.percent_done * 100) | int %}
                         <div class="flex items-center gap-2">
                             <div class="flex-1 bg-gray-700 rounded-full h-1.5">
                                 <div class="bg-primary-500 h-1.5 rounded-full" style="width: {{ pct }}%"></div>
@@ -324,11 +319,7 @@
                         </div>
                     </td>
                     <td class="py-2 px-2 text-right text-xs text-gray-400">
-                        {% set st = item.get("status", 0) %}
-                        {% if st == 0 %}Stopped
-                        {% elif st == 4 %}Downloading
-                        {% elif st == 6 %}Seeding
-                        {% else %}{{ st }}{% endif %}
+                        {{ item.status.name | replace("_", " ") | capitalize if item.status is not none else "—" }}
                     </td>
                     {% if can_control %}
                     <td class="py-2 px-2">

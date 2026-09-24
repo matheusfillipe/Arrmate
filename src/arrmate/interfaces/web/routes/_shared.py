@@ -47,6 +47,7 @@ from arrmate.clients.lidarr import LidarrClient
 from arrmate.clients.openlibrary import OpenLibraryClient
 from arrmate.clients.plex import PlexClient
 from arrmate.clients.plex_tv import PlexTVClient
+from arrmate.clients.prowlarr import ProwlarrClient
 from arrmate.clients.radarr import RadarrClient
 from arrmate.clients.readmeabook import ReadMeABookClient
 from arrmate.clients.sonarr import SonarrClient
@@ -414,11 +415,9 @@ def _plex_thumb_url(path: str) -> str:
     return f"/web/plex/thumb?path={urllib.parse.quote(path, safe='')}"
 
 
-def _prowlarr_client():
+def _prowlarr_client() -> ProwlarrClient | None:
     """Return ProwlarrClient if configured, else None."""
     if settings.prowlarr_url and settings.prowlarr_api_key:
-        from arrmate.clients.prowlarr import ProwlarrClient
-
         return ProwlarrClient(settings.prowlarr_url, settings.prowlarr_api_key)
     return None
 
