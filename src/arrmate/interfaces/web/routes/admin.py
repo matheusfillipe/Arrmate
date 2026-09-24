@@ -1,5 +1,7 @@
 """Web routes: admin."""
 
+from arrmate.auth.models import RequestStatus, UserRole
+
 from ._shared import (  # noqa: F401
     AuthRedirectException,
     Depends,
@@ -21,12 +23,7 @@ async def admin_page(request: Request):
     """Admin panel: user management, invites, pending requests."""
     users = user_db.list_users()
     invites = user_db.list_invites(include_used=False)
-    pending = user_db.list_requests(status="pending")
-
-    # Enrich requests with requester username
-    user_map = {u["id"]: u["username"] for u in users}
-    for req in pending:
-        req["requester_name"] = user_map.get(req["requested_by"], "Unknown")
+    pending = user_db.list_requests(status=RequestStatus.PENDING)
 
     return templates.TemplateResponse(
         request,
@@ -34,6 +31,7 @@ async def admin_page(request: Request):
         {
             **_base_ctx(request),
             "users": users,
+            "user_names": {u.id: u.username for u in users},
             "invites": invites,
             "pending_requests": pending,
         },
@@ -45,12 +43,12 @@ async def admin_page(request: Request):
 )
 async def admin_create_invite(
     request: Request,
-    role: str = Form(default="user"),
+    role: UserRole = Form(default=UserRole.USER),
     ttl_hours: int = Form(default=48),
 ):
     """Create an invite link."""
     current_user = get_current_user(request)
-    admin_id = current_user["user_id"] if current_user else "system"
+    admin_id = current_user.user_id if current_user else "system"
     token = user_db.create_invite(role, created_by=admin_id, ttl_hours=ttl_hours)
     invite_url = f"{request.base_url}web/register?token={token}"
 
@@ -89,13 +87,9 @@ async def admin_delete_invite(
 async def admin_set_role(
     request: Request,
     user_id: str,
-    role: str = Form(...),
+    role: UserRole = Form(...),
 ):
     """Change a user's role."""
-    current_user = get_current_user(request)
-    # Prevent admin from demoting themselves
-    if current_user and current_user["user_id"] == user_id and role != "admin":
-        pass  # Allow — admin can change their own role if they want
     user_db.update_user(user_id, role=role)
     return templates.TemplateResponse(
         request,
@@ -138,7 +132,7 @@ async def admin_delete_user(
 ):
     """Delete a user account."""
     current_user = get_current_user(request)
-    if current_user and current_user["user_id"] == user_id:
+    if current_user and current_user.user_id == user_id:
         return templates.TemplateResponse(
             request,
             "components/toast.html",
@@ -159,7 +153,7 @@ async def api_tokens_page(request: Request):
     user = get_current_user(request)
     if not user:
         raise AuthRedirectException("/web/login?next=/web/api-tokens")
-    tokens = user_db.list_api_tokens(user["user_id"])
+    tokens = user_db.list_api_tokens(user.user_id)
     return templates.TemplateResponse(
         request,
         "pages/api_tokens.html",
@@ -178,7 +172,7 @@ async def api_tokens_create(
     if not user:
         raise AuthRedirectException("/web/login")
 
-    if user.get("user_id") == "legacy":
+    if user.is_legacy:
         return templates.TemplateResponse(
             request,
             "pages/api_tokens.html",
@@ -201,11 +195,11 @@ async def api_tokens_create(
 
     _name = name.strip() or "API Token"
     _token_id, plain_token = user_db.create_api_token(
-        user_id=user["user_id"],
+        user_id=user.user_id,
         name=_name,
         expires_days=exp_days,
     )
-    tokens = user_db.list_api_tokens(user["user_id"])
+    tokens = user_db.list_api_tokens(user.user_id)
     return templates.TemplateResponse(
         request,
         "pages/api_tokens.html",
@@ -224,8 +218,8 @@ async def api_tokens_delete(request: Request, token_id: str):
     user = get_current_user(request)
     if not user:
         raise AuthRedirectException("/web/login")
-    user_db.delete_api_token(token_id, user["user_id"])
-    tokens = user_db.list_api_tokens(user["user_id"])
+    user_db.delete_api_token(token_id, user.user_id)
+    tokens = user_db.list_api_tokens(user.user_id)
     return templates.TemplateResponse(
         request,
         "partials/api_tokens_list.html",

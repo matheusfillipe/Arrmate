@@ -6,12 +6,10 @@ import sqlite3
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
+from typing import Literal, assert_never
 
-try:
-    _VERSION = _pkg_version("arrmate")
-except PackageNotFoundError:
-    _VERSION = "1.0.0"
-
+import httpx
+import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +19,7 @@ from arrmate.agent import store as chat_store
 from arrmate.agent.chat import router as chat_router
 from arrmate.auth import user_db
 from arrmate.auth.dependencies import AuthRedirectException, get_api_user
+from arrmate.auth.models import ApiUser, UserRole
 from arrmate.auth.rate_limit import login_limiter
 from arrmate.clients.discovery import discover_services
 from arrmate.config.service_config import apply_saved_config
@@ -29,9 +28,19 @@ from arrmate.core.command_parser import CommandParser
 from arrmate.core.download_tracker import run_tracker
 from arrmate.core.executor import Executor
 from arrmate.core.intent_engine import IntentEngine
-from arrmate.core.models import USER_BLOCKED_ACTIONS, EnhancedServiceInfo, ExecutionResult
+from arrmate.core.models import (
+    USER_BLOCKED_ACTIONS,
+    EnhancedServiceInfo,
+    ExecutionResult,
+    Intent,
+)
 from arrmate.interfaces.web.routes import auth_router
 from arrmate.interfaces.web.routes import router as web_router
+
+try:
+    _VERSION = _pkg_version("arrmate")
+except PackageNotFoundError:
+    _VERSION = "1.0.0"
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +66,7 @@ class TokenLoginResponse(BaseModel):
     token: str = Field(description="Bearer token — store securely, shown only once")
     token_id: str
     username: str
-    role: str
+    role: UserRole
     expires_at: str | None = None
     note: str = "Store this token now — it will not be shown again."
 
@@ -74,14 +83,29 @@ class CommandResponse(BaseModel):
 
     success: bool
     message: str
-    intent: dict
+    intent: Intent
     result: ExecutionResult | None = None
 
 
 class UserInfo(BaseModel):
     user_id: str
     username: str
-    role: str
+    role: UserRole
+
+
+class HealthStatus(BaseModel):
+    status: Literal["ok"]
+    version: str
+
+
+class ConfigInfo(BaseModel):
+    llm_provider: str
+    log_level: str
+    api_port: str
+    ollama_url: str | None = None
+    ollama_model: str | None = None
+    openai_model: str | None = None
+    anthropic_model: str | None = None
 
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
@@ -168,9 +192,9 @@ async def root() -> RedirectResponse:
 
 
 @app.get("/health", tags=["meta"])
-async def health() -> dict[str, str]:
+async def health() -> HealthStatus:
     """Health check — no auth required."""
-    return {"status": "ok", "version": _VERSION}
+    return HealthStatus(status="ok", version=_VERSION)
 
 
 # ── Auth endpoints ────────────────────────────────────────────────────────────
@@ -194,44 +218,40 @@ async def login_for_token(req: TokenLoginRequest, request: Request) -> TokenLogi
     db_user = user_db.verify_user(req.username, req.password)
     if not db_user:
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    if not db_user.get("enabled"):
+    if not db_user.enabled:
         raise HTTPException(status_code=403, detail="Account is disabled")
 
     token_id, plain_token = user_db.create_api_token(
-        user_id=db_user["id"],
+        user_id=db_user.id,
         name=req.token_name,
         expires_days=req.expires_days,
     )
     # Fetch the record to get expires_at
-    tokens = user_db.list_api_tokens(db_user["id"])
-    record = next((t for t in tokens if t["id"] == token_id), {})
+    tokens = user_db.list_api_tokens(db_user.id)
+    record = next((t for t in tokens if t.id == token_id), None)
 
     return TokenLoginResponse(
         token=plain_token,
         token_id=token_id,
-        username=db_user["username"],
-        role=db_user["role"],
-        expires_at=record.get("expires_at"),
+        username=db_user.username,
+        role=db_user.role,
+        expires_at=record.expires_at if record else None,
     )
 
 
 @app.delete("/api/v1/auth/token", status_code=204, tags=["auth"])
-async def revoke_current_token(user: dict = Depends(get_api_user)) -> None:
+async def revoke_current_token(user: ApiUser = Depends(get_api_user)) -> None:
     """Revoke the token used to make this request (logout for API clients)."""
-    user_db.delete_api_token(user["token_id"], user["user_id"])
+    user_db.delete_api_token(user.token_id, user.user_id)
 
 
 # ── User endpoints ────────────────────────────────────────────────────────────
 
 
 @app.get("/api/v1/user", response_model=UserInfo, tags=["user"])
-async def get_current_user(user: dict = Depends(get_api_user)) -> UserInfo:
+async def get_current_user(user: ApiUser = Depends(get_api_user)) -> UserInfo:
     """Return the authenticated user's info."""
-    return UserInfo(
-        user_id=user["user_id"],
-        username=user["username"],
-        role=user["role"],
-    )
+    return UserInfo(user_id=user.user_id, username=user.username, role=user.role)
 
 
 # ── Core endpoints ────────────────────────────────────────────────────────────
@@ -240,7 +260,7 @@ async def get_current_user(user: dict = Depends(get_api_user)) -> UserInfo:
 @app.post("/api/v1/execute", response_model=CommandResponse, tags=["commands"])
 async def execute_command(
     request: CommandRequest,
-    user: dict = Depends(get_api_user),
+    user: ApiUser = Depends(get_api_user),
 ) -> CommandResponse:
     """Execute a natural language media command.
 
@@ -256,7 +276,7 @@ async def execute_command(
 
         # Role gate runs before enrichment so it never depends on
         # service availability.
-        if intent.action in USER_BLOCKED_ACTIONS and user.get("role") == "user":
+        if intent.action in USER_BLOCKED_ACTIONS and user.role == UserRole.USER:
             raise HTTPException(
                 status_code=403,
                 detail="Your role does not allow destructive commands",
@@ -266,7 +286,7 @@ async def execute_command(
             return CommandResponse(
                 success=True,
                 message="Command parsed successfully (dry run)",
-                intent=intent.model_dump(),
+                intent=intent,
                 result=None,
             )
 
@@ -282,7 +302,7 @@ async def execute_command(
         return CommandResponse(
             success=result.success,
             message=result.message,
-            intent=enriched_intent.model_dump(),
+            intent=enriched_intent,
             result=result,
         )
 
@@ -300,35 +320,36 @@ async def execute_command(
     response_model=dict[str, EnhancedServiceInfo],
     tags=["services"],
 )
-async def get_services(user: dict = Depends(get_api_user)) -> dict[str, EnhancedServiceInfo]:
+async def get_services(user: ApiUser = Depends(get_api_user)) -> dict[str, EnhancedServiceInfo]:
     """Get status of all configured media services."""
     try:
         return await discover_services()
-    except Exception as e:
+    except (httpx.HTTPError, ValueError) as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@app.get("/api/v1/config", tags=["meta"])
-async def get_config(user: dict = Depends(get_api_user)) -> dict[str, str]:
+@app.get("/api/v1/config", tags=["meta"], response_model_exclude_none=True)
+async def get_config(user: ApiUser = Depends(get_api_user)) -> ConfigInfo:
     """Get current application configuration (sanitized, no secrets)."""
-    config = {
-        "llm_provider": settings.llm_provider,
-        "log_level": settings.log_level,
-        "api_port": str(settings.api_port),
-    }
-    if settings.llm_provider == "ollama":
-        config["ollama_url"] = settings.ollama_base_url
-        config["ollama_model"] = settings.ollama_model
-    elif settings.llm_provider == "openai":
-        config["openai_model"] = settings.openai_model
-    elif settings.llm_provider == "anthropic":
-        config["anthropic_model"] = settings.anthropic_model
+    config = ConfigInfo(
+        llm_provider=settings.llm_provider,
+        log_level=settings.log_level,
+        api_port=str(settings.api_port),
+    )
+    match settings.llm_provider:
+        case "ollama":
+            config.ollama_url = settings.ollama_base_url
+            config.ollama_model = settings.ollama_model
+        case "openai":
+            config.openai_model = settings.openai_model
+        case "anthropic":
+            config.anthropic_model = settings.anthropic_model
+        case _:
+            assert_never(settings.llm_provider)
     return config
 
 
 if __name__ == "__main__":
-    import uvicorn
-
     uvicorn.run(
         app,
         host=settings.api_host,

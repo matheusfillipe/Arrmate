@@ -1,5 +1,7 @@
 """Web routes: auth."""
 
+from arrmate.auth.models import LEGACY_USER_ID, SessionUser, UserRole
+
 from ._shared import (  # noqa: F401
     Form,
     HTMLResponse,
@@ -7,6 +9,7 @@ from ._shared import (  # noqa: F401
     Query,
     RedirectResponse,
     Request,
+    Response,
     _base_ctx,
     auth_manager,
     auth_router,
@@ -56,7 +59,7 @@ async def login_page(
     show_default_creds = False
     try:
         admin = user_db.get_user_by_username("admin")
-        if admin and admin.get("must_change_password"):
+        if admin and admin.must_change_password:
             show_default_creds = True
     except sqlite3.Error:
         logger.warning("user db unavailable, hiding default-credentials hint", exc_info=True)
@@ -83,36 +86,32 @@ async def login_submit(
     """Process login form submission."""
     allowed, retry_after = await login_limiter.check(login_limiter._get_client_ip(request))
     if not allowed:
-        from fastapi.responses import Response as _Response
-
-        return _Response(
+        return Response(
             content="Too many login attempts. Please try again later.",
             status_code=429,
             headers={"Retry-After": str(retry_after)},
         )
 
     # Try new multi-user DB first
-    user = None
     try:
-        user = user_db.verify_user(username, password)
+        db_user = user_db.verify_user(username, password)
     except (sqlite3.Error, ValueError):
         logger.warning("credential verification failed unexpectedly", exc_info=True)
+        db_user = None
+    user = db_user.session() if db_user else None
 
     # Fall back to legacy single-user auth
     if user is None and auth_manager.verify(username, password):
-        legacy_username = auth_manager.get_username() or username
-        user = {"user_id": "legacy", "username": legacy_username, "role": "admin"}
+        user = SessionUser(
+            user_id=LEGACY_USER_ID,
+            username=auth_manager.get_username() or username,
+            role=UserRole.ADMIN,
+        )
 
     if user:
-        uid = user.get("user_id") or user.get("id", "")
-        token = create_session_token(
-            uid,
-            user["username"],
-            user["role"],
-            auth_manager.get_secret_key(),
-        )
+        token = create_session_token(user, auth_manager.get_secret_key())
         # Redirect to change-password if required (e.g. default admin account)
-        if user.get("must_change_password"):
+        if user.must_change_password:
             response = RedirectResponse(url="/web/change-password", status_code=303)
         else:
             redirect_url = safe_next_url(next)
@@ -246,9 +245,9 @@ async def plex_sso_callback(request: Request):
         # Ensure auth_token reference is cleared even if get_plex_user raises
         del auth_token
 
-    plex_uuid = plex_user.get("uuid") or plex_user.get("id")
-    plex_username = plex_user.get("username") or plex_user.get("title") or "plex_user"
-    plex_email = (plex_user.get("email") or "").strip().lower()
+    plex_uuid = plex_user.identity
+    plex_username = plex_user.username or plex_user.title or "plex_user"
+    plex_email = (plex_user.email or "").strip().lower()
 
     if not plex_uuid:
         return _login_error("Could not verify Plex account identity. Please try again.")
@@ -261,9 +260,9 @@ async def plex_sso_callback(request: Request):
             return _login_error("Your Plex account is not authorised to access this server.")
 
     # Look up or provision a local user record
-    db_user = user_db.get_user_by_plex_id(str(plex_uuid))
+    db_user = user_db.get_user_by_plex_id(plex_uuid)
     if not db_user:
-        role = settings.plex_sso_default_role
+        role = UserRole(settings.plex_sso_default_role)
 
         # Determine whether the new account should start enabled.
         # A user is auto-approved if:
@@ -275,14 +274,14 @@ async def plex_sso_callback(request: Request):
             if settings.plex_sso_verify_plex_friends and settings.plex_token:
                 try:
                     friend_uuids = await get_plex_friend_uuids(settings.plex_token, client_id)
-                    if str(plex_uuid) in friend_uuids:
+                    if plex_uuid in friend_uuids:
                         new_enabled = True
                         logger.info("Plex SSO: auto-approved %s (Plex friend)", plex_username)
                 except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
                     logger.exception("Plex SSO: could not fetch Plex friends list")
 
         db_user = user_db.create_plex_user(
-            plex_id=str(plex_uuid),
+            plex_id=plex_uuid,
             username=plex_username,
             email=plex_email or None,
             role=role,
@@ -291,7 +290,7 @@ async def plex_sso_callback(request: Request):
         if not db_user:
             # Username already taken by a local account — add a suffix and retry once
             db_user = user_db.create_plex_user(
-                plex_id=str(plex_uuid),
+                plex_id=plex_uuid,
                 username=f"{plex_username}_plex",
                 email=plex_email or None,
                 role=role,
@@ -318,16 +317,14 @@ async def plex_sso_callback(request: Request):
         logger.error("Plex SSO: could not create/find user for plex_uuid=%s", plex_uuid)
         return _login_error("Could not create your account. Please contact your administrator.")
 
-    if not db_user.get("enabled"):
+    if not db_user.enabled:
         return _login_error(
             "Your account is pending admin approval. "
             "Please contact your administrator to enable your access."
         )
 
     # Issue a normal arrmate session and send the user to their destination
-    session_token = create_session_token(
-        db_user["id"], db_user["username"], db_user["role"], secret_key
-    )
+    session_token = create_session_token(db_user.session(), secret_key)
     response = RedirectResponse(url=safe_next_url(next_url), status_code=303)
     set_session_cookie(response, session_token)
     clear_plex_state_cookie(response)
@@ -372,22 +369,17 @@ async def change_password_submit(
     if new_password != confirm_password:
         return _error("Passwords do not match.")
 
-    uid = user.get("user_id") or user.get("id", "")
-    # Verify current password against DB (legacy users can skip)
-    if uid and uid != "legacy":
-        db_user = user_db.get_user_by_id(uid)
-        if db_user:
-            verified = user_db.verify_user(db_user["username"], current_password)
-            if not verified:
-                return _error("Current password is incorrect.")
-            user_db.change_password(uid, new_password)
-        else:
-            return _error("User not found.")
-    else:
+    if user.is_legacy:
         return _error("Cannot change password for legacy accounts.")
+    db_user = user_db.get_user_by_id(user.user_id)
+    if not db_user:
+        return _error("User not found.")
+    if not user_db.verify_user(db_user.username, current_password):
+        return _error("Current password is incorrect.")
+    user_db.change_password(user.user_id, new_password)
 
     # If setup wizard has never been completed, send admin there now
-    if user.get("role") == "admin" and not user_db.is_setup_complete():
+    if user.role == UserRole.ADMIN and not user_db.is_setup_complete():
         return RedirectResponse(url="/web/setup", status_code=303)
 
     return RedirectResponse(url="/web/", status_code=303)
@@ -440,7 +432,7 @@ async def register_page(
         {
             "token": token,
             "is_first_admin": False,
-            "invite_role": invite["role"],
+            "invite_role": invite.role,
             "error": error,
         },
     )
@@ -477,7 +469,7 @@ async def register_submit(
             {
                 "token": token,
                 "is_first_admin": no_users,
-                "invite_role": invite["role"] if invite else ("admin" if no_users else None),
+                "invite_role": invite.role if invite else ("admin" if no_users else None),
                 "error": error,
             },
             status_code=422,
@@ -493,7 +485,7 @@ async def register_submit(
     try:
         if no_users:
             # Create first admin
-            new_user = user_db.create_user(username, password, role="admin")
+            new_user = user_db.create_user(username, password, role=UserRole.ADMIN)
         elif token:
             new_user = user_db.use_invite(token, username, password)
         else:
@@ -522,19 +514,14 @@ async def register_submit(
             {
                 "token": token,
                 "is_first_admin": no_users,
-                "invite_role": invite["role"] if invite else ("admin" if no_users else None),
+                "invite_role": invite.role if invite else ("admin" if no_users else None),
                 "error": "Username already taken or invite is invalid.",
             },
             status_code=422,
         )
 
     # Log the new user in
-    session_token = create_session_token(
-        new_user["id"],
-        new_user["username"],
-        new_user["role"],
-        auth_manager.get_secret_key(),
-    )
+    session_token = create_session_token(new_user.session(), auth_manager.get_secret_key())
     response = RedirectResponse(url="/web/", status_code=303)
     set_session_cookie(response, session_token)
     return response

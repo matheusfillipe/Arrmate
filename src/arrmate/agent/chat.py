@@ -1,14 +1,15 @@
 """Chat routes: pages, thread management, and the SSE agent stream."""
 
 import asyncio
-import json
 import logging
 import sqlite3
 import time
 from collections.abc import AsyncIterator
+from typing import Literal, TypedDict
 
-from fastapi import APIRouter, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, StreamingResponse
+from pydantic import BaseModel, JsonValue, ValidationError
 from pydantic_ai import Agent, AgentRun, FunctionToolCallEvent, FunctionToolResultEvent
 from pydantic_ai.exceptions import RunCancelled, UsageLimitExceeded
 from pydantic_ai.messages import (
@@ -22,6 +23,7 @@ from pydantic_ai.messages import (
 
 from arrmate.auth import user_db
 from arrmate.auth.dependencies import get_current_user
+from arrmate.auth.models import SessionUser
 from arrmate.config.settings import settings
 from arrmate.interfaces.web.routes import templates
 
@@ -164,16 +166,107 @@ def _persist_failed_run(thread_id: str, streamed_text: str, failure: str) -> Non
         logger.warning("could not save the failed turn on thread %s: %s", thread_id, e)
 
 
-def _page_context(user: dict, threads: list, thread: dict | None, messages: list) -> dict:
-    """Context shared by both chat page renders (navbar requires both keys)."""
-    unread = user_db.get_unread_count(user["user_id"])
-    return {
-        "current_user": user,
-        "unread_count": unread,
-        "threads": threads,
-        "thread": thread,
-        "messages": messages,
-    }
+class _ChatPageContext(TypedDict):
+    current_user: SessionUser
+    unread_count: int
+    threads: list[store.ThreadSummary]
+    thread: store.Thread | None
+    messages: list[store.ChatTurn]
+
+
+class _ChatBody(BaseModel):
+    thread_id: str | None = None
+    message: str | None = None
+
+
+class _ThreadCreated(BaseModel):
+    thread_id: str
+
+
+class _ThreadDeleted(BaseModel):
+    deleted: bool
+
+
+class _QueueResult(BaseModel):
+    delivered: bool
+    pending: int
+
+
+class _StopResult(BaseModel):
+    stopped: bool
+    live: bool
+
+
+class _LiveStatus(BaseModel):
+    live: bool
+
+
+class _MetaFrame(BaseModel):
+    thread_id: str
+
+
+class _MessageFrame(BaseModel):
+    message: str
+
+
+class _DeltaFrame(BaseModel):
+    text: str
+
+
+class _DeliveredFrame(BaseModel):
+    count: int
+
+
+class _ToolStartFrame(BaseModel):
+    id: str
+    name: str
+    phase: Literal["start"] = "start"
+    args: str | dict[str, JsonValue] | None = None
+
+
+class _ToolEndFrame(BaseModel):
+    id: str
+    name: str | None = None
+    phase: Literal["end"] = "end"
+    result: str
+
+
+class _ProgressFrame(BaseModel):
+    tool_calls: int
+    elapsed_seconds: int
+    context_tokens: int
+    context_window: int
+
+
+SseEvent = Literal["meta", "notice", "delta", "delivered", "tool", "progress", "error"]
+
+
+def _sse(event: SseEvent, payload: BaseModel) -> str:
+    return f"event: {event}\ndata: {payload.model_dump_json()}\n\n"
+
+
+def _render_page(
+    request: Request,
+    user: SessionUser,
+    thread: store.Thread | None,
+    messages: list[store.ChatTurn],
+) -> Response:
+    """Render the chat page; the navbar needs the user and unread count like every page."""
+    context = _ChatPageContext(
+        current_user=user,
+        unread_count=user_db.get_unread_count(user.user_id),
+        threads=store.list_threads(user.user_id),
+        thread=thread,
+        messages=messages,
+    )
+    return templates.TemplateResponse(request, "pages/chat.html", dict(context))
+
+
+async def _read_body(request: Request) -> _ChatBody:
+    try:
+        return _ChatBody.model_validate_json(await request.body())
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail="invalid JSON body") from e
 
 
 def _init_once() -> None:
@@ -233,126 +326,89 @@ def _text_chunk(event: AgentStreamEvent) -> str:
             return ""
 
 
-@router.get("", response_class=HTMLResponse)
-async def chat_page(request: Request) -> Response:
+def _require_user(request: Request) -> SessionUser:
     user = get_current_user(request)
     if not user:
-        return JSONResponse(status_code=401, content={"detail": "authentication required"})
+        raise HTTPException(status_code=401, detail="authentication required")
+    return user
+
+
+def _require_thread(thread_id: str | None, user: SessionUser) -> str:
+    if not thread_id or not store.get_thread(thread_id, user.user_id):
+        raise HTTPException(status_code=404, detail="thread not found")
+    return thread_id
+
+
+def _required_message(body: _ChatBody) -> str:
+    text = (body.message or "").strip()[:2000]
+    if not text:
+        raise HTTPException(status_code=422, detail="message is required")
+    return text
+
+
+@router.get("", response_class=HTMLResponse)
+async def chat_page(request: Request) -> Response:
+    user = _require_user(request)
     _init_once()
-    threads = store.list_threads(user["user_id"])
-    return templates.TemplateResponse(
-        request,
-        "pages/chat.html",
-        _page_context(user, threads, None, []),
-    )
+    return _render_page(request, user, None, [])
 
 
 @router.get("/{thread_id}", response_class=HTMLResponse)
 async def chat_thread_page(request: Request, thread_id: str) -> Response:
-    user = get_current_user(request)
-    if not user:
-        return JSONResponse(status_code=401, content={"detail": "authentication required"})
+    user = _require_user(request)
     _init_once()
-    thread = store.get_thread(thread_id, user["user_id"])
+    thread = store.get_thread(thread_id, user.user_id)
     if not thread:
-        return JSONResponse(status_code=404, content={"detail": "thread not found"})
-    return templates.TemplateResponse(
-        request,
-        "pages/chat.html",
-        _page_context(
-            user,
-            store.list_threads(user["user_id"]),
-            thread,
-            store.list_messages(thread_id),
-        ),
-    )
+        raise HTTPException(status_code=404, detail="thread not found")
+    return _render_page(request, user, thread, store.list_messages(thread_id))
 
 
-@router.post("/thread", response_model=None)
-async def create_thread(request: Request) -> dict | JSONResponse:
-    user = get_current_user(request)
-    if not user:
-        return JSONResponse(status_code=401, content={"detail": "authentication required"})
-    thread_id = store.create_thread(user["user_id"])
-    return {"thread_id": thread_id}
+@router.post("/thread")
+async def create_thread(request: Request) -> _ThreadCreated:
+    user = _require_user(request)
+    return _ThreadCreated(thread_id=store.create_thread(user.user_id))
 
 
-@router.post("/thread/{thread_id}/delete", response_model=None)
-async def delete_thread(request: Request, thread_id: str) -> dict | JSONResponse:
-    user = get_current_user(request)
-    if not user:
-        return JSONResponse(status_code=401, content={"detail": "authentication required"})
-    ok = store.delete_thread(thread_id, user["user_id"])
-    return {"deleted": ok}
+@router.post("/thread/{thread_id}/delete")
+async def delete_thread(request: Request, thread_id: str) -> _ThreadDeleted:
+    user = _require_user(request)
+    return _ThreadDeleted(deleted=store.delete_thread(thread_id, user.user_id))
 
 
-@router.post("/queue", response_model=None)
-async def queue_message(request: Request) -> dict | JSONResponse:
+@router.post("/queue")
+async def queue_message(request: Request) -> _QueueResult:
     """Steer a running thread, or leave a note for its next turn if nothing is running."""
-    user = get_current_user(request)
-    if not user:
-        return JSONResponse(status_code=401, content={"detail": "authentication required"})
+    user = _require_user(request)
     _init_once()
-
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse(status_code=400, content={"detail": "invalid JSON body"})
-
-    thread_id = str(body.get("thread_id") or "")
-    text = str(body.get("message") or "").strip()[:2000]
-    if not text:
-        return JSONResponse(status_code=422, content={"detail": "message is required"})
-    if not thread_id or not store.get_thread(thread_id, user["user_id"]):
-        return JSONResponse(status_code=404, content={"detail": "thread not found"})
+    body = await _read_body(request)
+    text = _required_message(body)
+    thread_id = _require_thread(body.thread_id, user)
 
     store.add_message(thread_id, "user", text)
     delivered = _deliver_or_queue(thread_id, text)
-    return {
-        "delivered": delivered,
-        "pending": 0 if delivered else store.peek_queued_count(thread_id),
-    }
+    return _QueueResult(
+        delivered=delivered,
+        pending=0 if delivered else store.peek_queued_count(thread_id),
+    )
 
 
-@router.post("/stop", response_model=None)
-async def stop_run(request: Request) -> dict | JSONResponse:
-    user = get_current_user(request)
-    if not user:
-        return JSONResponse(status_code=401, content={"detail": "authentication required"})
+@router.post("/stop")
+async def stop_run(request: Request) -> _StopResult:
+    user = _require_user(request)
     _init_once()
-
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse(status_code=400, content={"detail": "invalid JSON body"})
-
-    thread_id = str(body.get("thread_id") or "")
-    if not thread_id or not store.get_thread(thread_id, user["user_id"]):
-        return JSONResponse(status_code=404, content={"detail": "thread not found"})
-
-    live = _stop_run(thread_id)
-    return {"stopped": True, "live": live}
+    thread_id = _require_thread((await _read_body(request)).thread_id, user)
+    return _StopResult(stopped=True, live=_stop_run(thread_id))
 
 
 @router.post("/attach", response_model=None)
-async def attach_run(request: Request) -> StreamingResponse | JSONResponse:
+async def attach_run(request: Request) -> StreamingResponse:
     """Re-join a run that is still going, replaying everything emitted so far."""
-    user = get_current_user(request)
-    if not user:
-        return JSONResponse(status_code=401, content={"detail": "authentication required"})
-
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse(status_code=400, content={"detail": "invalid JSON body"})
-
-    thread_id = str(body.get("thread_id") or "")
-    if not store.get_thread(thread_id, user["user_id"]):
-        return JSONResponse(status_code=404, content={"detail": "thread not found"})
+    user = _require_user(request)
+    thread_id = _require_thread((await _read_body(request)).thread_id, user)
 
     session = _sessions.get(thread_id)
     if session is None:
-        return JSONResponse(status_code=409, content={"detail": "no run in flight"})
+        raise HTTPException(status_code=409, detail="no run in flight")
 
     return StreamingResponse(
         _with_heartbeat(session.follow()),
@@ -361,47 +417,35 @@ async def attach_run(request: Request) -> StreamingResponse | JSONResponse:
     )
 
 
-@router.get("/{thread_id}/live", response_model=None)
-async def run_is_live(request: Request, thread_id: str) -> dict | JSONResponse:
-    user = get_current_user(request)
-    if not user:
-        return JSONResponse(status_code=401, content={"detail": "authentication required"})
+@router.get("/{thread_id}/live")
+async def run_is_live(request: Request, thread_id: str) -> _LiveStatus:
+    _require_user(request)
     session = _sessions.get(thread_id)
-    return {"live": session is not None and not session.finished}
+    return _LiveStatus(live=session is not None and not session.finished)
 
 
 @router.post("/stream", response_model=None)
-async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
-    user = get_current_user(request)
-    if not user:
-        return JSONResponse(status_code=401, content={"detail": "authentication required"})
+async def chat_stream(request: Request) -> StreamingResponse:
+    user = _require_user(request)
     _init_once()
-
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse(status_code=400, content={"detail": "invalid JSON body"})
-
-    thread_id = str(body.get("thread_id") or "")
-    message = str(body.get("message") or "").strip()[:2000]
-
-    if not message:
-        return JSONResponse(status_code=422, content={"detail": "message is required"})
-    if not thread_id or not store.get_thread(thread_id, user["user_id"]):
-        thread_id = store.create_thread(user["user_id"])
+    body = await _read_body(request)
+    message = _required_message(body)
+    thread_id = body.thread_id
+    if not thread_id or not store.get_thread(thread_id, user.user_id):
+        thread_id = store.create_thread(user.user_id)
 
     store.add_message(thread_id, "user", message)
     store.auto_title(thread_id, message)
 
     deps = AgentDeps(
-        user_id=user["user_id"],
-        username=user.get("username", ""),
-        role=user.get("role", "user"),
+        user_id=user.user_id,
+        username=user.username,
+        role=user.role,
         thread_id=thread_id,
     )
 
     async def event_stream() -> AsyncIterator[str]:
-        yield f"event: meta\ndata: {json.dumps({'thread_id': thread_id})}\n\n"
+        yield _sse("meta", _MetaFrame(thread_id=thread_id))
         streamed = False
         started_at = time.monotonic()
         tool_calls = 0
@@ -427,31 +471,21 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                     store.save_history(
                         thread_id, ModelMessagesTypeAdapter.dump_json(history).decode()
                     )
-                    yield (
-                        "event: notice\ndata: "
-                        + json.dumps(
-                            {
-                                "message": (
-                                    "The previous run was stopped mid-tool; picking up "
-                                    "from where it left off."
-                                )
-                            }
-                        )
-                        + "\n\n"
+                    yield _sse(
+                        "notice",
+                        _MessageFrame(
+                            message="The previous run was stopped mid-tool; picking up "
+                            "from where it left off."
+                        ),
                     )
                 history, stripped = compact(history, settings.context_window_tokens)
                 if stripped:
-                    yield (
-                        "event: notice\ndata: "
-                        + json.dumps(
-                            {
-                                "message": (
-                                    f"Context was filling up; cleared {stripped} older tool "
-                                    "results to make room."
-                                )
-                            }
-                        )
-                        + "\n\n"
+                    yield _sse(
+                        "notice",
+                        _MessageFrame(
+                            message=f"Context was filling up; cleared {stripped} older tool "
+                            "results to make room."
+                        ),
                     )
             run_cancelled: RunCancelled | None = None
 
@@ -477,26 +511,17 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                                 _, freed = compact(live_history, settings.context_window_tokens)
                                 if freed:
                                     compacted_total += freed
-                                    yield (
-                                        "event: notice\ndata: "
-                                        + json.dumps(
-                                            {
-                                                "message": (
-                                                    "Context was nearly full; cleared "
-                                                    f"{freed} older tool results to keep going."
-                                                )
-                                            }
-                                        )
-                                        + "\n\n"
+                                    yield _sse(
+                                        "notice",
+                                        _MessageFrame(
+                                            message="Context was nearly full; cleared "
+                                            f"{freed} older tool results to keep going."
+                                        ),
                                     )
 
                             depth = len(run.pending_messages)
                             if depth < pending_seen:
-                                yield (
-                                    "event: delivered\ndata: "
-                                    + json.dumps({"count": pending_seen - depth})
-                                    + "\n\n"
-                                )
+                                yield _sse("delivered", _DeliveredFrame(count=pending_seen - depth))
                             pending_seen = depth
                             if store.is_stopped(thread_id):
                                 store.clear_stop(thread_id)
@@ -517,61 +542,43 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                                         if chunk:
                                             streamed = True
                                             accumulated_text += chunk
-                                            yield (
-                                                "event: delta\ndata: "
-                                                + json.dumps({"text": chunk})
-                                                + "\n\n"
-                                            )
+                                            yield _sse("delta", _DeltaFrame(text=chunk))
                             elif Agent.is_call_tools_node(node):
                                 async with node.stream(run.ctx) as stream:
                                     async for ev in stream:
                                         if isinstance(ev, FunctionToolCallEvent):
-                                            yield (
-                                                "event: tool\ndata: "
-                                                + json.dumps(
-                                                    {
-                                                        "id": ev.part.tool_call_id,
-                                                        "name": ev.part.tool_name,
-                                                        "phase": "start",
-                                                        "args": ev.part.args,
-                                                    }
-                                                )
-                                                + "\n\n"
+                                            yield _sse(
+                                                "tool",
+                                                _ToolStartFrame(
+                                                    id=ev.part.tool_call_id,
+                                                    name=ev.part.tool_name,
+                                                    args=ev.part.args,
+                                                ),
                                             )
                                         elif isinstance(ev, FunctionToolResultEvent):
                                             tool_calls += 1
-                                            yield (
-                                                "event: tool\ndata: "
-                                                + json.dumps(
-                                                    {
-                                                        "id": ev.part.tool_call_id,
-                                                        "name": ev.part.tool_name,
-                                                        "phase": "end",
-                                                        # The payload rides on the part; the
-                                                        # event's own `content` is unset for
-                                                        # tool returns.
-                                                        "result": str(ev.part.content)[
-                                                            :_TOOL_RESULT_PREVIEW
-                                                        ],
-                                                    }
-                                                )
-                                                + "\n\n"
+                                            yield _sse(
+                                                "tool",
+                                                _ToolEndFrame(
+                                                    id=ev.part.tool_call_id,
+                                                    name=ev.part.tool_name,
+                                                    # The payload rides on the part; the event's
+                                                    # own `content` is unset for tool returns.
+                                                    result=str(ev.part.content)[
+                                                        :_TOOL_RESULT_PREVIEW
+                                                    ],
+                                                ),
                                             )
-                                            yield (
-                                                "event: progress\ndata: "
-                                                + json.dumps(
-                                                    {
-                                                        "tool_calls": tool_calls,
-                                                        "elapsed_seconds": int(
-                                                            time.monotonic() - started_at
-                                                        ),
-                                                        "context_tokens": _context_tokens(run),
-                                                        "context_window": (
-                                                            settings.context_window_tokens
-                                                        ),
-                                                    }
-                                                )
-                                                + "\n\n"
+                                            yield _sse(
+                                                "progress",
+                                                _ProgressFrame(
+                                                    tool_calls=tool_calls,
+                                                    elapsed_seconds=int(
+                                                        time.monotonic() - started_at
+                                                    ),
+                                                    context_tokens=_context_tokens(run),
+                                                    context_window=settings.context_window_tokens,
+                                                ),
                                             )
                                 _checkpoint_history(thread_id, run)
                     finally:
@@ -585,18 +592,14 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                 store.clear_stop(thread_id)
                 final_text = accumulated_text
                 history_json = run_cancelled.all_messages_json().decode()
-                yield (
-                    "event: notice\ndata: "
-                    + json.dumps({"message": cancel_notice or "Run was cancelled."})
-                    + "\n\n"
-                )
+                yield _sse("notice", _MessageFrame(message=cancel_notice or "Run was cancelled."))
             else:
                 result = run.result
                 final_text = result.output if result else ""
                 history_json = result.all_messages_json().decode() if result else "[]"
 
             if final_text and not streamed:
-                yield "event: delta\ndata: " + json.dumps({"text": final_text}) + "\n\n"
+                yield _sse("delta", _DeltaFrame(text=final_text))
             _persist_run_outcome(thread_id, final_text, history_json)
             yield "event: done\ndata: {}\n\n"
         except UsageLimitExceeded:
@@ -606,12 +609,12 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
                 "reaching an answer. Try asking something narrower."
             )
             _persist_failed_run(thread_id, accumulated_text, failure)
-            yield "event: error\ndata: " + json.dumps({"message": failure}) + "\n\n"
+            yield _sse("error", _MessageFrame(message=failure))
         except Exception as e:
             logger.exception("chat stream failed for thread %s", thread_id)
             failure = f"{type(e).__name__}: {e}"[:300]
             _persist_failed_run(thread_id, accumulated_text, failure)
-            yield "event: error\ndata: " + json.dumps({"message": failure}) + "\n\n"
+            yield _sse("error", _MessageFrame(message=failure))
 
     session = RunSession(thread_id)
     _sessions[thread_id] = session

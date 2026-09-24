@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from fastapi import Header, HTTPException, Request
 
 from . import auth_manager, user_db
+from .models import ApiUser, SessionUser, UserRole
 from .session import SESSION_COOKIE, validate_session_token
 
 
@@ -43,8 +44,8 @@ def safe_next_url(url: str | None) -> str:
     return url
 
 
-def get_current_user(request: Request) -> dict | None:
-    """Get the current user from session cookie. Returns user dict or None."""
+def get_current_user(request: Request) -> SessionUser | None:
+    """Get the current user from the session cookie."""
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return None
@@ -56,10 +57,9 @@ async def require_any_auth(request: Request) -> None:
     user = get_current_user(request)
     if user:
         # Enforce must_change_password: block access to all protected routes until changed
-        uid = user.get("user_id") or user.get("id", "")
-        if uid and uid != "legacy":
-            db_user = user_db.get_user_by_id(uid)
-            needs_change = db_user and db_user.get("must_change_password")
+        if not user.is_legacy:
+            db_user = user_db.get_user_by_id(user.user_id)
+            needs_change = db_user and db_user.must_change_password
             if needs_change and request.url.path != "/web/change-password":
                 is_htmx = bool(request.headers.get("HX-Request"))
                 raise AuthRedirectException("/web/change-password", is_htmx=is_htmx)
@@ -108,7 +108,7 @@ async def require_admin(request: Request) -> None:
             next_url = str(request.url.path)
         login_url = f"/web/login?next={next_url}"
         raise AuthRedirectException(login_url, is_htmx=is_htmx)
-    if user.get("role") != "admin":
+    if user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
@@ -128,21 +128,12 @@ async def require_power_user(request: Request) -> None:
             next_url = str(request.url.path)
         login_url = f"/web/login?next={next_url}"
         raise AuthRedirectException(login_url, is_htmx=is_htmx)
-    if user.get("role") not in ("admin", "power_user"):
+    if not user.can_write:
         raise HTTPException(status_code=403, detail="Power user or admin access required")
 
 
-async def get_api_user(authorization: str | None = Header(default=None)) -> dict:
-    """API dependency — validate Bearer token and return the authenticated user dict.
-
-    Usage::
-
-        @app.get("/api/v1/something")
-        async def handler(user: dict = Depends(get_api_user)):
-            ...
-
-    The returned dict contains: user_id, username, role, token_id.
-    """
+async def get_api_user(authorization: str | None = Header(default=None)) -> ApiUser:
+    """API dependency: validate the Bearer token and return who it belongs to."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=401,

@@ -1,7 +1,6 @@
 """SQLite user database for multi-user authentication."""
 
 import hashlib
-import json
 import logging
 import secrets
 import sqlite3
@@ -12,20 +11,31 @@ from pathlib import Path
 
 import bcrypt as _bcrypt
 
-logger = logging.getLogger(__name__)
+from arrmate.config.settings import settings
 
-VALID_ROLES = ("admin", "power_user", "user")
+from .models import (
+    ApiToken,
+    ApiUser,
+    Invite,
+    LegacyAuthFile,
+    MediaRequest,
+    Notification,
+    NotificationType,
+    OwnedApiToken,
+    RequestStatus,
+    RequestType,
+    User,
+    UserRole,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _db_path() -> Path:
-    from arrmate.config.settings import settings
-
     return Path(settings.auth_data_dir) / "users.db"
 
 
 def _auth_json_path() -> Path:
-    from arrmate.config.settings import settings
-
     return Path(settings.auth_data_dir) / "auth.json"
 
 
@@ -197,10 +207,8 @@ def _migrate_from_auth_json() -> None:
     if not auth_json.exists():
         return
     try:
-        data = json.loads(auth_json.read_text())
-        username = data.get("username")
-        password_hash = data.get("password_hash")
-        if not username or not password_hash:
+        legacy = LegacyAuthFile.model_validate_json(auth_json.read_text())
+        if not legacy.username or not legacy.password_hash:
             return
 
         with _get_conn() as conn:
@@ -208,10 +216,10 @@ def _migrate_from_auth_json() -> None:
                 """INSERT OR IGNORE INTO users
                    (id, username, password_hash, role, enabled, created_at)
                    VALUES (?, ?, ?, 'admin', 1, ?)""",
-                (_new_id(), username, password_hash, _now()),
+                (_new_id(), legacy.username, legacy.password_hash, _now()),
             )
             conn.commit()
-        logger.info("Migrated auth.json user '%s' as admin", username)
+        logger.info("Migrated auth.json user '%s' as admin", legacy.username)
     except (sqlite3.Error, OSError, ValueError) as e:
         logger.warning("Failed to migrate auth.json: %s", e)
 
@@ -224,15 +232,13 @@ _MIN_PASSWORD_LENGTH = 8
 def create_user(
     username: str,
     password: str,
-    role: str = "user",
+    role: UserRole = UserRole.USER,
     invited_by: str | None = None,
-) -> dict | None:
-    """Create a new user. Returns user dict or None if username taken or password too short."""
+) -> User | None:
+    """Create a new user. Returns None if the username is taken or the password too short."""
     _ensure_db()
     if len(password) < _MIN_PASSWORD_LENGTH:
         return None
-    if role not in VALID_ROLES:
-        role = "user"
     user_id = _new_id()
     password_hash = _bcrypt.hashpw(password.encode(), _bcrypt.gensalt()).decode()
     try:
@@ -249,51 +255,55 @@ def create_user(
         return None
 
 
-def get_user_by_id(user_id: str) -> dict | None:
+def _user(row: sqlite3.Row | None) -> User | None:
+    return User.model_validate(dict(row)) if row else None
+
+
+def get_user_by_id(user_id: str) -> User | None:
     with _get_conn() as conn:
-        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        return dict(row) if row else None
+        return _user(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
 
 
-def get_user_by_username(username: str) -> dict | None:
+def get_user_by_username(username: str) -> User | None:
     with _get_conn() as conn:
-        row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-        return dict(row) if row else None
+        return _user(conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone())
 
 
-def verify_user(username: str, password: str) -> dict | None:
-    """Verify credentials. Returns user dict or None if invalid/disabled.
+def verify_user(username: str, password: str) -> User | None:
+    """Verify credentials. Returns None if they are invalid or the account is disabled.
 
     Plex SSO users (auth_provider='plex') have no local password and will
     always return None here — they must log in via the Plex SSO flow.
     """
     user = get_user_by_username(username)
-    if not user or not user.get("enabled"):
+    if not user or not user.enabled or user.auth_provider == "plex":
         return None
-    if user.get("auth_provider") == "plex":
-        return None  # Plex users cannot log in with a local password
     try:
-        if _bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
+        if _bcrypt.checkpw(password.encode(), user.password_hash.encode()):
             return user
     except ValueError:
-        logger.warning("stored password hash is invalid for user %s", user.get("id"))
+        logger.warning("stored password hash is invalid for user %s", user.id)
     return None
 
 
-def list_users() -> list[dict]:
+def list_users() -> list[User]:
     with _get_conn() as conn:
         rows = conn.execute("SELECT * FROM users ORDER BY created_at").fetchall()
-        return [dict(r) for r in rows]
+    return [User.model_validate(dict(r)) for r in rows]
 
 
-def update_user(user_id: str, **kwargs: str | bool | None) -> bool:
-    """Update user fields (role, enabled, email). Returns True if updated."""
-    allowed = {"role", "enabled", "email"}
-    updates = {k: v for k, v in kwargs.items() if k in allowed}
+def update_user(
+    user_id: str,
+    role: UserRole | None = None,
+    enabled: bool | None = None,
+    email: str | None = None,
+) -> bool:
+    """Update whichever of role, enabled and email are given. Returns True if updated."""
+    candidates = {"role": role, "enabled": enabled, "email": email}
+    updates = {column: value for column, value in candidates.items() if value is not None}
     if not updates:
         return False
-    # Keys are filtered to the allowlist above before being interpolated.
-    # Values are always passed as parameters — no injection risk.
+    # Column names come from the fixed mapping above; values are always bound parameters.
     set_clause = ", ".join(f"{k} = ?" for k in updates)
     values = [*updates.values(), user_id]
     with _get_conn() as conn:
@@ -326,21 +336,20 @@ def delete_user(user_id: str) -> bool:
         return cursor.rowcount > 0
 
 
-def get_user_by_plex_id(plex_id: str) -> dict | None:
+def get_user_by_plex_id(plex_id: str) -> User | None:
     """Look up a user by their Plex UUID. Returns None if not found."""
     _ensure_db()
     with _get_conn() as conn:
-        row = conn.execute("SELECT * FROM users WHERE plex_id = ?", (plex_id,)).fetchone()
-        return dict(row) if row else None
+        return _user(conn.execute("SELECT * FROM users WHERE plex_id = ?", (plex_id,)).fetchone())
 
 
 def create_plex_user(
     plex_id: str,
     username: str,
     email: str | None,
-    role: str = "user",
+    role: UserRole = UserRole.USER,
     enabled: bool = True,
-) -> dict | None:
+) -> User | None:
     """Create a user whose identity comes from Plex (no local password).
 
     Uses a sentinel password hash ("!plex") that bcrypt will never produce,
@@ -348,10 +357,8 @@ def create_plex_user(
 
     Pass enabled=False to create a pending-approval account.
 
-    Returns the user dict or None if the username is already taken.
+    Returns None if the username is already taken.
     """
-    if role not in VALID_ROLES:
-        role = "user"
     user_id = _new_id()
     # "!plex" is not a valid bcrypt hash — verify_user() will short-circuit
     # on auth_provider == 'plex' before bcrypt is ever called.
@@ -393,10 +400,8 @@ def has_any_users() -> bool:
 # ===== Invites =====
 
 
-def create_invite(role: str, created_by: str, ttl_hours: int = 48) -> str:
+def create_invite(role: UserRole, created_by: str, ttl_hours: int = 48) -> str:
     """Create an invite token. Returns the token string."""
-    if role not in VALID_ROLES:
-        role = "user"
     token = secrets.token_urlsafe(32)
     expires_at = (datetime.now(UTC) + timedelta(hours=ttl_hours)).isoformat()
     with _get_conn() as conn:
@@ -410,20 +415,18 @@ def create_invite(role: str, created_by: str, ttl_hours: int = 48) -> str:
     return token
 
 
-def get_invite(token: str) -> dict | None:
+def get_invite(token: str) -> Invite | None:
     with _get_conn() as conn:
         row = conn.execute("SELECT * FROM invites WHERE token = ?", (token,)).fetchone()
-        return dict(row) if row else None
+    return Invite.model_validate(dict(row)) if row else None
 
 
-def validate_invite(token: str) -> dict | None:
+def validate_invite(token: str) -> Invite | None:
     """Return invite if valid (not used, not expired). None otherwise."""
     invite = get_invite(token)
-    if not invite:
+    if not invite or invite.used:
         return None
-    if invite["used"]:
-        return None
-    expires_at = datetime.fromisoformat(invite["expires_at"])
+    expires_at = datetime.fromisoformat(invite.expires_at)
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
     if datetime.now(UTC) > expires_at:
@@ -431,29 +434,29 @@ def validate_invite(token: str) -> dict | None:
     return invite
 
 
-def use_invite(token: str, username: str, password: str) -> dict | None:
-    """Use an invite to create a user. Returns user dict or None on failure."""
+def use_invite(token: str, username: str, password: str) -> User | None:
+    """Use an invite to create a user. Returns None on failure."""
     invite = validate_invite(token)
     if not invite:
         return None
     user = create_user(
         username,
         password,
-        role=invite["role"],
-        invited_by=invite["created_by"],
+        role=invite.role,
+        invited_by=invite.created_by,
     )
     if not user:
         return None
     with _get_conn() as conn:
         conn.execute(
             "UPDATE invites SET used = 1, used_by = ?, used_at = ? WHERE token = ?",
-            (user["id"], _now(), token),
+            (user.id, _now(), token),
         )
         conn.commit()
     return user
 
 
-def list_invites(include_used: bool = False) -> list[dict]:
+def list_invites(include_used: bool = False) -> list[Invite]:
     with _get_conn() as conn:
         if include_used:
             rows = conn.execute("SELECT * FROM invites ORDER BY created_at DESC").fetchall()
@@ -461,7 +464,7 @@ def list_invites(include_used: bool = False) -> list[dict]:
             rows = conn.execute(
                 "SELECT * FROM invites WHERE used = 0 ORDER BY created_at DESC"
             ).fetchall()
-        return [dict(r) for r in rows]
+    return [Invite.model_validate(dict(r)) for r in rows]
 
 
 def delete_invite(token: str) -> bool:
@@ -474,7 +477,11 @@ def delete_invite(token: str) -> bool:
 # ===== Media Requests =====
 
 
-def get_trackable_requests() -> list[dict]:
+def _requests(rows: list[sqlite3.Row]) -> list[MediaRequest]:
+    return [MediaRequest.model_validate(dict(r)) for r in rows]
+
+
+def get_trackable_requests() -> list[MediaRequest]:
     """Return open requests that haven't been fully notified yet."""
     try:
         _ensure_db()
@@ -485,9 +492,9 @@ def get_trackable_requests() -> list[dict]:
                      AND notified_imported = 0
                    ORDER BY created_at DESC"""
             ).fetchall()
-            return [dict(r) for r in rows]
     except sqlite3.Error:
         return []
+    return _requests(rows)
 
 
 def mark_request_queued(req_id: str) -> bool:
@@ -514,12 +521,12 @@ def mark_request_imported(req_id: str) -> bool:
 
 
 def create_request(
-    request_type: str,
+    request_type: RequestType,
     user_id: str,
     title: str,
     details: str = "",
     media_type: str = "",
-) -> dict:
+) -> MediaRequest:
     req_id = _new_id()
     with _get_conn() as conn:
         conn.execute(
@@ -535,18 +542,18 @@ def create_request(
     return created
 
 
-def get_request(req_id: str) -> dict | None:
+def get_request(req_id: str) -> MediaRequest | None:
     with _get_conn() as conn:
         row = conn.execute("SELECT * FROM media_requests WHERE id = ?", (req_id,)).fetchone()
-        return dict(row) if row else None
+    return MediaRequest.model_validate(dict(row)) if row else None
 
 
 def list_requests(
     user_id: str | None = None,
-    status: str | None = None,
-) -> list[dict]:
+    status: RequestStatus | None = None,
+) -> list[MediaRequest]:
     query = "SELECT * FROM media_requests WHERE 1=1"
-    params: list = []
+    params: list[str] = []
     if user_id:
         query += " AND requested_by = ?"
         params.append(user_id)
@@ -556,12 +563,12 @@ def list_requests(
     query += " ORDER BY created_at DESC"
     with _get_conn() as conn:
         rows = conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+    return _requests(rows)
 
 
 def update_request(
     req_id: str,
-    status: str,
+    status: RequestStatus,
     resolved_by: str,
     notes: str = "",
 ) -> bool:
@@ -582,20 +589,17 @@ def update_request(
 def create_notification(
     user_id: str,
     message: str,
-    type: str = "info",
+    type: NotificationType = "info",
     request_id: str | None = None,
-) -> dict:
-    notif_id = _new_id()
+) -> None:
     with _get_conn() as conn:
         conn.execute(
             """INSERT INTO notifications
                (id, user_id, message, type, read, request_id, created_at)
                VALUES (?, ?, ?, ?, 0, ?, ?)""",
-            (notif_id, user_id, message, type, request_id, _now()),
+            (_new_id(), user_id, message, type, request_id, _now()),
         )
         conn.commit()
-        row = conn.execute("SELECT * FROM notifications WHERE id = ?", (notif_id,)).fetchone()
-        return dict(row) if row else {}
 
 
 def get_unread_count(user_id: str) -> int:
@@ -610,7 +614,7 @@ def get_unread_count(user_id: str) -> int:
         return 0
 
 
-def get_notifications(user_id: str, limit: int = 20) -> list[dict]:
+def get_notifications(user_id: str, limit: int = 20) -> list[Notification]:
     with _get_conn() as conn:
         rows = conn.execute(
             """SELECT * FROM notifications
@@ -619,7 +623,7 @@ def get_notifications(user_id: str, limit: int = 20) -> list[dict]:
                LIMIT ?""",
             (user_id, limit),
         ).fetchall()
-        return [dict(r) for r in rows]
+    return [Notification.model_validate(dict(r)) for r in rows]
 
 
 def mark_notifications_read(user_id: str) -> None:
@@ -676,11 +680,10 @@ def create_api_token(
     return token_id, plain_token
 
 
-def validate_api_token(plain_token: str) -> dict | None:
+def validate_api_token(plain_token: str) -> ApiUser | None:
     """Validate a Bearer token.
 
-    Returns a user-like dict {user_id, username, role, token_id} on success,
-    or None if the token is invalid, disabled, or expired.
+    Returns None if the token is invalid, disabled, or expired.
     Also updates last_used_at on every successful validation.
     """
     try:
@@ -694,10 +697,7 @@ def validate_api_token(plain_token: str) -> dict | None:
                    WHERE t.token_hash = ?""",
                 (token_hash,),
             ).fetchone()
-            if not row:
-                return None
-            row = dict(row)
-            if not row["token_enabled"] or not row["user_enabled"]:
+            if not row or not row["token_enabled"] or not row["user_enabled"]:
                 return None
             if row["expires_at"]:
                 exp = datetime.fromisoformat(row["expires_at"])
@@ -710,17 +710,12 @@ def validate_api_token(plain_token: str) -> dict | None:
                 (_now(), row["token_id"]),
             )
             conn.commit()
-        return {
-            "user_id": row["user_id"],
-            "username": row["username"],
-            "role": row["role"],
-            "token_id": row["token_id"],
-        }
+        return ApiUser.model_validate(dict(row))
     except (sqlite3.Error, ValueError):
         return None
 
 
-def list_api_tokens(user_id: str) -> list[dict]:
+def list_api_tokens(user_id: str) -> list[ApiToken]:
     """List all tokens for a user (never returns the hash or plain token)."""
     _ensure_db()
     with _get_conn() as conn:
@@ -731,7 +726,7 @@ def list_api_tokens(user_id: str) -> list[dict]:
                ORDER BY created_at DESC""",
             (user_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+    return [ApiToken.model_validate(dict(r)) for r in rows]
 
 
 def delete_api_token(token_id: str, user_id: str) -> bool:
@@ -753,7 +748,7 @@ def admin_delete_api_token(token_id: str) -> bool:
         return cursor.rowcount > 0
 
 
-def list_all_api_tokens() -> list[dict]:
+def list_all_api_tokens() -> list[OwnedApiToken]:
     """Admin view — list all tokens with username."""
     _ensure_db()
     with _get_conn() as conn:
@@ -764,7 +759,7 @@ def list_all_api_tokens() -> list[dict]:
                JOIN users u ON t.user_id = u.id
                ORDER BY t.created_at DESC""",
         ).fetchall()
-        return [dict(r) for r in rows]
+    return [OwnedApiToken.model_validate(dict(r)) for r in rows]
 
 
 # ===== App Settings (key-value store for application-wide flags) =====

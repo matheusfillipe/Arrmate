@@ -63,6 +63,25 @@ def test_state_cookie_roundtrip():
     assert kwargs.get("max_age") == 300
 
 
+def test_state_cookie_reads_back_what_was_set():
+    from arrmate.auth.plex_sso import PLEX_STATE_COOKIE, get_plex_state, set_plex_state_cookie
+
+    response = MagicMock()
+    set_plex_state_cookie(response, pin_id=99999, next_url="/web/library", secret_key="k")
+    request = MagicMock()
+    request.cookies = {PLEX_STATE_COOKIE: response.set_cookie.call_args.args[1]}
+
+    assert get_plex_state(request, "k") == (99999, "/web/library")
+
+
+def test_plex_account_identity_prefers_uuid():
+    from arrmate.auth.models import PlexAccount
+
+    assert PlexAccount.model_validate({"id": 7, "uuid": "abc"}).identity == "abc"
+    assert PlexAccount.model_validate({"id": 7}).identity == "7"
+    assert PlexAccount.model_validate({}).identity is None
+
+
 def test_state_cookie_read_invalid_returns_none():
     """Tampered or missing cookie must return None."""
     from arrmate.auth.plex_sso import get_plex_state
@@ -116,8 +135,8 @@ def test_get_user_by_plex_id(tmp_user_db):
 
     found = user_db.get_user_by_plex_id("unique-uuid-xyz")
     assert found is not None
-    assert found["username"] == "findme"
-    assert found["auth_provider"] == "plex"
+    assert found.username == "findme"
+    assert found.auth_provider == "plex"
 
     not_found = user_db.get_user_by_plex_id("does-not-exist")
     assert not_found is None

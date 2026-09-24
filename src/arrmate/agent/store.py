@@ -7,18 +7,42 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 import pydantic
+from pydantic import BaseModel
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
+
+from arrmate.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 _THREAD_HISTORY_MAX = 60
 
+ChatRole = Literal["user", "assistant"]
+
+
+class ThreadSummary(BaseModel):
+    id: str
+    title: str
+    model: str | None = None
+    updated_at: str
+
+
+class Thread(ThreadSummary):
+    user_id: str
+    created_at: str
+
+
+class ChatTurn(BaseModel):
+    """A stored turn, keyed `text` to match the objects the live stream builds client-side."""
+
+    role: ChatRole
+    text: str
+    created_at: str
+
 
 def _db_path() -> Path:
-    from arrmate.config.settings import settings
-
     return Path(settings.auth_data_dir) / "chat.db"
 
 
@@ -90,23 +114,23 @@ def create_thread(user_id: str, title: str = "New chat", model: str = "") -> str
     return thread_id
 
 
-def list_threads(user_id: str) -> list[dict]:
+def list_threads(user_id: str) -> list[ThreadSummary]:
     with _get_conn() as conn:
         rows = conn.execute(
             "SELECT id, title, model, updated_at FROM threads WHERE user_id = ? "
             "ORDER BY updated_at DESC",
             (user_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+    return [ThreadSummary.model_validate(dict(r)) for r in rows]
 
 
-def get_thread(thread_id: str, user_id: str) -> dict | None:
+def get_thread(thread_id: str, user_id: str) -> Thread | None:
     with _get_conn() as conn:
         row = conn.execute(
             "SELECT * FROM threads WHERE id = ? AND user_id = ?",
             (thread_id, user_id),
         ).fetchone()
-        return dict(row) if row else None
+    return Thread.model_validate(dict(row)) if row else None
 
 
 def delete_thread(thread_id: str, user_id: str) -> bool:
@@ -129,7 +153,7 @@ def rename_thread(thread_id: str, user_id: str, title: str) -> bool:
         return cur.rowcount > 0
 
 
-def add_message(thread_id: str, role: str, content: str) -> None:
+def add_message(thread_id: str, role: ChatRole, content: str) -> None:
     with _get_conn() as conn:
         conn.execute(
             "INSERT INTO messages (thread_id, role, content, created_at) VALUES (?, ?, ?, ?)",
@@ -139,21 +163,14 @@ def add_message(thread_id: str, role: str, content: str) -> None:
         conn.commit()
 
 
-def list_messages(thread_id: str) -> list[dict]:
-    """Stored turns in the shape the chat page renders.
-
-    The key is ``text`` to match the objects the live stream builds client-side; a reloaded
-    thread and a streaming one then render through the same path.
-    """
+def list_messages(thread_id: str) -> list[ChatTurn]:
     with _get_conn() as conn:
         rows = conn.execute(
-            "SELECT role, content, created_at FROM messages WHERE thread_id = ? ORDER BY id",
+            "SELECT role, content AS text, created_at FROM messages WHERE thread_id = ? "
+            "ORDER BY id",
             (thread_id,),
         ).fetchall()
-    return [
-        {"role": r["role"], "text": r["content"], "cards": [], "created_at": r["created_at"]}
-        for r in rows
-    ]
+    return [ChatTurn.model_validate(dict(r)) for r in rows]
 
 
 def auto_title(thread_id: str, first_message: str) -> bool:

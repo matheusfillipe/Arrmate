@@ -1,9 +1,9 @@
 """Core data models for Arrmate."""
 
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class MediaType(StrEnum):
@@ -44,15 +44,32 @@ USER_BLOCKED_ACTIONS = {ActionType.REMOVE, ActionType.DELETE, ActionType.TRANSCO
 DESTRUCTIVE_ACTIONS = {ActionType.REMOVE, ActionType.DELETE}
 
 
+class IntentCriteria(BaseModel):
+    """The `criteria` object the command schema asks the LLM for; it may add keys of its own."""
+
+    model_config = ConfigDict(extra="allow")
+
+    language: str | None = None
+    quality: str | None = None
+    year: int | None = None
+    service: str | None = None
+    operation: str | None = None
+    codec: str | None = None
+    rating: float | None = None
+    task: str | None = None
+
+
 class Intent(BaseModel):
     """Structured representation of user intent extracted from natural language."""
+
+    model_config = ConfigDict(use_enum_values=True)
 
     action: ActionType = Field(description="The action to perform")
     media_type: MediaType = Field(description="Type of media (TV, movie, music, etc.)")
     title: str | None = Field(default=None, description="Title of the media item")
     season: int | None = Field(default=None, description="Season number (TV shows only)")
     episodes: list[int] | None = Field(default=None, description="Episode numbers (TV shows only)")
-    criteria: dict[str, Any] | None = Field(
+    criteria: IntentCriteria | None = Field(
         default=None,
         description="Search/filter criteria (language, quality, etc.)",
     )
@@ -65,26 +82,12 @@ class Intent(BaseModel):
     )
     series_id: int | None = Field(default=None, description="Internal series ID (TV shows only)")
 
-    class Config:
-        """Pydantic config."""
-
-        use_enum_values = True
-
 
 class ExecutionResult(BaseModel):
     """Result of executing an intent."""
 
-    success: bool = Field(description="Whether the execution was successful")
-    message: str = Field(description="Human-readable message about the result")
-    data: dict[str, Any] | None = Field(
-        default=None, description="Additional data returned from execution"
-    )
-    errors: list[str] | None = Field(default=None, description="List of errors if any")
-
-    class Config:
-        """Pydantic config."""
-
-        json_schema_extra: ClassVar[dict[str, Any]] = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "success": True,
                 "message": "Successfully removed 2 episodes from Angel Season 1",
@@ -92,6 +95,14 @@ class ExecutionResult(BaseModel):
                 "errors": None,
             }
         }
+    )
+
+    success: bool = Field(description="Whether the execution was successful")
+    message: str = Field(description="Human-readable message about the result")
+    data: dict[str, Any] | None = Field(
+        default=None, description="Additional data returned from execution"
+    )
+    errors: list[str] | None = Field(default=None, description="List of errors if any")
 
 
 class ImplementationStatus(StrEnum):

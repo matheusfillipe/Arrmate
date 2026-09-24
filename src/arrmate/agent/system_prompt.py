@@ -65,10 +65,10 @@ async def _services_summary() -> str:
 
 async def build_system_prompt() -> str:
     inst = instances.list_instances()
-    if len(inst) <= 2 and all(i["id"] in ("sonarr", "radarr") for i in inst):
+    if len(inst) <= 2 and all(i.id in ("sonarr", "radarr") for i in inst):
         inst_block = ""
     else:
-        names = ", ".join(f"{i['id']} ({i['type']})" for i in inst)
+        names = ", ".join(f"{i.id} ({i.type})" for i in inst)
         inst_block = (
             "\n## Instances\n"
             f"{names} — pass the instance id as service_id to TV/movie tools "

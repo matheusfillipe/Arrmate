@@ -758,7 +758,7 @@ class Executor:
         if not intent.title:
             return ExecutionResult(success=False, message="No title specified for rating")
 
-        stars = float((intent.criteria or {}).get("rating", 5))
+        stars = (intent.criteria.rating if intent.criteria else None) or 5.0
         client = PlexClient(settings.plex_url, settings.plex_token)
         try:
             hubs = await client.search(intent.title, limit=5)
@@ -794,7 +794,7 @@ class Executor:
         if not settings.plex_url or not settings.plex_token:
             return ExecutionResult(success=False, message="Plex is not configured")
 
-        task = (intent.criteria or {}).get("task", "CleanOldBundles")
+        task = (intent.criteria.task if intent.criteria else None) or "CleanOldBundles"
         client = PlexClient(settings.plex_url, settings.plex_token)
         try:
             ok = await client.run_butler_task(task)

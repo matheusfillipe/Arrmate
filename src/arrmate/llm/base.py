@@ -1,7 +1,10 @@
 """Abstract base class for LLM providers."""
 
 from abc import ABC, abstractmethod
-from typing import Any
+
+from arrmate.core.models import Intent
+
+from .schemas import ToolSchema
 
 
 class ConversationalReply(Exception):
@@ -29,21 +32,13 @@ class BaseLLMProvider(ABC):
 
     @abstractmethod
     async def parse_command(
-        self, user_input: str, tools: list[dict[str, Any]], system_prompt: str
-    ) -> dict[str, Any]:
+        self, user_input: str, tools: list[ToolSchema], system_prompt: str
+    ) -> Intent:
         """Parse a natural language command using tool calling.
-
-        Args:
-            user_input: The user's natural language command
-            tools: List of tool/function schemas
-            system_prompt: System prompt for the LLM
-
-        Returns:
-            Dictionary with parsed intent parameters
 
         Raises:
             ConversationalReply: If the model replied in prose instead of calling the tool
-            ValueError: If parsing fails or LLM doesn't use tools correctly
+            ValueError: If the call fails or the tool arguments are not a valid intent
         """
 
     @abstractmethod

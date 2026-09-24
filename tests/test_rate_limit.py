@@ -53,7 +53,7 @@ async def test_window_resets_after_expiry():
     assert not blocked
 
     # Manually wind back the window start to simulate expiry
-    limiter._counters["10.0.0.1"][1] = time.monotonic() - 2
+    limiter._counters["10.0.0.1"].started = time.monotonic() - 2
 
     allowed, _ = await limiter.check("10.0.0.1")
     assert allowed

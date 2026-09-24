@@ -3,7 +3,10 @@
 import logging
 from unittest.mock import MagicMock
 
-from arrmate.auth.session import set_session_cookie
+from itsdangerous import URLSafeTimedSerializer
+
+from arrmate.auth.models import RequestStatus, RequestType, SessionUser, UserRole
+from arrmate.auth.session import create_session_token, set_session_cookie, validate_session_token
 
 # ── Session cookie flags ───────────────────────────────────────────────────────
 
@@ -60,3 +63,68 @@ def test_minimum_password_length_is_at_least_eight():
     assert any(f"len(password) < {n}" in source for n in range(8, 20)), (
         "Expected minimum password length >= 8 not found in routes source"
     )
+
+
+# ── Typed session and user records ────────────────────────────────────────────
+
+
+def test_session_token_roundtrip():
+    token = create_session_token(
+        SessionUser(user_id="u1", username="ann", role=UserRole.POWER_USER), "k"
+    )
+    user = validate_session_token(token, "k")
+    assert user == SessionUser(user_id="u1", username="ann", role=UserRole.POWER_USER)
+    assert user.can_write
+
+
+def test_pre_multi_user_session_token_is_the_legacy_admin():
+    token = URLSafeTimedSerializer("k").dumps({"user": "old"})
+    user = validate_session_token(token, "k")
+    assert user is not None
+    assert user.is_legacy
+    assert user.role == UserRole.ADMIN
+
+
+def test_session_token_with_unknown_role_is_rejected():
+    token = URLSafeTimedSerializer("k").dumps({"user_id": "u", "username": "u", "role": "root"})
+    assert validate_session_token(token, "k") is None
+
+
+def test_user_rows_come_back_typed(tmp_user_db):
+    user = tmp_user_db.create_user("ann", "longenough", role=UserRole.POWER_USER)
+    assert user is not None
+    assert user.enabled is True
+    assert user.must_change_password is False
+    assert tmp_user_db.verify_user("ann", "longenough") == user
+
+    assert tmp_user_db.update_user(user.id, enabled=False)
+    assert tmp_user_db.verify_user("ann", "longenough") is None
+
+
+def test_invite_creates_user_with_its_role(tmp_user_db):
+    token = tmp_user_db.create_invite(UserRole.POWER_USER, created_by="admin")
+    user = tmp_user_db.use_invite(token, "bob", "longenough")
+    assert user is not None
+    assert user.role == UserRole.POWER_USER
+    assert tmp_user_db.validate_invite(token) is None
+
+
+def test_request_notification_and_token_rows(tmp_user_db):
+    user = tmp_user_db.create_user("cat", "longenough")
+    req = tmp_user_db.create_request(RequestType.ISSUE, user.id, "Dune")
+    assert req.status == RequestStatus.PENDING
+    assert req.notified_queued is False
+
+    tmp_user_db.update_request(req.id, RequestStatus.COMPLETED, resolved_by="admin")
+    assert tmp_user_db.list_requests(status=RequestStatus.COMPLETED)[0].resolved_by == "admin"
+
+    tmp_user_db.create_notification(user.id, "hi", type="success", request_id=req.id)
+    [notification] = tmp_user_db.get_notifications(user.id)
+    assert notification.read is False
+    assert notification.type == "success"
+
+    _token_id, plain = tmp_user_db.create_api_token(user.id, "cli")
+    api_user = tmp_user_db.validate_api_token(plain)
+    assert api_user is not None
+    assert api_user.username == "cat"
+    assert tmp_user_db.list_api_tokens(user.id)[0].name == "cli"

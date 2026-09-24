@@ -1,6 +1,6 @@
 """Natural language command parser using LLM."""
 
-from arrmate.llm.base import BaseLLMProvider, ConversationalReply
+from arrmate.llm.base import BaseLLMProvider
 from arrmate.llm.factory import create_llm_provider
 from arrmate.llm.schemas import get_system_prompt, get_tool_schemas
 
@@ -36,24 +36,12 @@ class CommandParser:
             Parsed Intent object
 
         Raises:
+            ConversationalReply: If the model answered in prose
             ValueError: If parsing fails or intent is invalid
         """
-        tools = get_tool_schemas()
-        system_prompt = get_system_prompt(self.available_services)
-
-        try:
-            parsed_data = await self.llm_provider.parse_command(user_input, tools, system_prompt)
-        except ConversationalReply:
-            raise
-        except Exception as e:
-            raise ValueError(f"Failed to parse command: {e!s}") from e
-
-        try:
-            intent = Intent(**parsed_data)
-        except Exception as e:
-            raise ValueError(f"Invalid intent extracted: {e!s}") from e
-
-        return intent
+        return await self.llm_provider.parse_command(
+            user_input, get_tool_schemas(), get_system_prompt(self.available_services)
+        )
 
     async def close(self) -> None:
         """Clean up resources."""

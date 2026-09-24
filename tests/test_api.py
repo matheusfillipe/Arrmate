@@ -5,6 +5,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from arrmate.auth.models import ApiUser, UserRole
+
+_ADMIN = ApiUser(user_id="test", username="test", role=UserRole.ADMIN, token_id="test")
+
 
 @pytest.fixture
 def client():
@@ -17,12 +21,7 @@ def test_execute_command_rejects_oversized_input(client):
     """Commands over 2000 characters must be rejected with 422."""
     from arrmate.auth.dependencies import get_api_user
 
-    client.app.dependency_overrides[get_api_user] = lambda: {
-        "user_id": "test",
-        "username": "test",
-        "role": "admin",
-        "token_id": "test",
-    }
+    client.app.dependency_overrides[get_api_user] = lambda: _ADMIN
     try:
         oversized = "a" * 2001
         resp = client.post(
@@ -52,12 +51,7 @@ def test_500_response_body_is_generic():
     from arrmate.interfaces.api.app import app
 
     # Override auth to get past the bearer check
-    app.dependency_overrides[get_api_user] = lambda: {
-        "user_id": "test",
-        "username": "test",
-        "role": "admin",
-        "token_id": "test",
-    }
+    app.dependency_overrides[get_api_user] = lambda: _ADMIN
     test_client = TestClient(app, raise_server_exceptions=False)
 
     with (

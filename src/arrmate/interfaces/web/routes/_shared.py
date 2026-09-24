@@ -4,14 +4,17 @@ import asyncio
 import contextlib
 import logging
 import sqlite3
+import time
 from pathlib import Path
-from typing import Optional
+from typing import TypedDict
 from urllib.parse import quote_plus
 
 import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
 
 from arrmate.auth import auth_manager, user_db
 from arrmate.auth.dependencies import (
@@ -23,6 +26,7 @@ from arrmate.auth.dependencies import (
     require_power_user,
     safe_next_url,
 )
+from arrmate.auth.models import SessionUser
 from arrmate.auth.notifications import notify_request_resolved, notify_request_submitted
 from arrmate.auth.plex_sso import (
     build_plex_auth_url,
@@ -84,7 +88,6 @@ __all__ = [
     "LastFMClient",
     "LidarrClient",
     "OpenLibraryClient",
-    "Optional",
     "Path",
     "PlexClient",
     "PlexTVClient",
@@ -181,11 +184,12 @@ templates.env.globals["auth_manager"] = auth_manager
 
 templates.env.globals["settings"] = settings
 
+# Pages embed models with `| tojson`, which only handles plain JSON types by default.
+templates.env.policies["json.dumps_kwargs"] = {"sort_keys": True, "default": jsonable_encoder}
+
 
 def _timestamp_to_relative(ts: int) -> str:
     """Convert a Unix timestamp to a human-readable relative string."""
-    import time
-
     delta = int(time.time()) - ts
     if delta < 60:
         return "just now"
@@ -215,9 +219,6 @@ engine: IntentEngine | None = None
 
 
 executor: Executor | None = None
-
-
-_USER_BLOCKED_ACTIONS = {ActionType.REMOVE, ActionType.DELETE}
 
 
 async def get_parser() -> CommandParser:
@@ -252,23 +253,26 @@ def reset_parser() -> None:
     parser = None
 
 
-def _base_ctx(request: Request) -> dict:
+class BaseContext(TypedDict):
+    """Keys every page render needs; routes spread it into their own template context."""
+
+    current_user: SessionUser | None
+    unread_count: int
+
+
+def _base_ctx(request: Request) -> BaseContext:
     """Base template context: current user + unread notification count."""
     user = get_current_user(request)
     unread = 0
-    if user:
-        uid = user.get("user_id") or user.get("id", "")
-        if uid and uid != "legacy":
-            with contextlib.suppress(httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
-                unread = user_db.get_unread_count(uid)
-            # Merge must_change_password from DB into session dict
-            try:
-                db_user = user_db.get_user_by_id(uid)
-                if db_user:
-                    user = {**user, "must_change_password": db_user.get("must_change_password", 0)}
-            except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
-                pass
-    return {"current_user": user, "unread_count": unread}
+    if user and not user.is_legacy:
+        with contextlib.suppress(sqlite3.Error):
+            unread = user_db.get_unread_count(user.user_id)
+        # The cookie is minted at login, so only the database knows the flag is still set.
+        with contextlib.suppress(sqlite3.Error, ValidationError):
+            db_user = user_db.get_user_by_id(user.user_id)
+            if db_user:
+                user.must_change_password = db_user.must_change_password
+    return BaseContext(current_user=user, unread_count=unread)
 
 
 async def _get_tv_count() -> int | None:

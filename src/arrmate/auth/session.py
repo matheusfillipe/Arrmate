@@ -4,6 +4,9 @@ import os
 
 from fastapi.responses import Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from pydantic import BaseModel, ValidationError
+
+from .models import LEGACY_USER_ID, SessionUser, UserRole
 
 SESSION_COOKIE = "arrmate_session"
 SESSION_MAX_AGE = 86400  # 24 hours
@@ -14,38 +17,33 @@ _env = os.environ.get("COOKIE_SECURE", "true").lower()
 _COOKIE_SECURE: bool = _env not in ("0", "false", "no")
 
 
-def create_session_token(
-    user_id: str,
-    username: str,
-    role: str,
-    secret_key: str,
-) -> str:
+class _SessionPayload(BaseModel):
+    """What the cookie carries; `user` alone is the pre-multi-user format."""
+
+    user_id: str | None = None
+    username: str | None = None
+    role: UserRole | None = None
+    user: str | None = None
+
+
+def create_session_token(user: SessionUser, secret_key: str) -> str:
     """Create a signed session token with full user info."""
     s = URLSafeTimedSerializer(secret_key)
-    return s.dumps({"user_id": user_id, "username": username, "role": role})
+    return s.dumps(user.model_dump(mode="json", include={"user_id", "username", "role"}))
 
 
-def validate_session_token(token: str, secret_key: str) -> dict | None:
-    """Validate session token. Returns dict with user_id/username/role or None.
-
-    Handles legacy format {"user": "username"} by treating as admin.
-    """
+def validate_session_token(token: str, secret_key: str) -> SessionUser | None:
+    """Validate a session token. Old `{"user": name}` tokens are treated as the legacy admin."""
     s = URLSafeTimedSerializer(secret_key)
     try:
-        data = s.loads(token, max_age=SESSION_MAX_AGE)
-        # Legacy migration: old tokens only had {"user": "username"}
-        if "user" in data and "user_id" not in data:
-            return {
-                "user_id": "legacy",
-                "username": data["user"],
-                "role": "admin",
-            }
-        if "user_id" in data and "username" in data and "role" in data:
-            session: dict | None = data
-            return session
+        payload = _SessionPayload.model_validate(s.loads(token, max_age=SESSION_MAX_AGE))
+    except (BadSignature, SignatureExpired, ValidationError):
         return None
-    except (BadSignature, SignatureExpired):
-        return None
+    if payload.user_id and payload.username and payload.role:
+        return SessionUser(user_id=payload.user_id, username=payload.username, role=payload.role)
+    if payload.user:
+        return SessionUser(user_id=LEGACY_USER_ID, username=payload.user, role=UserRole.ADMIN)
+    return None
 
 
 def set_session_cookie(response: Response, token: str) -> None:

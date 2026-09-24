@@ -1,10 +1,18 @@
 """Anthropic (Claude) LLM provider implementation."""
 
-from typing import Any, cast
+from anthropic import AnthropicError, AsyncAnthropic
+from anthropic.types import ToolParam
 
-from anthropic import AsyncAnthropic
+from arrmate.core.models import Intent
 
 from .base import BaseLLMProvider, ConversationalReply
+from .schemas import ToolSchema
+
+
+def _anthropic_tool(tool: ToolSchema) -> ToolParam:
+    return ToolParam(
+        name=tool.name, description=tool.description, input_schema=dict(tool.parameters)
+    )
 
 
 class AnthropicProvider(BaseLLMProvider):
@@ -29,47 +37,21 @@ class AnthropicProvider(BaseLLMProvider):
         return True
 
     async def parse_command(
-        self, user_input: str, tools: list[dict[str, Any]], system_prompt: str
-    ) -> dict[str, Any]:
-        """Parse command using Claude with tool use.
-
-        Args:
-            user_input: User's natural language command
-            tools: Tool schemas for tool use
-            system_prompt: System prompt
-
-        Returns:
-            Parsed parameters from tool use
-
-        Raises:
-            ValueError: If parsing fails
-        """
+        self, user_input: str, tools: list[ToolSchema], system_prompt: str
+    ) -> Intent:
+        """Parse command using Claude with tool use."""
         try:
-            # Anthropic tool format
-            anthropic_tools = [
-                {
-                    "name": tool["name"],
-                    "description": tool["description"],
-                    "input_schema": tool["parameters"],
-                }
-                for tool in tools
-            ]
-
             response = await self.client.messages.create(
                 model=self.model or "claude-3-5-sonnet-20241022",
                 max_tokens=1024,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_input}],
-                tools=cast("list[Any]", anthropic_tools),
+                tools=[_anthropic_tool(tool) for tool in tools],
             )
 
-            # Extract tool use from response
-            tool_use_block = None
-            for block in response.content:
-                if block.type == "tool_use":
-                    tool_use_block = block
-                    break
-
+            tool_use_block = next(
+                (block for block in response.content if block.type == "tool_use"), None
+            )
             if not tool_use_block:
                 prose = "".join(
                     block.text for block in response.content if block.type == "text"
@@ -78,16 +60,9 @@ class AnthropicProvider(BaseLLMProvider):
                     raise ConversationalReply(prose)
                 raise ValueError("Claude did not use the parse_media_command tool")
 
-            function_args = tool_use_block.input
+            return Intent.model_validate(tool_use_block.input)
 
-            if not function_args:
-                raise ValueError("No input returned from tool use")
-
-            return function_args
-
-        except ConversationalReply:
-            raise
-        except Exception as e:
+        except (AnthropicError, ValueError) as e:
             raise ValueError(f"Failed to parse command with Anthropic: {e!s}") from e
 
     async def close(self) -> None:

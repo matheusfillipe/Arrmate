@@ -2,8 +2,9 @@
 
 import pytest
 
-from arrmate.agent.deps import ROLE_ADMIN, ROLE_USER, AgentDeps
+from arrmate.agent.deps import AgentDeps
 from arrmate.agent.mcp_toolsets import _build_processor, build_mcp_toolsets
+from arrmate.auth.models import UserRole
 from arrmate.config.settings import MCPServerConfig, settings
 
 
@@ -25,7 +26,7 @@ async def test_read_call_allowed_for_plain_user():
         return "ok"
 
     process = _build_processor(_server())
-    ctx = _Ctx(AgentDeps(user_id="1", username="matheus", role=ROLE_USER))
+    ctx = _Ctx(AgentDeps(user_id="1", username="matheus", role=UserRole.USER))
 
     result = await process(ctx, call_tool, "list_games", {"platform": "ps4"})
 
@@ -39,7 +40,7 @@ async def test_oversized_result_is_compacted():
         return {"planned": [{"path": f"/disc/file{i}"} for i in range(16000)]}
 
     process = _build_processor(_server())
-    ctx = _Ctx(AgentDeps(user_id="1", username="matheus", role=ROLE_USER))
+    ctx = _Ctx(AgentDeps(user_id="1", username="matheus", role=UserRole.USER))
 
     result = await process(ctx, call_tool, "install_rom", {"sources": ["/disc"]})
 
@@ -53,10 +54,10 @@ async def test_apply_call_refused_for_plain_user():
         raise AssertionError("tool ran despite the role gate")
 
     process = _build_processor(_server())
-    ctx = _Ctx(AgentDeps(user_id="1", username="matheus", role=ROLE_USER))
+    ctx = _Ctx(AgentDeps(user_id="1", username="matheus", role=UserRole.USER))
 
     result = await process(ctx, call_tool, "cleanup_sources", {"path": "/data", "apply": True})
-    assert result["error"] == "permission-denied"
+    assert result.error == "permission-denied"
 
 
 @pytest.mark.asyncio
@@ -65,7 +66,7 @@ async def test_apply_call_allowed_for_admin():
         return "deleted"
 
     process = _build_processor(_server())
-    ctx = _Ctx(AgentDeps(user_id="1", username="matheus", role=ROLE_ADMIN))
+    ctx = _Ctx(AgentDeps(user_id="1", username="matheus", role=UserRole.ADMIN))
 
     assert "deleted" in await process(ctx, call_tool, "cleanup_sources", {"apply": True})
 
@@ -78,7 +79,7 @@ async def test_request_id_injected_and_can_be_disabled():
         seen.append(args)
         return "ok"
 
-    ctx = _Ctx(AgentDeps(user_id="1", username="matheus", role=ROLE_ADMIN))
+    ctx = _Ctx(AgentDeps(user_id="1", username="matheus", role=UserRole.ADMIN))
 
     await _build_processor(_server())(ctx, call_tool, "list_games", {})
     assert len(seen[0]["request_id"]) == 12
@@ -93,7 +94,7 @@ async def test_failure_is_logged_and_reraised():
         raise TimeoutError("server gone")
 
     process = _build_processor(_server())
-    ctx = _Ctx(AgentDeps(user_id="1", username="matheus", role=ROLE_ADMIN))
+    ctx = _Ctx(AgentDeps(user_id="1", username="matheus", role=UserRole.ADMIN))
 
     with pytest.raises(TimeoutError):
         await process(ctx, call_tool, "list_games", {})

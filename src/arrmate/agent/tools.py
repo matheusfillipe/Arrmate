@@ -10,11 +10,11 @@ explicit marker) so a 2000-series library cannot blow the context window.
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Any
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Any, Literal, TypeAlias
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 from pydantic_ai import Agent, RunContext
 
 from arrmate.clients.discovery import discover_services
@@ -60,15 +60,46 @@ _DATA_OPEN = "<<<TOOL_DATA"
 _DATA_CLOSE = "TOOL_DATA>>>"
 
 
-def _compact(value: Any) -> Any:
+#: Anything a tool may hand back: models, JSON, or containers of either. Recursive aliases
+#: need the string form until the project targets Python 3.12.
+ToolPayload: TypeAlias = (
+    "BaseModel | str | int | float | bool"
+    " | Sequence[ToolPayload] | Mapping[str, ToolPayload] | None"
+)
+
+ToolErrorCode = Literal[
+    "permission-denied",
+    "not-configured",
+    "tool-failed",
+    "no-search",
+    "bad-index",
+    "bad-arguments",
+    "playbook-failed",
+]
+
+
+class ToolError(BaseModel):
+    """A failure the model can read and act on, in place of the tool's normal result."""
+
+    error: ToolErrorCode
+    detail: str
+
+
+def _is_empty(value: ToolPayload) -> bool:
+    return value is None or (isinstance(value, str | Sequence | Mapping) and len(value) == 0)
+
+
+def _compact(value: ToolPayload) -> JsonValue:
     """Strip nulls/empties and truncate arrays/strings for model consumption."""
     if isinstance(value, BaseModel):
         return _compact(value.model_dump(mode="json"))
-    if isinstance(value, dict):
-        cleaned = {k: _compact(v) for k, v in value.items() if v not in (None, "", [], {})}
+    if isinstance(value, str):
+        return value[:_MAX_STR_LEN] + "…" if len(value) > _MAX_STR_LEN else value
+    if isinstance(value, Mapping):
+        cleaned = {str(k): _compact(v) for k, v in value.items() if not _is_empty(v)}
         return cleaned or None
-    if isinstance(value, list):
-        items = [_compact(v) for v in value if v not in (None, "", [], {})]
+    if isinstance(value, Sequence):
+        items = [_compact(v) for v in value if not _is_empty(v)]
         if len(items) > _MAX_LIST_ITEMS:
             total = len(items)
             items = items[:_MAX_LIST_ITEMS]
@@ -78,26 +109,24 @@ def _compact(value: Any) -> Any:
                 "repeating the call with guessed terms will not reveal them."
             )
         return items
-    if isinstance(value, str) and len(value) > _MAX_STR_LEN:
-        return value[:_MAX_STR_LEN] + "…"
     return value
 
 
-def _wrap(value: Any) -> str:
+def _wrap(value: ToolPayload) -> str:
     return f"{_DATA_OPEN}\n{json.dumps(_compact(value), default=str)}\n{_DATA_CLOSE}"
 
 
-async def _safe(body: Callable[[], Awaitable[Any]]) -> str:
+async def _safe(body: Callable[[], Awaitable[ToolPayload]]) -> str:
     """Run a tool body, converting expected errors into model-readable text."""
     try:
         return _wrap(await body())
     except PermissionError as e:
-        return _wrap({"error": "permission-denied", "detail": str(e)})
+        return _wrap(ToolError(error="permission-denied", detail=str(e)))
     except ValueError as e:
-        return _wrap({"error": "not-configured", "detail": str(e)})
+        return _wrap(ToolError(error="not-configured", detail=str(e)))
     except (httpx.HTTPError, KeyError, AttributeError, TypeError) as e:
         logger.warning("agent tool failed: %s: %s", type(e).__name__, e)
-        return _wrap({"error": "tool-failed", "detail": str(e)[:200]})
+        return _wrap(ToolError(error="tool-failed", detail=str(e)[:200]))
 
 
 def register_tools(agent: Agent[AgentDeps, str]) -> None:

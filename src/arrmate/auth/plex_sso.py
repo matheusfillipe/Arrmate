@@ -21,15 +21,20 @@ Security notes:
 
 import hashlib
 import logging
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import Request
 from fastapi.responses import Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from pydantic import TypeAdapter, ValidationError
 
+from .models import PlexAccount, PlexPin, PlexState
 from .session import _COOKIE_SECURE
 
 logger = logging.getLogger(__name__)
+
+_FRIENDS = TypeAdapter(list[PlexAccount])
 
 PLEX_TV_API = "https://plex.tv/api/v2"
 PLEX_APP_AUTH = "https://app.plex.tv/auth"
@@ -74,8 +79,8 @@ async def request_pin(client_id: str) -> tuple[int, str]:
             json={"strong": True},
         )
         resp.raise_for_status()
-        data = resp.json()
-        return int(data["id"]), str(data["code"])
+        pin = PlexPin.model_validate(resp.json())
+        return pin.id, pin.code
 
 
 async def validate_pin(pin_id: int, client_id: str) -> str | None:
@@ -91,15 +96,12 @@ async def validate_pin(pin_id: int, client_id: str) -> str | None:
             headers={**_PLEX_HEADERS, "X-Plex-Client-Identifier": client_id},
         )
         resp.raise_for_status()
-        data = resp.json()
-        token = data.get("authToken")
-        return str(token) if token else None
+        return PlexPin.model_validate(resp.json()).auth_token or None
 
 
-async def get_plex_user(auth_token: str) -> dict:
+async def get_plex_user(auth_token: str) -> PlexAccount:
     """Fetch the Plex user profile for the given authToken.
 
-    The returned dict always contains at least: uuid (str), username (str).
     Raises httpx.HTTPStatusError on failure.
 
     IMPORTANT: The caller must not persist auth_token after this call.
@@ -113,8 +115,7 @@ async def get_plex_user(auth_token: str) -> dict:
             },
         )
         resp.raise_for_status()
-        user: dict = resp.json()
-        return user
+        return PlexAccount.model_validate(resp.json())
 
 
 # ── Auth URL builder ─────────────────────────────────────────────────────────
@@ -126,8 +127,6 @@ def build_plex_auth_url(client_id: str, code: str, forward_url: str) -> str:
     The browser is redirected here so the user can log in and authorise
     Arrmate.  Plex will redirect them back to forward_url when done.
     """
-    from urllib.parse import urlencode
-
     params = urlencode(
         {
             "clientID": client_id,
@@ -156,7 +155,7 @@ def set_plex_state_cookie(
     isolated from session tokens signed with the same secret key.
     """
     s = URLSafeTimedSerializer(secret_key, salt="plex-sso-state")
-    value = s.dumps({"pin_id": pin_id, "next": next_url})
+    value = s.dumps(PlexState(pin_id=pin_id, next=next_url).model_dump())
     response.set_cookie(
         PLEX_STATE_COOKIE,
         value,
@@ -181,10 +180,10 @@ def get_plex_state(
         return None
     s = URLSafeTimedSerializer(secret_key, salt="plex-sso-state")
     try:
-        data = s.loads(token, max_age=PLEX_STATE_MAX_AGE)
-        return int(data["pin_id"]), str(data["next"])
-    except (BadSignature, SignatureExpired, KeyError, ValueError, TypeError):
+        state = PlexState.model_validate(s.loads(token, max_age=PLEX_STATE_MAX_AGE))
+    except (BadSignature, SignatureExpired, ValidationError):
         return None
+    return state.pin_id, state.next
 
 
 def clear_plex_state_cookie(response: Response) -> None:
@@ -207,15 +206,13 @@ async def get_plex_friend_uuids(server_token: str, client_id: str) -> set[str]:
         "X-Plex-Token": server_token,
         "X-Plex-Client-Identifier": client_id,
     }
-    uuids: set[str] = set()
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(f"{PLEX_TV_API}/friends", headers=headers)
-            if resp.status_code == 200:
-                for friend in resp.json():
-                    uid = friend.get("uuid") or friend.get("id")
-                    if uid:
-                        uuids.add(str(uid))
-    except httpx.HTTPError:
+        if resp.status_code != 200:
+            return set()
+        friends = _FRIENDS.validate_python(resp.json())
+    except (httpx.HTTPError, ValidationError):
         logger.debug("friend list unavailable", exc_info=True)
-    return uuids
+        return set()
+    return {identity for friend in friends if (identity := friend.identity)}

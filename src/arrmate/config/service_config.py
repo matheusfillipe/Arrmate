@@ -10,13 +10,13 @@ When the UI saves a value it is applied to the running settings object immediate
 (no restart needed) AND written to services.json so it survives restarts.
 """
 
-import json
 import logging
 import os
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import pydantic
+from pydantic import JsonValue, TypeAdapter
 
 from arrmate.config.settings import settings
 
@@ -85,19 +85,25 @@ CONFIGURABLE_FIELDS: set[str] = {
 }
 
 
-def _config_path() -> Path:
+_BOOL_FIELDS = {"plex_sso_enabled", "plex_sso_require_approval", "plex_sso_verify_plex_friends"}
 
+ConfigValue = str | bool | None
+
+#: services.json holds the configurable fields plus `media_instances`, so it stays plain JSON.
+_SAVED_CONFIG = TypeAdapter(dict[str, JsonValue])
+
+
+def _config_path() -> Path:
     return Path(settings.auth_data_dir) / "services.json"
 
 
-def _load_json() -> dict:
+def load_saved_config() -> dict[str, JsonValue]:
     path = _config_path()
     if path.exists():
         try:
-            data: dict[str, Any] = json.loads(path.read_text())
-            return data
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning(f"Could not read services.json: {e}")
+            return _SAVED_CONFIG.validate_json(path.read_text())
+        except (pydantic.ValidationError, OSError) as e:
+            logger.warning("Could not read services.json: %s", e)
     return {}
 
 
@@ -107,7 +113,7 @@ def apply_saved_config() -> None:
     Call once at startup, after Pydantic has already loaded env vars.
     """
 
-    saved = _load_json()
+    saved = load_saved_config()
     for key, value in saved.items():
         if key not in CONFIGURABLE_FIELDS or not hasattr(settings, key):
             continue
@@ -119,31 +125,28 @@ def apply_saved_config() -> None:
                 logger.debug("setting %s rejected update", key)
 
 
-def save_service_config(updates: dict[str, Any]) -> None:
-    """Persist updates to services.json and apply them to settings in memory.
+def _normalize(key: str, value: str) -> ConfigValue:
+    """Checkboxes post "on" when checked; an empty text field clears its setting."""
+    if key in _BOOL_FIELDS:
+        return value in ("on", "true", "1")
+    return value.strip() or None
 
-    Empty strings are treated as None (field cleared).
+
+def save_service_config(updates: Mapping[str, str]) -> None:
+    """Persist form values to services.json and apply them to settings in memory.
+
+    A checkbox missing from the form is unchecked, so its setting is cleared.
     """
 
     path = _config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Bool fields in the set — checkboxes send "on" when checked, absent when unchecked.
-    # We handle them separately so unchecked boxes (missing from form) can be cleared.
-    _BOOL_FIELDS = {"plex_sso_enabled", "plex_sso_require_approval", "plex_sso_verify_plex_friends"}
+    existing = load_saved_config()
 
-    existing = _load_json()
-
-    # First pass: explicit values from form
     for key, value in updates.items():
         if key not in CONFIGURABLE_FIELDS:
             continue
-        if key in _BOOL_FIELDS:
-            normalized: Any = value in ("on", "true", "1", True)
-        else:
-            normalized = value.strip() if isinstance(value, str) else value
-            if not normalized:
-                normalized = None
+        normalized = _normalize(key, value)
         existing[key] = normalized
         if hasattr(settings, key):
             try:
@@ -151,7 +154,6 @@ def save_service_config(updates: dict[str, Any]) -> None:
             except pydantic.ValidationError:
                 logger.debug("setting %s rejected update", key)
 
-    # Second pass: bool fields absent from form → False (unchecked checkbox)
     for key in _BOOL_FIELDS:
         if key in CONFIGURABLE_FIELDS and key not in updates:
             existing[key] = False
@@ -161,11 +163,11 @@ def save_service_config(updates: dict[str, Any]) -> None:
                 except pydantic.ValidationError:
                     logger.debug("setting %s rejected update", key)
 
-    path.write_text(json.dumps(existing, indent=2))
+    path.write_bytes(_SAVED_CONFIG.dump_json(existing, indent=2))
     os.chmod(path, 0o600)
 
 
-def get_service_config() -> dict[str, Any]:
+def get_service_config() -> dict[str, ConfigValue]:
     """Return current settings values for all configurable fields."""
 
     return {field: getattr(settings, field, None) for field in CONFIGURABLE_FIELDS}

@@ -2,6 +2,8 @@
 
 import contextlib
 
+from arrmate.auth.models import RequestStatus, RequestType
+
 from ._shared import (  # noqa: F401
     Form,
     HTMLResponse,
@@ -30,22 +32,12 @@ async def requests_page(request: Request):
     if not current_user:
         return RedirectResponse(url="/web/login", status_code=303)
 
-    role = current_user.get("role", "user")
-    if role in ("admin", "power_user"):
+    if current_user.can_write:
         all_requests = user_db.list_requests()
-        # Enrich with usernames
-        users = {u["id"]: u["username"] for u in user_db.list_users()}
-        for req in all_requests:
-            req["requester_name"] = users.get(req["requested_by"], "Unknown")
-            if req.get("resolved_by"):
-                req["resolver_name"] = users.get(req["resolved_by"], "Unknown")
-            else:
-                req["resolver_name"] = None
+        user_names = {u.id: u.username for u in user_db.list_users()}
     else:
-        all_requests = user_db.list_requests(user_id=current_user["user_id"])
-        for req in all_requests:
-            req["requester_name"] = current_user["username"]
-            req["resolver_name"] = None
+        all_requests = user_db.list_requests(user_id=current_user.user_id)
+        user_names = {current_user.user_id: current_user.username}
 
     return templates.TemplateResponse(
         request,
@@ -53,6 +45,7 @@ async def requests_page(request: Request):
         {
             **_base_ctx(request),
             "requests": all_requests,
+            "user_names": user_names,
             "current_user": current_user,
         },
     )
@@ -62,7 +55,7 @@ async def requests_page(request: Request):
 async def new_request(
     request: Request,
     title: str = Form(...),
-    request_type: str = Form(default="media"),
+    request_type: RequestType = Form(default=RequestType.MEDIA),
     details: str = Form(default=""),
     media_type: str = Form(default=""),
 ):
@@ -73,7 +66,7 @@ async def new_request(
 
     req = user_db.create_request(
         request_type=request_type,
-        user_id=current_user["user_id"],
+        user_id=current_user.user_id,
         title=title,
         details=details,
         media_type=media_type,
@@ -98,19 +91,19 @@ async def new_request(
 async def resolve_request(
     request: Request,
     req_id: str,
-    status: str = Form(...),
+    status: RequestStatus = Form(...),
     notes: str = Form(default=""),
 ):
     """Approve, complete, or reject a request — admin/power_user only."""
     current_user = get_current_user(request)
-    if not current_user or current_user.get("role") not in ("admin", "power_user"):
+    if not current_user or not current_user.can_write:
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     req = user_db.get_request(req_id)
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
 
-    user_db.update_request(req_id, status=status, resolved_by=current_user["user_id"], notes=notes)
+    user_db.update_request(req_id, status=status, resolved_by=current_user.user_id, notes=notes)
     updated_req = user_db.get_request(req_id)
     if updated_req:
         try:
@@ -141,14 +134,14 @@ async def notifications_panel(request: Request):
         return RedirectResponse(url="/web/", status_code=303)
 
     current_user = get_current_user(request)
-    if not current_user or current_user.get("user_id") == "legacy":
+    if not current_user or current_user.is_legacy:
         return templates.TemplateResponse(
             request,
             "partials/notifications_panel.html",
             {"notifications": [], "unread_count": 0},
         )
-    notifications = user_db.get_notifications(current_user["user_id"])
-    unread = sum(1 for n in notifications if not n["read"])
+    notifications = user_db.get_notifications(current_user.user_id)
+    unread = sum(1 for n in notifications if not n.read)
     return templates.TemplateResponse(
         request,
         "partials/notifications_panel.html",
@@ -164,9 +157,9 @@ async def notifications_count(request: Request):
     """HTMX partial: just the unread badge count (polled every 30s)."""
     current_user = get_current_user(request)
     unread = 0
-    if current_user and current_user.get("user_id") not in (None, "legacy"):
-        with contextlib.suppress(httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
-            unread = user_db.get_unread_count(current_user["user_id"])
+    if current_user and not current_user.is_legacy:
+        with contextlib.suppress(sqlite3.Error):
+            unread = user_db.get_unread_count(current_user.user_id)
     return templates.TemplateResponse(
         request,
         "partials/notification_count.html",
@@ -178,9 +171,9 @@ async def notifications_count(request: Request):
 async def mark_notifications_read(request: Request):
     """Mark all notifications as read."""
     current_user = get_current_user(request)
-    if current_user and current_user.get("user_id") not in (None, "legacy"):
-        with contextlib.suppress(httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
-            user_db.mark_notifications_read(current_user["user_id"])
+    if current_user and not current_user.is_legacy:
+        with contextlib.suppress(sqlite3.Error):
+            user_db.mark_notifications_read(current_user.user_id)
     return templates.TemplateResponse(
         request,
         "partials/notifications_panel.html",
