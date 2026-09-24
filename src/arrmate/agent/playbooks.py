@@ -14,9 +14,12 @@ import httpx
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 
+from arrmate.clients.base_arr import QueueRecord, Release
 from arrmate.clients.cleanuparr import Event
+from arrmate.clients.listenarr import Release as ListenarrRelease
 from arrmate.clients.qbittorrent import TorrentState
-from arrmate.clients.listenarr import Release
+from arrmate.clients.radarr import RadarrHistoryRecord
+from arrmate.clients.sonarr import SonarrHistoryRecord
 from arrmate.config.settings import settings
 
 from .deps import AgentDeps
@@ -66,7 +69,7 @@ def _search_queries(title: str, author: str) -> list[str]:
     return seen
 
 
-def _rank_releases(results: list[Release], title: str) -> list[Release]:
+def _rank_releases(results: list[ListenarrRelease], title: str) -> list[ListenarrRelease]:
     """Plausible audiobook releases for a title, best first.
 
     Filters the lesson clips and sample files that dominate language-learning
@@ -139,7 +142,7 @@ AuditFlag = Literal["unmanaged", "zero-seeds", "poisoned"]
 class AuditedTorrent(BaseModel):
     hash: str
     name: str
-    state: TorrentState
+    state: TorrentState | str
     size: int
     flags: list[AuditFlag] = []
     malware: PoisonedSwarm | None = None
@@ -162,6 +165,22 @@ def _looks_poisoned(file_names: list[str]) -> PoisonedSwarm | None:
     if len(file_names) == 1 and not file_names[0].lower().endswith(_VIDEO_EXTENSIONS):
         return PoisonedSwarm(reason="single non-video file", files=file_names)
     return None
+
+
+class FamilyCandidate(BaseModel):
+    title: str
+    indexer: str
+    rejections: list[str]
+    seeders: int | None = None
+
+
+def _family_candidate(release: Release) -> FamilyCandidate:
+    return FamilyCandidate(
+        title=release.title,
+        indexer=release.indexer,
+        rejections=release.rejections,
+        seeders=release.seeders,
+    )
 
 
 def _encode_family(release_title: str) -> str:
@@ -281,43 +300,35 @@ def register_playbook_tools(agent: Agent[AgentDeps, str]) -> None:
             }
 
             # 1. History
+            records: list[SonarrHistoryRecord] | list[RadarrHistoryRecord]
             if media_type == "tv":
-                async with ctx.deps.sonarr() as c:
-                    hist = await c.get_episode_history(episode_id) if episode_id else None
-                    if hist is None:
-                        raise ValueError("episode_id is required for TV diagnosis")
-                    records = hist.get("records", [])
+                if not episode_id:
+                    raise ValueError("episode_id is required for TV diagnosis")
+                async with ctx.deps.sonarr() as sonarr_client:
+                    records = (await sonarr_client.get_episode_history(episode_id)).records
             elif media_type == "movie":
-                async with ctx.deps.radarr() as c:
-                    records = (await c.get_movie_history(item_id)).get("records", [])
+                async with ctx.deps.radarr() as radarr_client:
+                    records = (await radarr_client.get_movie_history(item_id)).records
             else:
                 raise ValueError(f"unsupported media_type: {media_type}")
 
-            failures = [
-                r
-                for r in records
-                if r.get("eventType") in ("downloadFailed", "downloadImportFailed")
-            ]
-            grabs = [r for r in records if r.get("eventType") == "grabbed"]
-            download_ids = {r.get("downloadId") for r in failures if r.get("downloadId")}
+            failures = [r for r in records if r.event_type == "downloadFailed"]
+            grabs = [r for r in records if r.event_type == "grabbed"]
+            download_ids = {r.download_id for r in failures if r.download_id}
+            failure_messages = sorted({r.message for r in failures if r.message})
             finding["stats"] = {
                 "grabs": len(grabs),
                 "failures": len(failures),
-                "failureMessages": sorted({r.get("message") for r in failures if r.get("message")}),
+                "failureMessages": failure_messages,
             }
 
             # 2. Classify
             external_strikes = any(
-                any(
-                    m.lower().startswith("manually") or m in _MANUAL_FAIL_MARKERS
-                    for m in [r.get("message", "")]
-                )
-                for r in failures
+                m.lower().startswith("manually") or m in _MANUAL_FAIL_MARKERS
+                for m in failure_messages
             )
-            import_errors = any(r.get("eventType") == "downloadImportFailed" for r in failures)
             finding["classification"] = {
                 "externalStrikeSuspected": external_strikes,
-                "importErrors": import_errors,
                 "meaning": (
                     "external actor (Cleanuparr or a person) marked these failed"
                     if external_strikes
@@ -373,30 +384,23 @@ def register_playbook_tools(agent: Agent[AgentDeps, str]) -> None:
 
             # 5. Interactive search, bucketed by encode family
             if media_type == "movie":
-                async with ctx.deps.radarr() as c:
-                    releases = await c.interactive_search(item_id)
+                async with ctx.deps.radarr() as radarr_client:
+                    releases = await radarr_client.interactive_search(item_id)
             else:
-                async with ctx.deps.sonarr() as c:
-                    releases = await c.interactive_search_episode(episode_id)
+                async with ctx.deps.sonarr() as sonarr_client:
+                    releases = await sonarr_client.interactive_search_episode(episode_id)
 
-            families: dict[str, list[dict]] = {}
-            for r in releases:
-                rej = r.get("rejections") or []
-                entry = {
-                    "guid": r.get("guid"),
-                    "title": r.get("title"),
-                    "indexer": r.get("indexer"),
-                    "seeders": r.get("seeders"),
-                    "rejected": bool(rej),
-                    "rejections": rej,
-                }
-                families.setdefault(_encode_family(r.get("title", "")), []).append(entry)
+            families: dict[str, list[Release]] = {}
+            for release in releases:
+                families.setdefault(_encode_family(release.title), []).append(release)
 
             blocklisted_families = [
-                fam for fam, rel in families.items() if rel and all(x["rejected"] for x in rel)
+                fam for fam, rel in families.items() if rel and all(x.rejections for x in rel)
             ]
             open_families = {
-                fam: rel[:3] for fam, rel in families.items() if any(not x["rejected"] for x in rel)
+                fam: [_family_candidate(x) for x in rel[:3]]
+                for fam, rel in families.items()
+                if any(not x.rejections for x in rel)
             }
             finding["search"] = {
                 "totalReleases": len(releases),
@@ -448,26 +452,15 @@ def register_playbook_tools(agent: Agent[AgentDeps, str]) -> None:
             if not settings.qbittorrent_url:
                 raise ValueError("qBittorrent is not configured")
 
-            managed_hashes: set[str] = set()
-            queue_titles: list[str] = []
+            queue: list[QueueRecord] = []
             if settings.sonarr_url and settings.sonarr_api_key:
-                async with ctx.deps.sonarr() as c:
-                    records = (await c.get_queue(page_size=200)).get("records", [])
-                    for r in records:
-                        if r.get("downloadId"):
-                            managed_hashes.add(r["downloadId"].lower())
-                        t = r.get("title")
-                        if t:
-                            queue_titles.append(t)
+                async with ctx.deps.sonarr() as sonarr_client:
+                    queue.extend((await sonarr_client.get_queue(page_size=200)).records)
             if settings.radarr_url and settings.radarr_api_key:
-                async with ctx.deps.radarr() as c:
-                    records = (await c.get_queue(page_size=200)).get("records", [])
-                    for r in records:
-                        if r.get("downloadId"):
-                            managed_hashes.add(r["downloadId"].lower())
-                        t = r.get("title")
-                        if t:
-                            queue_titles.append(t)
+                async with ctx.deps.radarr() as radarr_client:
+                    queue.extend((await radarr_client.get_queue(page_size=200)).records)
+            managed_hashes = {r.download_id.lower() for r in queue if r.download_id}
+            queue_titles = [r.title for r in queue if r.title]
 
             async with ctx.deps.qbittorrent() as q:
                 torrents = await q.get_torrents()

@@ -1,5 +1,9 @@
 """Web routes: tags."""
 
+from collections import Counter
+
+from pydantic import BaseModel
+
 from ._shared import (  # noqa: F401
     Depends,
     Form,
@@ -17,6 +21,22 @@ from ._shared import (  # noqa: F401
     sqlite3,
     templates,
 )
+
+
+class TagCount(BaseModel):
+    id: int
+    label: str
+    count: int
+
+
+async def _tag_counts(client: SonarrClient | RadarrClient) -> list[TagCount]:
+    """Every tag of the service with the number of library items carrying it."""
+    try:
+        tags = await client.get_tags()
+        usage = Counter(tag_id for item in await client.get_all_items() for tag_id in item.tags)
+    finally:
+        await client.close()
+    return [TagCount(id=tag.id, label=tag.label, count=usage[tag.id]) for tag in tags]
 
 
 @router.get("/tags", response_class=HTMLResponse, dependencies=[Depends(require_power_user)])
@@ -41,40 +61,17 @@ async def tags_list(
     service: str = Query(default="radarr"),
 ):
     """HTMX partial: list tags for a service with item counts."""
-    tags = []
+    tags: list[TagCount] = []
     error = None
     try:
         if service == "sonarr" and settings.sonarr_url and settings.sonarr_api_key:
-            sonarr_client = SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
-            try:
-                raw_tags = await sonarr_client.get_tags()
-                all_series = await sonarr_client.get_all_items()
-                # Build a lookup: tag_id -> count of series using it
-                tag_counts: dict = {}
-                for s in all_series:
-                    for tid in s.get("tags", []):
-                        tag_counts[tid] = tag_counts.get(tid, 0) + 1
-                tags = [
-                    {"id": t["id"], "label": t["label"], "count": tag_counts.get(t["id"], 0)}
-                    for t in raw_tags
-                ]
-            finally:
-                await sonarr_client.close()
+            tags = await _tag_counts(
+                SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
+            )
         elif service == "radarr" and settings.radarr_url and settings.radarr_api_key:
-            radarr_client = RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
-            try:
-                raw_tags = await radarr_client.get_tags()
-                all_movies = await radarr_client.get_all_items()
-                movie_tag_counts: dict = {}
-                for m in all_movies:
-                    for tid in m.get("tags", []):
-                        movie_tag_counts[tid] = movie_tag_counts.get(tid, 0) + 1
-                tags = [
-                    {"id": t["id"], "label": t["label"], "count": movie_tag_counts.get(t["id"], 0)}
-                    for t in raw_tags
-                ]
-            finally:
-                await radarr_client.close()
+            tags = await _tag_counts(
+                RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
+            )
         else:
             error = f"{service.capitalize()} is not configured"
     except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:

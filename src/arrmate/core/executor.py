@@ -1,19 +1,20 @@
 """Intent execution orchestrator."""
 
 import asyncio
+import json
 import logging
-from typing import cast
+from typing import Any, Literal
 
 import httpx
+from pydantic import BaseModel
 
-from arrmate.clients.base_arr import BaseArrClient
-from arrmate.clients.discovery import get_client_for_media_type
-from arrmate.clients.lidarr import LidarrClient
+from arrmate.clients.discovery import ArrClient, get_client_for_media_type
+from arrmate.clients.lidarr import Artist, LidarrClient
 from arrmate.clients.plex import PlexClient
-from arrmate.clients.radarr import RadarrClient
-from arrmate.clients.readarr import ReadarrClient
+from arrmate.clients.radarr import Movie, RadarrClient
+from arrmate.clients.readarr import Author, ReadarrClient
 from arrmate.clients.readmeabook import ReadMeABookClient
-from arrmate.clients.sonarr import SonarrClient
+from arrmate.clients.sonarr import Series, SonarrClient
 from arrmate.clients.transcoder import (
     create_job,
     ffmpeg_available,
@@ -22,11 +23,56 @@ from arrmate.clients.transcoder import (
 )
 from arrmate.config.settings import settings
 
+from .library_service import add_first_artist, add_first_author, add_first_movie, add_first_series
 from .models import ActionType, ExecutionResult, Intent
 
 logger = logging.getLogger(__name__)
 
 _background_tasks: set[asyncio.Task[None]] = set()
+
+_HISTORY_EVENT_LABELS = {
+    "grabbed": "Grabbed",
+    "downloadFolderImported": "Imported",
+    "downloadFailed": "Failed",
+    "episodeFileDeleted": "Deleted",
+    "episodeFileRenamed": "Renamed",
+    "downloadIgnored": "Ignored",
+}
+
+
+class QueueRow(BaseModel):
+    kind: Literal["tv", "movie"]
+    show: str
+    episode: str
+    title: str
+    status: str
+    progress: int
+    eta: str
+    protocol: str
+    quality: str
+
+
+class HistoryRow(BaseModel):
+    kind: Literal["tv", "movie"]
+    show: str
+    episode: str
+    title: str
+    event: str
+    date: str
+    quality: str
+
+
+class WantedRow(BaseModel):
+    kind: Literal["tv", "movie"]
+    show: str
+    episode: str
+    title: str
+    air_date: str
+
+
+def _as_data(record: BaseModel) -> dict[str, Any]:
+    """A service record as the plain dict ``ExecutionResult.data`` and its template read."""
+    return record.model_dump(mode="json")
 
 
 class Executor:
@@ -95,28 +141,17 @@ class Executor:
                 errors=[str(e)],
             )
 
-    async def _execute_remove(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
-        """Execute a remove/delete action.
-
-        Args:
-            intent: Intent to execute
-            client: Media client
-
-        Returns:
-            Execution result
-        """
-        if intent.media_type == "tv":
-            return await self._remove_tv_content(intent, cast(SonarrClient, client))
-        if intent.media_type == "movie":
-            return await self._remove_movie(intent, cast(RadarrClient, client))
-        if intent.media_type == "music":
-            return await self._remove_music_content(intent, cast(LidarrClient, client))
-        if intent.media_type in ("audiobook", "book"):
-            return await self._remove_book_content(intent, cast(ReadarrClient, client))
-        return ExecutionResult(
-            success=False,
-            message=f"Remove not yet implemented for {intent.media_type}",
-        )
+    async def _execute_remove(self, intent: Intent, client: ArrClient) -> ExecutionResult:
+        """Execute a remove/delete action."""
+        match client:
+            case SonarrClient():
+                return await self._remove_tv_content(intent, client)
+            case RadarrClient():
+                return await self._remove_movie(intent, client)
+            case LidarrClient():
+                return await self._remove_music_content(intent, client)
+            case ReadarrClient():
+                return await self._remove_book_content(intent, client)
 
     async def _remove_tv_content(self, intent: Intent, client: SonarrClient) -> ExecutionResult:
         """Remove TV show episodes or entire series.
@@ -139,10 +174,7 @@ class Executor:
             # Get all episodes for the series
             all_episodes = await client.get_episodes(intent.series_id, season_number=intent.season)
 
-            # Filter to the requested episodes
-            target_episodes = [
-                ep for ep in all_episodes if ep.get("episodeNumber") in intent.episodes
-            ]
+            target_episodes = [ep for ep in all_episodes if ep.episode_number in intent.episodes]
 
             if not target_episodes:
                 return ExecutionResult(
@@ -150,11 +182,7 @@ class Executor:
                     message=f"Could not find episodes {intent.episodes} in season {intent.season}",
                 )
 
-            # Get the file IDs
-            file_ids = []
-            for ep in target_episodes:
-                if ep.get("episodeFileId"):
-                    file_ids.append(ep["episodeFileId"])
+            file_ids = [ep.episode_file_id for ep in target_episodes if ep.episode_file_id]
 
             if not file_ids:
                 return ExecutionResult(
@@ -178,7 +206,7 @@ class Executor:
         if intent.season is not None:
             all_episodes = await client.get_episodes(intent.series_id, season_number=intent.season)
 
-            file_ids = [ep["episodeFileId"] for ep in all_episodes if ep.get("episodeFileId")]
+            file_ids = [ep.episode_file_id for ep in all_episodes if ep.episode_file_id]
 
             if not file_ids:
                 return ExecutionResult(
@@ -275,21 +303,19 @@ class Executor:
             message=f"Removed author '{intent.title}' and all files",
         )
 
-    async def _execute_upgrade(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
+    async def _execute_upgrade(self, intent: Intent, client: ArrClient) -> ExecutionResult:
         """Execute an upgrade action — search Sonarr/Radarr for a better version.
 
         Routes to episode-, season-, or series-level search depending on specificity.
         """
-        if intent.media_type == "tv" and intent.series_id:
-            sonarr = cast(SonarrClient, client)
+        if isinstance(client, SonarrClient) and intent.series_id:
+            sonarr = client
             if intent.episodes and intent.season is not None:
                 # Specific episode(s): fetch Sonarr episode IDs and run EpisodeSearch
                 all_episodes = await sonarr.get_episodes(
                     intent.series_id, season_number=intent.season
                 )
-                episode_ids = [
-                    ep["id"] for ep in all_episodes if ep.get("episodeNumber") in intent.episodes
-                ]
+                episode_ids = [ep.id for ep in all_episodes if ep.episode_number in intent.episodes]
                 if not episode_ids:
                     ep_str = ", ".join(str(e) for e in intent.episodes)
                     return ExecutionResult(
@@ -321,7 +347,7 @@ class Executor:
                 message=f"Triggered search for '{intent.title}'",
                 data={"task": "SeriesSearch"},
             )
-        if intent.media_type == "movie" and intent.item_id:
+        if isinstance(client, RadarrClient) and intent.item_id:
             await client.trigger_item_search(intent.item_id)
             return ExecutionResult(
                 success=True,
@@ -333,16 +359,8 @@ class Executor:
             message=f"Could not find '{intent.title}' in library to upgrade",
         )
 
-    async def _execute_search(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
-        """Execute a search action.
-
-        Args:
-            intent: Intent to execute
-            client: Media client
-
-        Returns:
-            Execution result
-        """
+    async def _execute_search(self, intent: Intent, client: ArrClient) -> ExecutionResult:
+        """Execute a search action."""
         # For items already in library, trigger a search
         if intent.series_id and intent.media_type == "tv":
             await client.trigger_item_search(intent.series_id)
@@ -373,292 +391,107 @@ class Executor:
                 data={"task": "AuthorSearch"},
             )
         if intent.keywords and not intent.title:
-            # Topic/thematic search — search each keyword and deduplicate
-            seen: set = set()
-            all_results: list = []
+            # Topic/thematic search: one match found by several keywords is listed once.
+            topic_results: dict[str, dict[str, Any]] = {}
             for kw in intent.keywords[:4]:
-                kw_results = await client.search(kw)
-                for item in kw_results:
-                    uid = item.get("tmdbId") or item.get("tvdbId") or item.get("title", "")
-                    if uid and uid not in seen:
-                        seen.add(uid)
-                        all_results.append(item)
+                for found in await client.search(kw):
+                    data = _as_data(found)
+                    topic_results.setdefault(json.dumps(data, sort_keys=True), data)
             topic = ", ".join(intent.keywords[:2])
             return ExecutionResult(
                 success=True,
-                message=f"Found {len(all_results)} result(s) for topic '{topic}'",
-                data={"results": all_results[:10]},
+                message=f"Found {len(topic_results)} result(s) for topic '{topic}'",
+                data={"results": list(topic_results.values())[:10]},
             )
         # Search external sources by title
         results = await client.search(intent.title or "")
         return ExecutionResult(
             success=True,
             message=f"Found {len(results)} result(s) for '{intent.title}'",
-            data={"results": results[:5]},  # Limit to 5 results
+            data={"results": [_as_data(found) for found in results[:5]]},
         )
 
-    async def _execute_add(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
-        """Execute an add action.
-
-        Args:
-            intent: Intent to execute
-            client: Media client
-
-        Returns:
-            Execution result
-        """
+    async def _execute_add(self, intent: Intent, client: ArrClient) -> ExecutionResult:
+        """Execute an add action."""
         # If the item is already in the library, route to upgrade/search instead
         if intent.series_id and intent.media_type == "tv":
             return await self._execute_upgrade(intent, client)
         if intent.item_id and intent.media_type == "movie":
             return await self._execute_upgrade(intent, client)
 
-        # Get quality profiles and root folders
-        profiles = await client.get_quality_profiles()
-        root_folders = await client.get_root_folders()
-
-        if not profiles or not root_folders:
-            return ExecutionResult(
-                success=False,
-                message="No quality profiles or root folders configured",
-            )
-
-        # Use first available profile and root folder
-        profile_id = profiles[0]["id"]
-        root_folder = root_folders[0]["path"]
-
-        if intent.media_type == "tv":
-            # Use tvdbId for exact lookup when available (set by intent engine), otherwise title
-            search_term = (
-                f"tvdb:{intent.item_id}"
-                if intent.item_id and not intent.series_id
-                else (intent.title or "")
-            )
-            results = await client.search(search_term)
-            if not results:
-                return ExecutionResult(
-                    success=False,
-                    message=f"Could not find '{intent.title}' to add",
-                )
-
-            # Add the first result using full lookup object so all required fields are present
-            show = results[0]
+        # Prefer ReadMeABook (request workflow) if configured; fall back to Readarr
+        if (
+            intent.media_type in ("audiobook", "book")
+            and settings.readmeabook_url
+            and settings.readmeabook_api_key
+        ):
+            rmab = ReadMeABookClient(settings.readmeabook_url, settings.readmeabook_api_key)
             try:
-                added = await cast(SonarrClient, client).add_series_from_lookup(
-                    lookup_result=show,
-                    quality_profile_id=profile_id,
-                    root_folder_path=root_folder,
-                )
-            except (httpx.HTTPError, KeyError, ValueError) as add_err:
-                msg = _extract_arr_error(add_err)
-                if "already" in msg.lower():
+                catalogue = await rmab.search(intent.title or "")
+                if not catalogue:
                     return ExecutionResult(
                         success=False,
-                        message=f"'{show['title']}' is already in your library",
+                        message=f"Could not find '{intent.title}' in ReadMeABook",
                     )
-                raise
-
-            return ExecutionResult(
-                success=True,
-                message=f"Added '{show['title']}' to library",
-                data=added,
-            )
-
-        if intent.media_type == "movie":
-            # Search for the movie first
-            results = await client.search(intent.title or "")
-            if not results:
-                return ExecutionResult(
-                    success=False,
-                    message=f"Could not find '{intent.title}' to add",
-                )
-
-            # Add the first result
-            movie = results[0]
-            try:
-                added = await cast(RadarrClient, client).add_movie(
-                    tmdb_id=movie["tmdbId"],
-                    title=movie["title"],
-                    quality_profile_id=profile_id,
-                    root_folder_path=root_folder,
-                )
-            except (httpx.HTTPError, KeyError, ValueError) as add_err:
-                msg = _extract_arr_error(add_err)
-                if "already" in msg.lower():
+                book = catalogue[0]
+                existing = await rmab.get_requests()
+                if any(r.matches(book.asin, book.title) for r in existing):
                     return ExecutionResult(
                         success=False,
-                        message=f"'{movie['title']}' is already in your library",
+                        message=f"'{book.title}' has already been requested",
                     )
-                raise
-
-            return ExecutionResult(
-                success=True,
-                message=f"Added '{movie['title']}' to library",
-                data=added,
-            )
-
-        if intent.media_type == "music":
-            lidarr = cast(LidarrClient, client)
-            artists = await lidarr.lookup_artists(intent.title or "")
-            if not artists:
-                return ExecutionResult(
-                    success=False,
-                    message=f"Could not find '{intent.title}' to add",
-                )
-
-            artist = artists[0]
-            lidarr_profiles = await lidarr.get_metadata_profiles()
-            metadata_profile_id = lidarr_profiles[0].id if lidarr_profiles else 1
-            try:
-                added_artist = await lidarr.add_artist(
-                    foreign_artist_id=artist.foreign_artist_id,
-                    artist_name=artist.artist_name,
-                    quality_profile_id=profile_id,
-                    metadata_profile_id=metadata_profile_id,
-                    root_folder_path=root_folder,
-                )
-            except (httpx.HTTPError, KeyError, ValueError) as add_err:
-                msg = _extract_arr_error(add_err)
-                if "already" in msg.lower():
-                    return ExecutionResult(
-                        success=False,
-                        message=f"'{artist.artist_name}' is already in your library",
-                    )
-                raise
-
-            return ExecutionResult(
-                success=True,
-                message=f"Added '{artist.artist_name}' to library",
-                data=added_artist.model_dump(by_alias=True),
-            )
-
-        if intent.media_type in ("audiobook", "book"):
-            # Prefer ReadMeABook (request workflow) if configured; fall back to Readarr
-            if settings.readmeabook_url and settings.readmeabook_api_key:
-                rmab = ReadMeABookClient(settings.readmeabook_url, settings.readmeabook_api_key)
-                try:
-                    catalogue = await rmab.search(intent.title or "")
-                    if not catalogue:
-                        return ExecutionResult(
-                            success=False,
-                            message=f"Could not find '{intent.title}' in ReadMeABook",
-                        )
-                    book = catalogue[0]
-
-                    existing = await rmab.get_requests()
-                    if any(r.matches(book.asin, book.title) for r in existing):
-                        return ExecutionResult(
-                            success=False,
-                            message=f"'{book.title}' has already been requested",
-                        )
-
-                    await rmab.create_request(asin=book.asin, title=book.title, author=book.author)
-                    return ExecutionResult(
-                        success=True,
-                        message=f"Requested '{book.title}' via ReadMeABook",
-                    )
-                finally:
-                    await rmab.close()
-
-            else:
-                # Readarr fallback
-                results = await client.search(intent.title or "")
-                if not results:
-                    return ExecutionResult(
-                        success=False,
-                        message=f"Could not find '{intent.title}' to add",
-                    )
-                author = results[0]
-                metadata_profiles = await cast(ReadarrClient, client).get_metadata_profiles()
-                metadata_profile_id = metadata_profiles[0]["id"] if metadata_profiles else 1
-                try:
-                    added = await cast(ReadarrClient, client).add_author(
-                        foreign_author_id=author["foreignAuthorId"],
-                        author_name=author.get("authorName", intent.title or ""),
-                        quality_profile_id=profile_id,
-                        metadata_profile_id=metadata_profile_id,
-                        root_folder_path=root_folder,
-                    )
-                except Exception as add_err:
-                    msg = _extract_arr_error(add_err)
-                    if "already" in msg.lower():
-                        return ExecutionResult(
-                            success=False,
-                            message=(
-                                f"'{author.get('authorName', intent.title)}' is already in library"
-                            ),
-                        )
-                    raise
+                await rmab.create_request(asin=book.asin, title=book.title, author=book.author)
                 return ExecutionResult(
                     success=True,
-                    message=f"Added '{author.get('authorName', intent.title)}' to library",
-                    data=added,
+                    message=f"Requested '{book.title}' via ReadMeABook",
                 )
+            finally:
+                await rmab.close()
 
-        else:
-            return ExecutionResult(
-                success=False,
-                message=f"Add not yet implemented for {intent.media_type}",
-            )
-
-    async def _execute_list(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
-        """Execute a list action.
-
-        Args:
-            intent: Intent to execute
-            client: Media client
-
-        Returns:
-            Execution result
-        """
-        if intent.media_type == "tv":
-            items = await client.get_all_items()
-            titles = [item["title"] for item in items]
-            return ExecutionResult(
-                success=True,
-                message=f"Found {len(items)} TV show(s)",
-                data={"titles": titles, "count": len(items)},
-            )
-        if intent.media_type == "movie":
-            items = await client.get_all_items()
-            titles = [item["title"] for item in items]
-            return ExecutionResult(
-                success=True,
-                message=f"Found {len(items)} movie(s)",
-                data={"titles": titles, "count": len(items)},
-            )
-        if intent.media_type == "music":
-            items = await client.get_all_items()
-            titles = [item.get("artistName", item.get("title", "Unknown")) for item in items]
-            return ExecutionResult(
-                success=True,
-                message=f"Found {len(items)} artist(s)",
-                data={"titles": titles, "count": len(items)},
-            )
-        if intent.media_type in ("audiobook", "book"):
-            logger.warning("Using deprecated Readarr client for listing")
-            items = await client.get_all_items()
-            titles = [item.get("authorName", item.get("title", "Unknown")) for item in items]
-            return ExecutionResult(
-                success=True,
-                message=f"Found {len(items)} author(s)",
-                data={"titles": titles, "count": len(items)},
-            )
+        title = intent.title or ""
+        added: Series | Movie | Author | Artist
+        try:
+            match client:
+                case SonarrClient():
+                    # The intent engine leaves the TVDB id of a lookup match in item_id.
+                    term = f"tvdb:{intent.item_id}" if intent.item_id else title
+                    added = await add_first_series(client, term)
+                case RadarrClient():
+                    added = await add_first_movie(client, title)
+                case LidarrClient():
+                    added = await add_first_artist(client, title)
+                case ReadarrClient():
+                    added = await add_first_author(client, title)
+        except ValueError as not_addable:
+            return ExecutionResult(success=False, message=f"Could not add '{title}': {not_addable}")
+        except httpx.HTTPError as add_err:
+            if "already" in _extract_arr_error(add_err).lower():
+                return ExecutionResult(
+                    success=False, message=f"'{title}' is already in your library"
+                )
+            raise
         return ExecutionResult(
-            success=False,
-            message=f"List not yet implemented for {intent.media_type}",
+            success=True,
+            message=f"Added '{added.title}' to library",
+            data=_as_data(added),
         )
 
-    async def _execute_info(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
-        """Execute an info action.
+    async def _execute_list(self, intent: Intent, client: ArrClient) -> ExecutionResult:
+        """Execute a list action."""
+        titles = [item.title for item in await client.get_all_items()]
+        noun = {
+            "tv": "TV show(s)",
+            "movie": "movie(s)",
+            "music": "artist(s)",
+        }.get(intent.media_type or "", "author(s)")
+        return ExecutionResult(
+            success=True,
+            message=f"Found {len(titles)} {noun}",
+            data={"titles": titles, "count": len(titles)},
+        )
 
-        Args:
-            intent: Intent to execute
-            client: Media client
-
-        Returns:
-            Execution result
-        """
+    async def _execute_info(self, intent: Intent, client: ArrClient) -> ExecutionResult:
+        """Execute an info action."""
         if not intent.item_id:
             return ExecutionResult(
                 success=False,
@@ -670,7 +503,7 @@ class Executor:
         return ExecutionResult(
             success=True,
             message=f"Details for '{intent.title}'",
-            data=item,
+            data=_as_data(item),
         )
 
     async def _execute_transcode(self, intent: Intent) -> ExecutionResult:
@@ -795,76 +628,64 @@ class Executor:
 
     async def _execute_queue(self, intent: Intent) -> ExecutionResult:
         """Show what is currently downloading in Sonarr and/or Radarr."""
-        items: list[dict] = []
+        rows: list[QueueRow] = []
         sources: list[str] = []
 
-        if intent.media_type in ("tv", "tv_show") or (
-            intent.media_type == "tv" and settings.sonarr_url and settings.sonarr_api_key
-        ):
+        if intent.media_type in ("tv", "tv_show"):
+            sonarr = SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
             try:
-                c = SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
-                resp = await c.get_queue()
-                await c.close()
-                for r in resp.get("records") or []:
-                    series = r.get("series") or {}
-                    ep = r.get("episode") or {}
-                    size = r.get("size", 0)
-                    size_left = r.get("sizeleft", 0)
-                    pct = int((size - size_left) / size * 100) if size else 0
-                    eta = r.get("estimatedCompletionTime", "")
-                    items.append(
-                        {
-                            "kind": "tv",
-                            "show": series.get("title", ""),
-                            "episode": (
-                                f"S{ep.get('seasonNumber', 0):02d}E{ep.get('episodeNumber', 0):02d}"
-                            )
-                            if ep
-                            else "",
-                            "title": r.get("title", ""),
-                            "status": r.get("status", ""),
-                            "progress": pct,
-                            "eta": eta[:16] if eta else "",
-                            "protocol": r.get("protocol", ""),
-                            "quality": (r.get("quality") or {}).get("quality", {}).get("name", ""),
-                        }
+                for record in (await sonarr.get_queue()).records:
+                    rows.append(
+                        QueueRow(
+                            kind="tv",
+                            show=record.series.title if record.series else "",
+                            episode=record.episode.label if record.episode else "",
+                            title=record.title or "",
+                            status=record.status or "",
+                            progress=record.progress_percent,
+                            eta=(record.estimated_completion_time or "")[:16],
+                            protocol=record.protocol or "",
+                            quality=record.quality.quality.name if record.quality else "",
+                        )
                     )
                 sources.append("Sonarr")
-            except (httpx.HTTPError, KeyError, ValueError):
-                logger.debug("calendar enrichment via Sonarr failed", exc_info=True)
+            except (httpx.HTTPError, ValueError):
+                logger.debug("queue lookup via Sonarr failed", exc_info=True)
+            finally:
+                await sonarr.close()
 
         if intent.media_type == "movie" or (
             intent.media_type == "tv" and settings.radarr_url and settings.radarr_api_key
         ):
+            radarr = RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
             try:
-                radarr = RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
-                resp = await radarr.get_queue()
-                await radarr.close()
-                for r in resp.get("records") or []:
-                    movie = r.get("movie") or {}
-                    size = r.get("size", 0)
-                    size_left = r.get("sizeleft", 0)
-                    pct = int((size - size_left) / size * 100) if size else 0
-                    eta = r.get("estimatedCompletionTime", "")
-                    items.append(
-                        {
-                            "kind": "movie",
-                            "show": "",
-                            "episode": "",
-                            "title": movie.get("title") or r.get("title", ""),
-                            "status": r.get("status", ""),
-                            "progress": pct,
-                            "eta": eta[:16] if eta else "",
-                            "protocol": r.get("protocol", ""),
-                            "quality": (r.get("quality") or {}).get("quality", {}).get("name", ""),
-                        }
+                for movie_record in (await radarr.get_queue()).records:
+                    rows.append(
+                        QueueRow(
+                            kind="movie",
+                            show="",
+                            episode="",
+                            title=(
+                                movie_record.movie.title
+                                if movie_record.movie
+                                else movie_record.title or ""
+                            ),
+                            status=movie_record.status or "",
+                            progress=movie_record.progress_percent,
+                            eta=(movie_record.estimated_completion_time or "")[:16],
+                            protocol=movie_record.protocol or "",
+                            quality=(
+                                movie_record.quality.quality.name if movie_record.quality else ""
+                            ),
+                        )
                     )
-                if "Radarr" not in sources:
-                    sources.append("Radarr")
-            except (httpx.HTTPError, KeyError, ValueError):
-                logger.debug("calendar enrichment failed", exc_info=True)
+                sources.append("Radarr")
+            except (httpx.HTTPError, ValueError):
+                logger.debug("queue lookup via Radarr failed", exc_info=True)
+            finally:
+                await radarr.close()
 
-        if not items:
+        if not rows:
             return ExecutionResult(
                 success=True,
                 message="The download queue is empty.",
@@ -873,188 +694,177 @@ class Executor:
         src_str = " + ".join(sources) if sources else "queue"
         return ExecutionResult(
             success=True,
-            message=f"{len(items)} item(s) currently downloading ({src_str})",
-            data={"data_type": "queue", "items": items, "total": len(items)},
+            message=f"{len(rows)} item(s) currently downloading ({src_str})",
+            data={
+                "data_type": "queue",
+                "items": [r.model_dump() for r in rows],
+                "total": len(rows),
+            },
         )
 
     async def _execute_history(self, intent: Intent) -> ExecutionResult:
         """Show recent download/import history from Sonarr and/or Radarr."""
-        EVENT_LABELS = {
-            "grabbed": "Grabbed",
-            "downloadFolderImported": "Imported",
-            "downloadFailed": "Failed",
-            "episodeFileDeleted": "Deleted",
-            "episodeFileRenamed": "Renamed",
-            "downloadIgnored": "Ignored",
-        }
-        items: list[dict] = []
+        rows: list[HistoryRow] = []
 
         if intent.media_type != "movie" and settings.sonarr_url and settings.sonarr_api_key:
+            sonarr = SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
             try:
-                c = SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
-                resp = await c.get_history(page_size=20)
-                await c.close()
-                for r in resp.get("records") or []:
-                    series = r.get("series") or {}
-                    ep = r.get("episode") or {}
-                    items.append(
-                        {
-                            "kind": "tv",
-                            "show": series.get("title", ""),
-                            "episode": (
-                                f"S{ep.get('seasonNumber', 0):02d}E{ep.get('episodeNumber', 0):02d}"
-                            )
-                            if ep
-                            else "",
-                            "title": r.get("sourceTitle", ""),
-                            "event": EVENT_LABELS.get(
-                                r.get("eventType", ""), r.get("eventType", "")
-                            ),
-                            "date": (r.get("date") or "")[:10],
-                            "quality": (r.get("quality") or {}).get("quality", {}).get("name", ""),
-                        }
+                for record in (await sonarr.get_history(page_size=20)).records:
+                    rows.append(
+                        HistoryRow(
+                            kind="tv",
+                            show=record.series.title if record.series else "",
+                            episode=record.episode.label if record.episode else "",
+                            title=record.source_title,
+                            event=_HISTORY_EVENT_LABELS.get(record.event_type, record.event_type),
+                            date=record.date[:10],
+                            quality=record.quality.quality.name,
+                        )
                     )
-            except (httpx.HTTPError, KeyError, ValueError):
-                logger.debug("calendar enrichment failed", exc_info=True)
+            except (httpx.HTTPError, ValueError):
+                logger.debug("history lookup via Sonarr failed", exc_info=True)
+            finally:
+                await sonarr.close()
 
         if intent.media_type != "tv" and settings.radarr_url and settings.radarr_api_key:
+            radarr = RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
             try:
-                radarr = RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
-                resp = await radarr.get_history(page_size=20)
-                await radarr.close()
-                for r in resp.get("records") or []:
-                    movie = r.get("movie") or {}
-                    items.append(
-                        {
-                            "kind": "movie",
-                            "show": "",
-                            "episode": "",
-                            "title": movie.get("title") or r.get("sourceTitle", ""),
-                            "event": EVENT_LABELS.get(
-                                r.get("eventType", ""), r.get("eventType", "")
+                for movie_record in (await radarr.get_history(page_size=20)).records:
+                    rows.append(
+                        HistoryRow(
+                            kind="movie",
+                            show="",
+                            episode="",
+                            title=(
+                                movie_record.movie.title
+                                if movie_record.movie
+                                else movie_record.source_title
                             ),
-                            "date": (r.get("date") or "")[:10],
-                            "quality": (r.get("quality") or {}).get("quality", {}).get("name", ""),
-                        }
+                            event=_HISTORY_EVENT_LABELS.get(
+                                movie_record.event_type, movie_record.event_type
+                            ),
+                            date=movie_record.date[:10],
+                            quality=movie_record.quality.quality.name,
+                        )
                     )
-            except (httpx.HTTPError, KeyError, ValueError):
-                logger.debug("calendar enrichment failed", exc_info=True)
+            except (httpx.HTTPError, ValueError):
+                logger.debug("history lookup via Radarr failed", exc_info=True)
+            finally:
+                await radarr.close()
 
-        # Sort combined results by date descending
-        items.sort(key=lambda x: x.get("date", ""), reverse=True)
-        items = items[:30]
+        rows = sorted(rows, key=lambda row: row.date, reverse=True)[:30]
 
-        if not items:
+        if not rows:
             return ExecutionResult(success=True, message="No recent download history found.")
         return ExecutionResult(
             success=True,
-            message=f"{len(items)} recent download event(s)",
-            data={"data_type": "history", "items": items, "total": len(items)},
+            message=f"{len(rows)} recent download event(s)",
+            data={
+                "data_type": "history",
+                "items": [r.model_dump() for r in rows],
+                "total": len(rows),
+            },
         )
 
     async def _execute_wanted(self, intent: Intent) -> ExecutionResult:
         """Show monitored media that is missing or below quality cutoff."""
-        items: list[dict] = []
+        rows: list[WantedRow] = []
 
         if intent.media_type != "movie" and settings.sonarr_url and settings.sonarr_api_key:
+            sonarr = SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
             try:
-                c = SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
-                resp = await c.get_wanted_missing(page_size=30)
-                await c.close()
-                for r in resp.get("records") or []:
-                    series = r.get("series") or {}
-                    items.append(
-                        {
-                            "kind": "tv",
-                            "show": series.get("title", ""),
-                            "episode": (
-                                f"S{r.get('seasonNumber', 0):02d}E{r.get('episodeNumber', 0):02d}"
-                            ),
-                            "title": r.get("title", ""),
-                            "air_date": (r.get("airDate") or "")[:10],
-                        }
+                for episode in (await sonarr.get_wanted_missing(page_size=30)).records:
+                    rows.append(
+                        WantedRow(
+                            kind="tv",
+                            show=episode.series.title if episode.series else "",
+                            episode=episode.label,
+                            title=episode.title,
+                            air_date=(episode.air_date or "")[:10],
+                        )
                     )
-            except (httpx.HTTPError, KeyError, ValueError):
-                logger.debug("calendar enrichment failed", exc_info=True)
+            except (httpx.HTTPError, ValueError):
+                logger.debug("wanted lookup via Sonarr failed", exc_info=True)
+            finally:
+                await sonarr.close()
 
         if intent.media_type != "tv" and settings.radarr_url and settings.radarr_api_key:
+            radarr = RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
             try:
-                radarr = RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
-                resp = await radarr.get_wanted_cutoff(page_size=30)
-                await c.close()
-                for r in resp.get("records") or []:
-                    items.append(
-                        {
-                            "kind": "movie",
-                            "show": "",
-                            "episode": "",
-                            "title": r.get("title", ""),
-                            "air_date": (r.get("inCinemas") or r.get("physicalRelease") or "")[:10],
-                        }
+                for movie in (await radarr.get_wanted_cutoff(page_size=30)).records:
+                    rows.append(
+                        WantedRow(
+                            kind="movie",
+                            show="",
+                            episode="",
+                            title=movie.title,
+                            air_date=(movie.in_cinemas or movie.physical_release or "")[:10],
+                        )
                     )
-            except (httpx.HTTPError, KeyError, ValueError):
-                logger.debug("calendar enrichment failed", exc_info=True)
+            except (httpx.HTTPError, ValueError):
+                logger.debug("wanted lookup via Radarr failed", exc_info=True)
+            finally:
+                await radarr.close()
 
-        if not items:
+        if not rows:
             return ExecutionResult(success=True, message="Nothing is missing — great!")
         return ExecutionResult(
             success=True,
-            message=f"{len(items)} item(s) missing or below quality cutoff",
-            data={"data_type": "wanted", "items": items, "total": len(items)},
+            message=f"{len(rows)} item(s) missing or below quality cutoff",
+            data={
+                "data_type": "wanted",
+                "items": [r.model_dump() for r in rows],
+                "total": len(rows),
+            },
         )
 
     async def _execute_monitor(
-        self, intent: Intent, client: BaseArrClient, monitored: bool
+        self, intent: Intent, client: ArrClient, monitored: bool
     ) -> ExecutionResult:
         """Monitor or unmonitor a series/movie/season."""
         verb = "Monitoring" if monitored else "Unmonitoring"
-        if intent.media_type == "tv":
+        if isinstance(client, SonarrClient):
             if not intent.series_id:
                 return ExecutionResult(
                     success=False, message=f"Could not find '{intent.title}' in Sonarr"
                 )
             if intent.season is not None:
-                # Monitor/unmonitor specific season
-                series = await client.get_item(intent.series_id)
-                for s in series.get("seasons", []):
-                    if s.get("seasonNumber") == intent.season:
-                        s["monitored"] = monitored
-                await client._put(f"api/v3/series/{intent.series_id}", data=series)
+                await client.set_season_monitored(intent.series_id, intent.season, monitored)
                 return ExecutionResult(
                     success=True,
                     message=f"{verb} '{intent.title}' Season {intent.season}",
                 )
-            await cast(SonarrClient, client).set_series_monitored(intent.series_id, monitored)
+            await client.set_series_monitored(intent.series_id, monitored)
             return ExecutionResult(success=True, message=f"{verb} '{intent.title}'")
-        if intent.media_type == "movie":
+        if isinstance(client, RadarrClient):
             if not intent.item_id:
                 return ExecutionResult(
                     success=False, message=f"Could not find '{intent.title}' in Radarr"
                 )
-            await cast(RadarrClient, client).set_movie_monitored(intent.item_id, monitored)
+            await client.set_movie_monitored(intent.item_id, monitored)
             return ExecutionResult(success=True, message=f"{verb} '{intent.title}'")
         return ExecutionResult(
             success=False, message=f"Monitor not supported for {intent.media_type}"
         )
 
-    async def _execute_rename(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
+    async def _execute_rename(self, intent: Intent, client: ArrClient) -> ExecutionResult:
         """Trigger file rename for a series or movie."""
-        if intent.media_type == "tv":
+        if isinstance(client, SonarrClient):
             if not intent.series_id:
                 return ExecutionResult(
                     success=False, message=f"Could not find '{intent.title}' in Sonarr"
                 )
-            await cast(SonarrClient, client).trigger_rename_series(intent.series_id)
+            await client.trigger_rename_series(intent.series_id)
             return ExecutionResult(
                 success=True,
                 message=f"Rename triggered for '{intent.title}'; naming convention applies",
             )
-        if intent.media_type == "movie":
+        if isinstance(client, RadarrClient):
             if not intent.item_id:
                 return ExecutionResult(
                     success=False, message=f"Could not find '{intent.title}' in Radarr"
                 )
-            await cast(RadarrClient, client).trigger_rename_movie(intent.item_id)
+            await client.trigger_rename_movie(intent.item_id)
             return ExecutionResult(
                 success=True,
                 message=f"Rename triggered for '{intent.title}'",
@@ -1063,24 +873,24 @@ class Executor:
             success=False, message=f"Rename not supported for {intent.media_type}"
         )
 
-    async def _execute_rescan(self, intent: Intent, client: BaseArrClient) -> ExecutionResult:
+    async def _execute_rescan(self, intent: Intent, client: ArrClient) -> ExecutionResult:
         """Trigger disk rescan for a series or movie."""
-        if intent.media_type == "tv":
+        if isinstance(client, SonarrClient):
             if not intent.series_id:
                 return ExecutionResult(
                     success=False, message=f"Could not find '{intent.title}' in Sonarr"
                 )
-            await cast(SonarrClient, client).rescan_series(intent.series_id)
+            await client.rescan_series(intent.series_id)
             return ExecutionResult(
                 success=True,
                 message=f"Disk rescan started for '{intent.title}'",
             )
-        if intent.media_type == "movie":
+        if isinstance(client, RadarrClient):
             if not intent.item_id:
                 return ExecutionResult(
                     success=False, message=f"Could not find '{intent.title}' in Radarr"
                 )
-            await cast(RadarrClient, client).rescan_movie(intent.item_id)
+            await client.rescan_movie(intent.item_id)
             return ExecutionResult(
                 success=True,
                 message=f"Disk rescan started for '{intent.title}'",

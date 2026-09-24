@@ -174,7 +174,7 @@ class AudioBookshelfClient(BaseMediaClient):
         except (httpx.HTTPError, ValueError):
             return False
 
-    async def get_system_status(self) -> ServerStatus:  # type: ignore[override]
+    async def get_system_status(self) -> ServerStatus:
         """Server version from the unauthenticated ``/status`` route."""
         return ServerStatus.model_validate(await self._get("status"))
 
@@ -204,7 +204,7 @@ class AudioBookshelfClient(BaseMediaClient):
         items = await self._get(f"api/libraries/{library_id}/items", params=params)
         return LibraryItemsPage.model_validate(items)
 
-    async def search(self, query: str) -> list[LibraryItem]:  # type: ignore[override]
+    async def search(self, query: str) -> list[LibraryItem]:
         """Search every book library; AudioBookshelf only searches one library per call."""
         found = [
             _SearchResults.model_validate(
@@ -214,7 +214,7 @@ class AudioBookshelfClient(BaseMediaClient):
         ]
         return [match.library_item for results in found for match in results.book]
 
-    async def get_item(self, item_id: int | str) -> LibraryItem:  # type: ignore[override]
+    async def get_item(self, item_id: int | str) -> LibraryItem:
         return LibraryItem.model_validate(await self._get(f"api/items/{item_id}"))
 
     async def delete_item(self, item_id: int | str, delete_files: bool = False) -> bool:

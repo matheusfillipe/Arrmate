@@ -239,7 +239,7 @@ class ListenarrClient(BaseMediaClient):
         except (httpx.HTTPError, ValueError):
             return False
 
-    async def get_system_status(self) -> SystemInfo:  # type: ignore[override]
+    async def get_system_status(self) -> SystemInfo:
         """Version and runtime info.
 
         ``/system/status`` is not a route here; an unknown path falls through to
@@ -259,7 +259,7 @@ class ListenarrClient(BaseMediaClient):
         """Every audiobook in the library."""
         return _BOOKS.validate_python(await self._get(f"{self.api_prefix}/library"))
 
-    async def get_item(self, item_id: int) -> LibraryBook:  # type: ignore[override]
+    async def get_item(self, item_id: int) -> LibraryBook:
         """One audiobook by library ID."""
         return LibraryBook.model_validate(await self._get(f"{self.api_prefix}/library/{item_id}"))
 
@@ -270,7 +270,7 @@ class ListenarrClient(BaseMediaClient):
         )
         return True
 
-    async def search(  # type: ignore[override]
+    async def search(
         self, query: str, category: str | None = None, limit: int = 50
     ) -> list[Release]:
         """Search the configured indexers for releases.

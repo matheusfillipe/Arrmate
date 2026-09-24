@@ -1,14 +1,48 @@
 """Readarr API client implementation."""
 
-import logging
-from typing import Any
+from pydantic import Field, TypeAdapter
 
-from .base_arr import BaseArrClient
-
-logger = logging.getLogger(__name__)
+from .base_arr import ArrRecord, BaseArrClient, Image, MetadataProfile
 
 
-class ReadarrClient(BaseArrClient):
+class _AuthorFields(ArrRecord):
+    author_name: str = Field(alias="authorName")
+    foreign_author_id: str = Field(alias="foreignAuthorId")
+    overview: str | None = None
+    images: list[Image] = Field(default_factory=list)
+    monitored: bool = False
+    tags: list[int] = Field(default_factory=list)
+
+    @property
+    def title(self) -> str:
+        return self.author_name
+
+
+class AuthorLookup(_AuthorFields):
+    id: int | None = None
+
+
+class Author(_AuthorFields):
+    id: int
+
+
+class Book(ArrRecord):
+    title: str
+    foreign_book_id: str = Field(alias="foreignBookId")
+    id: int | None = None
+    author_id: int | None = Field(default=None, alias="authorId")
+    release_date: str | None = Field(default=None, alias="releaseDate")
+
+
+class SearchResult(ArrRecord):
+    """One hit of the combined search: an author or a book, never both."""
+
+    foreign_id: str = Field(alias="foreignId")
+    author: AuthorLookup | None = None
+    book: Book | None = None
+
+
+class ReadarrClient(BaseArrClient[Author, SearchResult]):
     """Client for Readarr v1 API (Books/Audiobooks).
 
     WARNING: Readarr project is deprecated. This client is provided
@@ -19,12 +53,10 @@ class ReadarrClient(BaseArrClient):
     api_prefix = "api/v1"
     search_command = "AuthorSearch"
 
-    async def search(self, query: str) -> list[dict[str, Any]]:
-        """Search for books/audiobooks by title or author.
-
-        The v1 API exposes a flat /search endpoint with no author/lookup route.
-        """
-        return await self._get("api/v1/search", params={"term": query})
+    async def search(self, query: str) -> list[SearchResult]:
+        """Search for books/audiobooks by title or author."""
+        raw = await self._get("api/v1/search", params={"term": query})
+        return TypeAdapter(list[SearchResult]).validate_python(raw)
 
     async def add_author(
         self,
@@ -35,39 +67,21 @@ class ReadarrClient(BaseArrClient):
         root_folder_path: str,
         monitored: bool = True,
         search_for_missing: bool = True,
-    ) -> dict[str, Any]:
-        """Add a new author to the library."""
-        data = {
-            "foreignAuthorId": foreign_author_id,
-            "authorName": author_name,
-            "qualityProfileId": quality_profile_id,
-            "metadataProfileId": metadata_profile_id,
-            "rootFolderPath": root_folder_path,
-            "monitored": monitored,
-            "addOptions": {"searchForMissingBooks": search_for_missing},
-        }
-        return await self._post("api/v1/author", data=data)
-
-    async def get_books(self, author_id: int) -> list[dict[str, Any]]:
-        """Get books for an author."""
-        return await self._get("api/v1/book", params={"authorId": author_id})
-
-    async def get_book_files(self, author_id: int) -> list[dict[str, Any]]:
-        """Get book files for an author."""
-        return await self._get("api/v1/bookfile", params={"authorId": author_id})
-
-    async def delete_book_file(self, file_id: int) -> bool:
-        """Delete a book file."""
-        await self._delete(f"api/v1/bookfile/{file_id}")
-        return True
-
-    async def trigger_book_search(self, book_ids: list[int]) -> dict[str, Any]:
-        """Trigger a search for specific books."""
-        return await self._post(
-            "api/v1/command",
-            data={"name": "BookSearch", "bookIds": book_ids},
+    ) -> Author:
+        raw = await self._post(
+            "api/v1/author",
+            data={
+                "foreignAuthorId": foreign_author_id,
+                "authorName": author_name,
+                "qualityProfileId": quality_profile_id,
+                "metadataProfileId": metadata_profile_id,
+                "rootFolderPath": root_folder_path,
+                "monitored": monitored,
+                "addOptions": {"searchForMissingBooks": search_for_missing},
+            },
         )
+        return Author.model_validate(raw)
 
-    async def get_metadata_profiles(self) -> list[dict[str, Any]]:
-        """Get available metadata profiles."""
-        return await self._get("api/v1/metadataprofile")
+    async def get_metadata_profiles(self) -> list[MetadataProfile]:
+        raw = await self._get("api/v1/metadataprofile")
+        return TypeAdapter(list[MetadataProfile]).validate_python(raw)

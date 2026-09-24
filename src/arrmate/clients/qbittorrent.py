@@ -53,7 +53,8 @@ class TransferInfo(_QbitRecord):
 class Torrent(_QbitRecord):
     hash: str
     name: str
-    state: TorrentState
+    #: qBittorrent adds states between releases; one we do not know must not fail the whole list.
+    state: TorrentState | str
     progress: float
     size: int
     total_size: int | None = None

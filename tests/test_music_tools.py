@@ -86,7 +86,7 @@ class FakeLidarr:
         self.monitored: list[int] = []
         self.searched: list[int] = []
 
-    async def get_artists(self) -> list[Artist]:
+    async def get_all_items(self) -> list[Artist]:
         return self.artists
 
     async def get_queue(self) -> list[QueueItem]:

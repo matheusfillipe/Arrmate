@@ -3,7 +3,7 @@ name = "arrmate"
 version = "2.2.2"
 description = "Your AI companion for Sonarr, Radarr, and Lidarr: manage your media library with natural language"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 authors = [
     {name = "Arrmate Contributors", email = "arrmate@example.com"},
 ]
@@ -70,7 +70,7 @@ arrmate = "arrmate.interfaces.cli.main:app"
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -90,7 +90,7 @@ ban-relative-imports = "parents"
 quote-style = "double"
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 disallow_untyped_defs = true
 warn_return_any = true
 warn_unused_configs = true
@@ -103,15 +103,9 @@ files = ["src/arrmate"]
 # Technical-debt ledger. These overrides relax specific checks for specific
 # modules; shrink them to zero over time and never add new entries.
 [[tool.mypy.overrides]]
-# Service clients sit on dynamically-shaped JSON; each method documents the
-# expected shape in its signature and docstring.
-module = ["arrmate.clients.bazarr", "arrmate.clients.lidarr", "arrmate.clients.radarr", "arrmate.clients.readarr", "arrmate.clients.sonarr"]
-disable_error_code = ["no-any-return"]
-
-[[tool.mypy.overrides]]
 # HTMX route handlers are the presentation boundary.
 module = ["arrmate.interfaces.web.routes.*"]
-disable_error_code = ["no-any-return", "no-untyped-def"]
+disable_error_code = ["no-untyped-def"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

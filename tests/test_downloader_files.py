@@ -79,6 +79,20 @@ async def test_qbit_torrents_and_transfer(qbit, httpx_mock):
 
 
 @pytest.mark.asyncio
+async def test_qbit_unknown_state_keeps_the_list(qbit, httpx_mock):
+    httpx_mock.add_response(url="http://qb:8080/api/v2/auth/login", text="Ok.")
+    httpx_mock.add_response(
+        url="http://qb:8080/api/v2/torrents/info",
+        json=[
+            {"hash": "a1", "name": "One", "state": "futureState", "progress": 0, "size": 1},
+            {"hash": "b2", "name": "Two", "state": "uploading", "progress": 1, "size": 1},
+        ],
+    )
+    torrents = await qbit.get_torrents()
+    assert [t.state for t in torrents] == ["futureState", "uploading"]
+
+
+@pytest.mark.asyncio
 async def test_qbit_recheck_reannounce(qbit, httpx_mock):
     httpx_mock.add_response(url="http://qb:8080/api/v2/auth/login", text="Ok.")
     httpx_mock.add_response(url="http://qb:8080/api/v2/torrents/recheck", text="Ok.")

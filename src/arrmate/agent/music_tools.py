@@ -15,12 +15,12 @@ from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 
 from arrmate.agent.deps import AgentDeps
-from arrmate.agent.tools import _safe
+from arrmate.agent.tools import ToolError, _cached_release, _safe
+from arrmate.clients.base_arr import CommandStatus
 from arrmate.clients.lidarr import (
     Album,
     Artist,
     ArtistMonitor,
-    CommandStatus,
     LidarrClient,
     QueueItem,
     Release,
@@ -127,11 +127,6 @@ class AlbumReleases(BaseModel):
     album: str
     artist: str | None = None
     releases: list[ReleaseRow]
-
-
-class ReleaseNotPicked(BaseModel):
-    error: Literal["no-search", "bad-index"]
-    detail: str
 
 
 class GrabbedRelease(BaseModel):
@@ -299,14 +294,14 @@ def _most_common_id(ids: list[int | None], fallback: int) -> int:
 
 async def _library_defaults(client: LidarrClient) -> LibraryDefaults:
     """The profiles and root folder most of the existing artists use."""
-    artists = await client.get_artists()
+    artists = await client.get_all_items()
     quality = await client.get_quality_profiles()
     metadata = [p for p in await client.get_metadata_profiles() if p.name != "None"]
     roots = await client.get_root_folders()
     if not quality or not metadata or not roots:
         raise ValueError("Lidarr needs a quality profile, metadata profile and root folder")
 
-    root_paths = [r["path"].rstrip("/") for r in roots]
+    root_paths = [r.path.rstrip("/") for r in roots]
     artist_roots = Counter(
         max(holding, key=len)
         for a in artists
@@ -314,9 +309,7 @@ async def _library_defaults(client: LidarrClient) -> LibraryDefaults:
     )
     top_root = artist_roots.most_common(1)
     return LibraryDefaults(
-        quality_profile_id=_most_common_id(
-            [a.quality_profile_id for a in artists], quality[0]["id"]
-        ),
+        quality_profile_id=_most_common_id([a.quality_profile_id for a in artists], quality[0].id),
         metadata_profile_id=_most_common_id(
             [a.metadata_profile_id for a in artists], metadata[0].id
         ),
@@ -350,7 +343,7 @@ async def add_monitored_artist(
 
 async def _add_artist(client: LidarrClient, name: str) -> Artist | None:
     """Add the artist a name looks up to, with no albums monitored yet."""
-    results = await client.lookup_artists(name)
+    results = await client.search(name)
     if not results:
         return None
     exact = [r for r in results if _artist_key(r.artist_name) == _artist_key(name)]
@@ -377,7 +370,7 @@ async def ensure_tracks(
     Adds unknown artists, monitors the original studio album that carries each missing song,
     and searches those albums in one command. Without write access it reports the same plan.
     """
-    artists = {_artist_key(a.artist_name): a for a in await client.get_artists()}
+    artists = {_artist_key(a.artist_name): a for a in await client.get_all_items()}
     queued_albums = {r.album_id: r.tracked_download_state for r in await client.get_queue()}
     report: list[SongReport] = []
     to_search: list[int] = []
@@ -521,15 +514,6 @@ async def build_playlist(
     )
 
 
-def _picked_release(album_id: int, index: int) -> Release | ReleaseNotPicked:
-    releases = _ALBUM_RELEASES.get(album_id)
-    if releases is None:
-        return ReleaseNotPicked(error="no-search", detail="run music_album_releases for this first")
-    if not 0 <= index < len(releases):
-        return ReleaseNotPicked(error="bad-index", detail=f"pick 0..{len(releases) - 1}")
-    return releases[index]
-
-
 def register_music_tools(agent: Agent[AgentDeps, str]) -> None:
     """Register the Lidarr music tools on the given Agent."""
 
@@ -540,7 +524,7 @@ def register_music_tools(agent: Agent[AgentDeps, str]) -> None:
         async def body() -> list[ArtistRow]:
             needle = artist_filter.casefold()
             async with ctx.deps.lidarr() as client:
-                artists = await client.get_artists()
+                artists = await client.get_all_items()
             return [
                 ArtistRow(
                     artist_id=a.id,
@@ -607,7 +591,7 @@ def register_music_tools(agent: Agent[AgentDeps, str]) -> None:
 
         async def body() -> list[ArtistMatch]:
             async with ctx.deps.lidarr() as client:
-                results = await client.lookup_artists(name)
+                results = await client.search(name)
             return [
                 ArtistMatch(
                     foreign_artist_id=r.foreign_artist_id,
@@ -707,10 +691,10 @@ def register_music_tools(agent: Agent[AgentDeps, str]) -> None:
     async def music_grab_release(ctx: RunContext[AgentDeps], album_id: int, index: int) -> str:
         """Grab one release from the last music_album_releases search of this album."""
 
-        async def body() -> GrabbedRelease | ReleaseNotPicked:
+        async def body() -> GrabbedRelease | ToolError:
             ctx.deps.require_write("music_grab_release")
-            release = _picked_release(album_id, index)
-            if isinstance(release, ReleaseNotPicked):
+            release = _cached_release(_ALBUM_RELEASES.get(album_id), index, "music_album_releases")
+            if isinstance(release, ToolError):
                 return release
             async with ctx.deps.lidarr() as client:
                 queued = await client.grab_release(release)

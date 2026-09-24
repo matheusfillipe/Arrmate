@@ -1,10 +1,11 @@
 """Web routes: plex."""
 
-from arrmate.auth.models import UserRole
 import time
 from typing import Literal, NamedTuple
+
 from pydantic import BaseModel
 
+from arrmate.auth.models import UserRole
 from arrmate.cache import plex_cache
 from arrmate.clients.plex import (
     PlexAccount,
@@ -267,9 +268,7 @@ async def plex_page(request: Request):
     current_user = get_current_user(request)
     viewer_account_id: int | None = None
     if current_user and current_user.role == UserRole.USER:
-        viewer_account_id = (
-            _match_account_id(raw_accounts, current_user.username) or None
-        )
+        viewer_account_id = _match_account_id(raw_accounts, current_user.username) or None
 
     return templates.TemplateResponse(
         request,

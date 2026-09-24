@@ -2,11 +2,16 @@
 
 from datetime import date, datetime, timedelta
 from itertools import groupby as _groupby
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 import httpx as _httpx
 from fastapi.responses import Response as _Response
+from pydantic import BaseModel
 
+from arrmate.clients.base_arr import remote_poster
+from arrmate.clients.radarr import Movie, MovieLookup, MovieRatings
+from arrmate.clients.sonarr import Episode, Series, SeriesLookup
 from arrmate.core.library_service import add_first_match
 
 from ._shared import (  # noqa: F401
@@ -30,6 +35,185 @@ from ._shared import (  # noqa: F401
     sqlite3,
     templates,
 )
+
+MediaKind = Literal["tv", "movie"]
+
+
+class LibraryCard(BaseModel):
+    id: int
+    title: str
+    media_type: MediaKind
+    monitored: bool
+    status: str
+    year: int
+    poster_url: str
+    size: str
+    genres: list[str]
+    rating: float | None = None
+    season_count: int | None = None
+    episode_count: int | None = None
+    has_file: bool | None = None
+
+
+class SearchCard(BaseModel):
+    title: str
+    media_type: MediaKind
+    year: int
+    status: str
+    in_library: bool
+    overview: str | None = None
+    poster_url: str | None = None
+    network: str | None = None
+    rating: str | None = None
+    tmdb_id: int | None = None
+
+
+class UpcomingEvent(BaseModel):
+    kind: MediaKind
+    date: str
+    show: str
+    episode_label: str
+    title: str
+    network: str
+    has_file: bool
+    monitored: bool
+    poster: str | None = None
+    year: int | None = None
+    air_time_est: str | None = None
+
+
+class UpcomingDay(BaseModel):
+    date: str
+    events: list[UpcomingEvent]
+
+
+class LibraryKeys(BaseModel):
+    """What identifies a library item when matching lookup results against it."""
+
+    tmdb_ids: set[int] = set()
+    titles: set[str] = set()
+
+    def has(self, card: SearchCard) -> bool:
+        return (card.tmdb_id in self.tmdb_ids if card.tmdb_id else False) or (
+            card.title.lower() in self.titles
+        )
+
+
+def _movie_rating(ratings: MovieRatings | None) -> float | None:
+    if ratings is None:
+        return None
+    rating = ratings.imdb or ratings.tmdb
+    return rating.value if rating else None
+
+
+def _series_card(series: Series) -> LibraryCard:
+    stats = series.statistics
+    return LibraryCard(
+        id=series.id,
+        title=series.title,
+        media_type="tv",
+        monitored=series.monitored,
+        status=series.status,
+        year=series.year,
+        poster_url=remote_poster(series.images) or f"/web/library/poster/sonarr/{series.id}",
+        size=_format_size(stats.size_on_disk if stats else 0),
+        genres=series.genres[:3],
+        rating=series.ratings.value if series.ratings else None,
+        season_count=stats.season_count if stats else None,
+        episode_count=stats.episode_file_count if stats else None,
+    )
+
+
+def _movie_card(movie: Movie) -> LibraryCard:
+    return LibraryCard(
+        id=movie.id,
+        title=movie.title,
+        media_type="movie",
+        monitored=movie.monitored,
+        status=movie.status,
+        year=movie.year,
+        poster_url=remote_poster(movie.images) or f"/web/library/poster/radarr/{movie.id}",
+        size=_format_size(movie.size_on_disk or 0),
+        genres=movie.genres[:3],
+        rating=_movie_rating(movie.ratings),
+        has_file=movie.has_file or False,
+    )
+
+
+def _search_card(lookup: SeriesLookup | MovieLookup, keys: LibraryKeys) -> SearchCard:
+    match lookup:
+        case SeriesLookup():
+            rating = lookup.ratings.value if lookup.ratings else None
+            card = SearchCard(
+                title=lookup.title,
+                media_type="tv",
+                year=lookup.year,
+                status=lookup.status,
+                in_library=False,
+                overview=lookup.overview,
+                poster_url=remote_poster(lookup.images) or lookup.remote_poster,
+                network=lookup.network,
+                rating=f"{rating:.1f}" if rating else None,
+                tmdb_id=lookup.tmdb_id or None,
+            )
+        case MovieLookup():
+            movie_rating = _movie_rating(lookup.ratings)
+            card = SearchCard(
+                title=lookup.title,
+                media_type="movie",
+                year=lookup.year,
+                status=lookup.status,
+                in_library=False,
+                overview=lookup.overview,
+                poster_url=remote_poster(lookup.images) or lookup.remote_poster,
+                rating=f"{movie_rating:.1f}" if movie_rating else None,
+                tmdb_id=lookup.tmdb_id,
+            )
+    card.in_library = keys.has(card)
+    return card
+
+
+async def _library_keys(media_type: str) -> LibraryKeys:
+    """TMDB ids and titles already in the library; empty when the service is unreachable."""
+    try:
+        if media_type == "tv" and settings.sonarr_url and settings.sonarr_api_key:
+            sonarr = SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
+            try:
+                series = await sonarr.get_all_items()
+            finally:
+                await sonarr.close()
+            return LibraryKeys(
+                tmdb_ids={s.tmdb_id for s in series if s.tmdb_id},
+                titles={s.title.lower() for s in series},
+            )
+        if media_type == "movie" and settings.radarr_url and settings.radarr_api_key:
+            radarr = RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
+            try:
+                movies = await radarr.get_all_items()
+            finally:
+                await radarr.close()
+            return LibraryKeys(
+                tmdb_ids={m.tmdb_id for m in movies},
+                titles={m.title.lower() for m in movies},
+            )
+    except (httpx.HTTPError, ValueError):
+        logger.debug("library lookup for %s failed", media_type, exc_info=True)
+    return LibraryKeys()
+
+
+async def _search_cards(media_type: str, query: str, limit: int) -> list[SearchCard]:
+    """Lookup matches for a query, marked with whether each is already in the library."""
+    keys = await _library_keys(media_type)
+    client = get_client_for_media_type(media_type)
+    try:
+        match client:
+            case SonarrClient() | RadarrClient():
+                lookups = (await client.search(query))[:limit]
+            case _:
+                return []
+    finally:
+        await client.close()
+    return [_search_card(lookup, keys) for lookup in lookups]
 
 
 @router.get("/library", response_class=HTMLResponse)
@@ -67,77 +251,22 @@ async def library_items(
     page: int = Query(default=1, ge=1),
 ):
     """Get paginated library items."""
-    items = []
+    items: list[LibraryCard] = []
     has_more = False
     page_size = 50
 
     try:
         client = get_client_for_media_type(media_type)
         try:
-            if media_type == "tv":
-                raw_items = await client.get_all_items()
-                for item in raw_items:
-                    item_id = item.get("id")
-                    poster_url = None
-                    for img in item.get("images", []):
-                        if img.get("coverType") == "poster":
-                            poster_url = (
-                                img.get("remoteUrl") or f"/web/library/poster/sonarr/{item_id}"
-                            )
-                            break
-                    if not poster_url and item_id:
-                        poster_url = f"/web/library/poster/sonarr/{item_id}"
-                    stats = item.get("statistics", {})
-                    items.append(
-                        {
-                            "id": item_id,
-                            "title": item.get("title", "Unknown"),
-                            "media_type": "tv",
-                            "monitored": item.get("monitored", False),
-                            "status": item.get("status", ""),
-                            "season_count": item.get("seasonCount") or stats.get("seasonCount"),
-                            "episode_count": stats.get("episodeFileCount")
-                            or item.get("episodeCount"),
-                            "year": item.get("year"),
-                            "poster_url": poster_url,
-                            "size": _format_size(stats.get("sizeOnDisk", 0)),
-                            "rating": item.get("ratings", {}).get("value"),
-                            "genres": item.get("genres", [])[:3],
-                        }
-                    )
-            elif media_type == "movie":
-                raw_items = await client.get_all_items()
-                for item in raw_items:
-                    item_id = item.get("id")
-                    poster_url = None
-                    for img in item.get("images", []):
-                        if img.get("coverType") == "poster":
-                            poster_url = (
-                                img.get("remoteUrl") or f"/web/library/poster/radarr/{item_id}"
-                            )
-                            break
-                    if not poster_url and item_id:
-                        poster_url = f"/web/library/poster/radarr/{item_id}"
-                    items.append(
-                        {
-                            "id": item_id,
-                            "title": item.get("title", "Unknown"),
-                            "media_type": "movie",
-                            "monitored": item.get("monitored", False),
-                            "status": item.get("status", ""),
-                            "year": item.get("year"),
-                            "size": _format_size(item.get("sizeOnDisk", 0)),
-                            "poster_url": poster_url,
-                            "rating": item.get("ratings", {}).get("imdb", {}).get("value")
-                            or item.get("ratings", {}).get("value"),
-                            "genres": item.get("genres", [])[:3],
-                            "has_file": item.get("hasFile", False),
-                        }
-                    )
+            match client:
+                case SonarrClient():
+                    items = [_series_card(series) for series in await client.get_all_items()]
+                case RadarrClient():
+                    items = [_movie_card(movie) for movie in await client.get_all_items()]
         finally:
             await client.close()
 
-        items.sort(key=lambda x: x["title"].lower())
+        items.sort(key=lambda card: card.title.lower())
         start = (page - 1) * page_size
         end = start + page_size
         has_more = end < len(items)
@@ -145,7 +274,7 @@ async def library_items(
 
     except ValueError as e:
         logger.debug(f"Service not configured for {media_type}: {e}")
-    except (httpx.HTTPError, KeyError, sqlite3.Error) as e:
+    except (httpx.HTTPError, sqlite3.Error) as e:
         logger.error(f"Error fetching library items: {e}")
 
     return templates.TemplateResponse(
@@ -168,75 +297,12 @@ async def search_results(
     media_type: str = Query(default="tv"),
 ):
     """Search for media and return results HTML."""
-    results = []
-
-    # Fetch library IDs/titles for cross-referencing (best-effort)
-    library_tmdb_ids: set = set()
-    library_titles: set = set()
+    results: list[SearchCard] = []
     try:
-        if media_type == "tv" and settings.sonarr_url and settings.sonarr_api_key:
-            sonarr_lib = SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
-            try:
-                all_series = await sonarr_lib.get_all_items()
-                library_tmdb_ids = {s["tmdbId"] for s in all_series if s.get("tmdbId")}
-                library_titles = {s["title"].lower() for s in all_series if s.get("title")}
-            finally:
-                await sonarr_lib.close()
-        elif media_type == "movie" and settings.radarr_url and settings.radarr_api_key:
-            radarr_lib = RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
-            try:
-                all_movies = await radarr_lib.get_all_items()
-                library_tmdb_ids = {m["tmdbId"] for m in all_movies if m.get("tmdbId")}
-                library_titles = {m["title"].lower() for m in all_movies if m.get("title")}
-            finally:
-                await radarr_lib.close()
-    except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
-        pass  # library check is best-effort; don't block search results
-
-    try:
-        client = get_client_for_media_type(media_type)
-        try:
-            raw_results = await client.search(query)
-            for item in raw_results[:20]:
-                tmdb_id = item.get("tmdbId")
-                result = {
-                    "title": item.get("title", "Unknown"),
-                    "media_type": media_type,
-                    "year": item.get("year"),
-                    "overview": item.get("overview", ""),
-                    "status": item.get("status", ""),
-                    "poster_url": None,
-                    "network": item.get("network"),
-                    "rating": None,
-                    "quality_profiles": None,
-                    "in_library": (
-                        (tmdb_id in library_tmdb_ids if tmdb_id else False)
-                        or item.get("title", "").lower() in library_titles
-                    ),
-                }
-
-                images = item.get("images") or item.get("remotePoster")
-                if isinstance(images, list):
-                    for img in images:
-                        if img.get("coverType") == "poster":
-                            result["poster_url"] = img.get("remoteUrl") or img.get("url")
-                            break
-                elif isinstance(images, str):
-                    result["poster_url"] = images
-
-                ratings = item.get("ratings")
-                if ratings and isinstance(ratings, dict):
-                    value = ratings.get("value")
-                    if value:
-                        result["rating"] = f"{value:.1f}"
-
-                results.append(result)
-        finally:
-            await client.close()
-
+        results = await _search_cards(media_type, query, limit=20)
     except ValueError as e:
         logger.debug(f"Service not configured for {media_type}: {e}")
-    except (httpx.HTTPError, KeyError, sqlite3.Error) as e:
+    except (httpx.HTTPError, sqlite3.Error) as e:
         logger.error(f"Error searching: {e}")
 
     return templates.TemplateResponse(
@@ -258,90 +324,22 @@ async def quick_search_results(
 ):
     """Search both TV (Sonarr) and movies (Radarr) in parallel and return combined results."""
 
-    async def _search_service(media_type: str) -> list[dict]:
+    async def _search_service(media_type: str) -> list[SearchCard]:
         try:
-            client = get_client_for_media_type(media_type)
-            try:
-                raw = await client.search(query)
-            finally:
-                await client.close()
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
+            return await _search_cards(media_type, query, limit=8)
+        except (httpx.HTTPError, ValueError, sqlite3.Error):
             return []
-
-        results = []
-        for item in raw[:8]:
-            result = {
-                "title": item.get("title", "Unknown"),
-                "media_type": media_type,
-                "year": item.get("year"),
-                "overview": item.get("overview", ""),
-                "status": item.get("status", ""),
-                "poster_url": None,
-                "rating": None,
-                "in_library": False,
-                "tmdb_id": item.get("tmdbId"),
-            }
-            images = item.get("images") or item.get("remotePoster")
-            if isinstance(images, list):
-                for img in images:
-                    if img.get("coverType") == "poster":
-                        result["poster_url"] = img.get("remoteUrl") or img.get("url")
-                        break
-            elif isinstance(images, str):
-                result["poster_url"] = images
-            ratings = item.get("ratings")
-            if ratings and isinstance(ratings, dict) and ratings.get("value"):
-                result["rating"] = f"{ratings['value']:.1f}"
-            results.append(result)
-        return results
 
     tv_results, movie_results = await asyncio.gather(
         _search_service("tv"),
         _search_service("movie"),
     )
 
-    # Cross-reference library membership
-    async def _get_library_ids(media_type: str) -> tuple[set, set]:
-        try:
-            if media_type == "tv" and settings.sonarr_url and settings.sonarr_api_key:
-                sonarr_client = SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
-                try:
-                    items = await sonarr_client.get_all_items()
-                finally:
-                    await sonarr_client.close()
-            elif media_type == "movie" and settings.radarr_url and settings.radarr_api_key:
-                radarr_client = RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
-                try:
-                    items = await radarr_client.get_all_items()
-                finally:
-                    await radarr_client.close()
-            else:
-                return set(), set()
-            tmdb_ids = {i["tmdbId"] for i in items if i.get("tmdbId")}
-            titles = {i["title"].lower() for i in items if i.get("title")}
-            return tmdb_ids, titles
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
-            return set(), set()
-
-    (tv_tmdb, tv_titles), (movie_tmdb, movie_titles) = await asyncio.gather(
-        _get_library_ids("tv"),
-        _get_library_ids("movie"),
-    )
-
-    for r in tv_results:
-        r["in_library"] = (r["tmdb_id"] in tv_tmdb if r["tmdb_id"] else False) or r[
-            "title"
-        ].lower() in tv_titles
-    for r in movie_results:
-        r["in_library"] = (r["tmdb_id"] in movie_tmdb if r["tmdb_id"] else False) or r[
-            "title"
-        ].lower() in movie_titles
-
     # Interleave: pick top results from each type, prioritise by title similarity
     query_lower = query.lower()
 
-    def _score(r: dict) -> int:
-        title = r["title"].lower()
+    def _score(card: SearchCard) -> int:
+        title = card.title.lower()
         if title == query_lower:
             return 0
         if title.startswith(query_lower):
@@ -354,7 +352,7 @@ async def quick_search_results(
     movie_results.sort(key=_score)
 
     # Build combined list: best match first, then interleave remaining
-    combined = []
+    combined: list[SearchCard] = []
     tv_q, mv_q = list(tv_results), list(movie_results)
     while tv_q or mv_q:
         if tv_q:
@@ -388,14 +386,11 @@ async def add_to_library(
     try:
         client = get_client_for_media_type(media_type)
         try:
-            item = await add_first_match(client, media_type, title)
-            added_title = (
-                item.get("title") or item.get("artistName") or item.get("authorName") or title
-            )
+            added = await add_first_match(client, title)
             return templates.TemplateResponse(
                 request,
                 "components/toast.html",
-                {"type": "success", "message": f"Added '{added_title}' to library"},
+                {"type": "success", "message": f"Added '{added.title}' to library"},
                 headers={"HX-Trigger": "library-updated"},
             )
         finally:
@@ -425,131 +420,113 @@ async def upcoming_page(request: Request):
     )
 
 
+_EASTERN = ZoneInfo("America/New_York")
+
+
+def _parse_air_time(air_date_utc: str | None) -> str | None:
+    """Convert an airDateUtc string to a human-readable Eastern time string."""
+    if not air_date_utc:
+        return None
+    try:
+        dt_utc = datetime.fromisoformat(air_date_utc.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    # Sonarr uses midnight UTC as a placeholder when the air time is unknown
+    if dt_utc.hour == 0 and dt_utc.minute == 0:
+        return None
+    dt_east = dt_utc.astimezone(_EASTERN)
+    h = dt_east.hour % 12 or 12
+    ampm = "AM" if dt_east.hour < 12 else "PM"
+    tz_abbr = "EDT" if dt_east.dst() else "EST"
+    return f"{h}:{dt_east.minute:02d} {ampm} {tz_abbr}"
+
+
+def _episode_event(episode: Episode) -> UpcomingEvent | None:
+    air_date = episode.air_date or (episode.air_date_utc or "")[:10]
+    if not air_date:
+        return None
+    series = episode.series
+    return UpcomingEvent(
+        kind="tv",
+        date=air_date,
+        show=series.title if series else "",
+        episode_label=episode.label,
+        title=episode.title,
+        network=(series.network or "") if series else "",
+        has_file=episode.has_file,
+        monitored=episode.monitored,
+        poster=remote_poster(series.images) if series else None,
+        air_time_est=_parse_air_time(episode.air_date_utc),
+    )
+
+
+def _movie_event(movie: Movie, start: str, end: str) -> UpcomingEvent | None:
+    releases = [
+        ("Cinema", (movie.in_cinemas or "")[:10]),
+        ("Digital", (movie.digital_release or "")[:10]),
+        ("Physical", (movie.physical_release or "")[:10]),
+    ]
+    in_window = [(kind, day) for kind, day in releases if day and start <= day <= end]
+    known = [(kind, day) for kind, day in releases if day]
+    if not known:
+        return None
+    release_type, release_date = (in_window or known)[0]
+    return UpcomingEvent(
+        kind="movie",
+        date=release_date,
+        show="",
+        episode_label="",
+        title=movie.title,
+        network=release_type,
+        has_file=bool(movie.has_file),
+        monitored=movie.monitored,
+        poster=remote_poster(movie.images),
+        year=movie.year,
+    )
+
+
 @router.get("/upcoming/content", response_class=HTMLResponse)
 async def upcoming_content(
     request: Request,
     days: int = Query(default=7, ge=1, le=30),
 ):
     """HTMX partial: combined Sonarr + Radarr calendar for the next N days."""
-
-    _eastern = ZoneInfo("America/New_York")
-
-    def _parse_air_time(air_date_utc_str: str) -> str | None:
-        """Convert an airDateUtc string to a human-readable Eastern time string."""
-        if not air_date_utc_str:
-            return None
-        try:
-            dt_utc = datetime.fromisoformat(air_date_utc_str.replace("Z", "+00:00"))
-            # Sonarr uses midnight UTC as a placeholder when the air time is unknown
-            if dt_utc.hour == 0 and dt_utc.minute == 0:
-                return None
-            dt_east = dt_utc.astimezone(_eastern)
-            h = dt_east.hour % 12 or 12
-            ampm = "AM" if dt_east.hour < 12 else "PM"
-            tz_abbr = "EDT" if dt_east.dst() else "EST"
-            return f"{h}:{dt_east.minute:02d} {ampm} {tz_abbr}"
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
-            return None
-
     today = date.today()
     start_str = today.isoformat()
     end_str = (today + timedelta(days=days)).isoformat()
 
-    events: list = []
+    events: list[UpcomingEvent] = []
     error = None
 
-    # --- Sonarr ---
     if settings.sonarr_url and settings.sonarr_api_key:
+        sonarr = SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
         try:
-            sonarr = SonarrClient(str(settings.sonarr_url), str(settings.sonarr_api_key))
-            eps = await sonarr.get_calendar(start_str, end_str, include_series=True)
-            await sonarr.close()
-            for ep in eps:
-                series = ep.get("series") or {}
-                air_date = ep.get("airDate") or (ep.get("airDateUtc") or "")[:10]
-                if not air_date:
-                    continue
-                poster = None
-                for img in series.get("images") or []:
-                    if img.get("coverType") == "poster":
-                        url = img.get("remoteUrl") or img.get("url", "")
-                        poster = url if url.startswith("http") else None
-                        break
-                events.append(
-                    {
-                        "kind": "tv",
-                        "date": air_date,
-                        "show": series.get("title", ""),
-                        "episode_label": f"S{ep.get('seasonNumber', 0):02d}"
-                        f"E{ep.get('episodeNumber', 0):02d}",
-                        "title": ep.get("title", ""),
-                        "network": series.get("network", ""),
-                        "has_file": bool(ep.get("hasFile")),
-                        "monitored": bool(ep.get("monitored")),
-                        "poster": poster,
-                        "air_time_est": _parse_air_time(ep.get("airDateUtc", "")),
-                    }
-                )
-        except (httpx.HTTPError, KeyError, sqlite3.Error) as e:
+            for episode in await sonarr.get_calendar(start_str, end_str):
+                event = _episode_event(episode)
+                if event:
+                    events.append(event)
+        except (httpx.HTTPError, ValueError) as e:
             error = str(e)
+        finally:
+            await sonarr.close()
 
-    # --- Radarr ---
     if settings.radarr_url and settings.radarr_api_key:
+        radarr = RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
         try:
-            radarr = RadarrClient(str(settings.radarr_url), str(settings.radarr_api_key))
-            movies = await radarr.get_calendar(start_str, end_str)
-            await radarr.close()
-            for m in movies:
-                release_date = None
-                for field in ("inCinemas", "digitalRelease", "physicalRelease"):
-                    val = (m.get(field) or "")[:10]
-                    if val and start_str <= val <= end_str:
-                        release_date = val
-                        break
-                if not release_date:
-                    release_date = (
-                        m.get("inCinemas")
-                        or m.get("digitalRelease")
-                        or m.get("physicalRelease")
-                        or ""
-                    )[:10]
-                if not release_date:
-                    continue
-                poster = None
-                for img in m.get("images") or []:
-                    if img.get("coverType") == "poster":
-                        url = img.get("remoteUrl") or img.get("url", "")
-                        poster = url if url.startswith("http") else None
-                        break
-                release_type = (
-                    "Cinema"
-                    if (m.get("inCinemas") or "")[:10] == release_date
-                    else "Digital"
-                    if (m.get("digitalRelease") or "")[:10] == release_date
-                    else "Physical"
-                )
-                events.append(
-                    {
-                        "kind": "movie",
-                        "date": release_date,
-                        "show": "",
-                        "episode_label": "",
-                        "title": m.get("title", ""),
-                        "network": release_type,
-                        "has_file": bool(m.get("hasFile")),
-                        "monitored": bool(m.get("monitored")),
-                        "poster": poster,
-                        "year": m.get("year"),
-                        "air_time_est": None,
-                    }
-                )
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as ex:
+            for movie in await radarr.get_calendar(start_str, end_str):
+                movie_event = _movie_event(movie, start_str, end_str)
+                if movie_event:
+                    events.append(movie_event)
+        except (httpx.HTTPError, ValueError) as ex:
             if not error:
                 error = str(ex)
+        finally:
+            await radarr.close()
 
-    events.sort(key=lambda e: (e["date"], e.get("show") or e["title"]))
+    events.sort(key=lambda e: (e.date, e.show or e.title))
     grouped = [
-        {"date": d, "events": list(evs)} for d, evs in _groupby(events, key=lambda e: e["date"])
+        UpcomingDay(date=day, events=list(day_events))
+        for day, day_events in _groupby(events, key=lambda e: e.date)
     ]
 
     return templates.TemplateResponse(

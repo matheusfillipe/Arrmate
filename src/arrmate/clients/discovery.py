@@ -12,7 +12,6 @@ from arrmate.config.settings import settings
 from arrmate.core.models import EnhancedServiceInfo, ImplementationStatus, ServiceCapability
 
 from .audiobookshelf import AudioBookshelfClient
-from .base_arr import BaseArrClient
 from .bazarr import BazarrClient
 from .cleanuparr import CleanuparrClient
 from .gamearr import GamearrClient
@@ -30,6 +29,8 @@ from .readmeabook import ReadMeABookClient
 from .sonarr import SonarrClient
 
 logger = logging.getLogger(__name__)
+
+type ArrClient = SonarrClient | RadarrClient | LidarrClient | ReadarrClient
 
 DEFAULT_PORTS = {
     "sonarr": 8989,
@@ -75,6 +76,10 @@ _PLAYLISTS = ServiceCapability(
 )
 
 VersionFn = Callable[[Any], Awaitable[str | None]]
+
+
+async def _arr_version(client: ArrClient) -> str | None:
+    return (await client.get_system_status()).version
 
 
 async def _system_status_version(client: Any) -> str | None:
@@ -140,7 +145,7 @@ SERVICE_REGISTRY: dict[str, ServiceSpec] = {
             api_version="v3",
             media_type="TV Shows",
             capabilities=_FULL,
-            version_fn=_system_status_version,
+            version_fn=_arr_version,
         ),
         ServiceSpec(
             name="radarr",
@@ -151,7 +156,7 @@ SERVICE_REGISTRY: dict[str, ServiceSpec] = {
             api_version="v3",
             media_type="Movies",
             capabilities=_FULL,
-            version_fn=_system_status_version,
+            version_fn=_arr_version,
         ),
         ServiceSpec(
             name="lidarr",
@@ -162,7 +167,7 @@ SERVICE_REGISTRY: dict[str, ServiceSpec] = {
             api_version="v3",
             media_type="Music",
             capabilities=_MANAGE_LIBRARY,
-            version_fn=_system_status_version,
+            version_fn=_arr_version,
         ),
         ServiceSpec(
             name="readarr",
@@ -173,7 +178,7 @@ SERVICE_REGISTRY: dict[str, ServiceSpec] = {
             api_version="v1",
             media_type="Books/Audiobooks",
             capabilities=_MANAGE_LIBRARY,
-            version_fn=_system_status_version,
+            version_fn=_arr_version,
             is_deprecated=True,
             deprecation_message=(
                 "Readarr project is retired. Support limited to existing instances."
@@ -378,7 +383,7 @@ async def discover_services() -> dict[str, EnhancedServiceInfo]:
     return services
 
 
-def get_client_for_media_type(media_type: str) -> BaseArrClient:
+def get_client_for_media_type(media_type: str) -> ArrClient:
     """Get the primary client for a media type ('tv', 'movie', 'music', 'audiobook', 'book')."""
     spec = {
         "tv": "sonarr",
@@ -404,5 +409,5 @@ def get_client_for_media_type(media_type: str) -> BaseArrClient:
             "Consider alternatives like Calibre-Web or LazyLibrarian.",
             spec.capitalize(),
         )
-    client: BaseArrClient = entry.client_cls(str(url), str(key))
+    client: ArrClient = entry.client_cls(str(url), str(key))
     return client

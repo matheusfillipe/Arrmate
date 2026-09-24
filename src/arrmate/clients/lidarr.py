@@ -1,36 +1,36 @@
 """Lidarr API client implementation."""
 
-from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import ConfigDict, Field, TypeAdapter
 
-from .base_arr import BaseArrClient
+from .base_arr import (
+    ArrRecord,
+    BaseArrClient,
+    Command,
+    MetadataProfile,
+    StatusMessage,
+)
 
 ArtistMonitor = Literal["all", "future", "missing", "existing", "first", "latest", "none"]
-CommandStatus = Literal[
-    "queued", "started", "completed", "failed", "aborted", "cancelled", "orphaned"
-]
 
 
-CommandBody = dict[str, str | int | list[int]]
-
-
-class _LidarrRecord(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, extra="ignore")
-
-
-class TrackStatistics(_LidarrRecord):
+class TrackStatistics(ArrRecord):
     track_file_count: int = Field(default=0, alias="trackFileCount")
     total_track_count: int = Field(default=0, alias="totalTrackCount")
 
 
-class _ArtistFields(_LidarrRecord):
+class _ArtistFields(ArrRecord):
     artist_name: str = Field(alias="artistName")
     foreign_artist_id: str = Field(alias="foreignArtistId")
     monitored: bool = False
     disambiguation: str | None = None
     artist_type: str | None = Field(default=None, alias="artistType")
+    tags: list[int] = Field(default_factory=list)
+
+    @property
+    def title(self) -> str:
+        return self.artist_name
 
 
 class ArtistLookup(_ArtistFields):
@@ -47,7 +47,7 @@ class Artist(_ArtistFields):
     statistics: TrackStatistics | None = None
 
 
-class Album(_LidarrRecord):
+class Album(ArrRecord):
     id: int
     title: str
     artist_id: int = Field(alias="artistId")
@@ -59,14 +59,14 @@ class Album(_LidarrRecord):
     artist: ArtistLookup | None = None
 
 
-class Track(_LidarrRecord):
+class Track(ArrRecord):
     id: int
     title: str
     album_id: int = Field(alias="albumId")
     has_file: bool = Field(default=False, alias="hasFile")
 
 
-class _PassThroughRecord(_LidarrRecord):
+class _PassThroughRecord(ArrRecord):
     """A record Lidarr expects back whole, so we keep the fields we do not model."""
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
@@ -80,7 +80,7 @@ class Quality(_PassThroughRecord):
     quality: QualityName
 
 
-class TrackFile(_LidarrRecord):
+class TrackFile(ArrRecord):
     id: int
     album_id: int = Field(alias="albumId")
     path: str
@@ -88,12 +88,7 @@ class TrackFile(_LidarrRecord):
     quality: Quality | None = None
 
 
-class StatusMessage(_LidarrRecord):
-    title: str | None = None
-    messages: list[str] = []
-
-
-class QueueItem(_LidarrRecord):
+class QueueItem(ArrRecord):
     id: int
     title: str | None = None
     artist: ArtistLookup | None = None
@@ -109,14 +104,6 @@ class QueueItem(_LidarrRecord):
     status_messages: list[StatusMessage] | None = Field(default=None, alias="statusMessages")
 
 
-class Command(_LidarrRecord):
-    id: int
-    name: str
-    status: CommandStatus
-    queued: datetime | None = None
-    started: datetime | None = None
-
-
 class Release(_PassThroughRecord):
     """One indexer result from an interactive search, posted back whole to grab it."""
 
@@ -129,24 +116,17 @@ class Release(_PassThroughRecord):
     size: int | None = None
     seeders: int | None = None
     approved: bool = False
-    rejections: list[str] = []
+    rejections: list[str] = Field(default_factory=list)
 
 
-class MetadataProfile(_LidarrRecord):
-    id: int
-    name: str
+class _QueuePage(ArrRecord):
+    records: list[QueueItem] = Field(default_factory=list)
 
 
-class _QueuePage(_LidarrRecord):
-    records: list[QueueItem] = []
+class _AlbumPage(ArrRecord):
+    records: list[Album] = Field(default_factory=list)
 
 
-class _AlbumPage(_LidarrRecord):
-    records: list[Album] = []
-
-
-_ARTISTS = TypeAdapter(list[Artist])
-_ARTIST_LOOKUPS = TypeAdapter(list[ArtistLookup])
 _ALBUMS = TypeAdapter(list[Album])
 _TRACKS = TypeAdapter(list[Track])
 _TRACK_FILES = TypeAdapter(list[TrackFile])
@@ -155,20 +135,12 @@ _RELEASES = TypeAdapter(list[Release])
 _METADATA_PROFILES = TypeAdapter(list[MetadataProfile])
 
 
-class LidarrClient(BaseArrClient):
+class LidarrClient(BaseArrClient[Artist, ArtistLookup]):
     """Client for the Lidarr v1 API (Music)."""
 
     entity = "artist"
     api_prefix = "api/v1"
     search_command = "ArtistSearch"
-
-    async def get_artists(self) -> list[Artist]:
-        return _ARTISTS.validate_python(await self._get(f"{self.api_prefix}/artist"))
-
-    async def lookup_artists(self, term: str) -> list[ArtistLookup]:
-        """Artists MusicBrainz knows by this name, library ones carrying their ``id``."""
-        found = await self._get(f"{self.api_prefix}/artist/lookup", params={"term": term})
-        return _ARTIST_LOOKUPS.validate_python(found)
 
     async def add_artist(
         self,
@@ -221,26 +193,19 @@ class LidarrClient(BaseArrClient):
             data={"albumIds": album_ids, "monitored": monitored},
         )
 
-    async def _command(self, body: CommandBody) -> Command:
-        return Command.model_validate(await self._post(f"{self.api_prefix}/command", data=body))
-
     async def import_download(self, path: str, download_id: str) -> Command:
         """Import one finished download now."""
         return await self._command(
-            {
-                "name": "DownloadedAlbumsScan",
-                "path": path,
-                "downloadClientId": download_id,
-                "importMode": "auto",
-            }
+            "DownloadedAlbumsScan",
+            {"path": path, "downloadClientId": download_id, "importMode": "auto"},
         )
 
     async def refresh_artist(self, artist_id: int) -> Command:
         """Re-read an artist's albums and tracks from metadata."""
-        return await self._command({"name": "RefreshArtist", "artistId": artist_id})
+        return await self._command("RefreshArtist", {"artistId": artist_id})
 
     async def trigger_album_search(self, album_ids: list[int]) -> Command:
-        return await self._command({"name": "AlbumSearch", "albumIds": album_ids})
+        return await self._command("AlbumSearch", {"albumIds": album_ids})
 
     async def get_commands(self) -> list[Command]:
         return _COMMANDS.validate_python(await self._get(f"{self.api_prefix}/command"))

@@ -20,8 +20,8 @@ import httpx
 from arrmate.auth import user_db
 from arrmate.auth.models import MediaRequest
 from arrmate.auth.notifications import send_discord, send_slack
-from arrmate.clients.radarr import RadarrClient
-from arrmate.clients.sonarr import SonarrClient
+from arrmate.clients.radarr import RadarrClient, RadarrHistoryRecord, RadarrQueueRecord
+from arrmate.clients.sonarr import SonarrClient, SonarrHistoryRecord, SonarrQueueRecord
 from arrmate.config.settings import Settings, settings
 
 logger = logging.getLogger(__name__)
@@ -80,8 +80,8 @@ async def _check_service(
         return
 
     # ── Queue check (downloading) ──────────────────────────────────────────
-    for record in queue_data.get("records", []):
-        title = _extract_title(record, service)
+    for queued in queue_data.records:
+        title = _extract_title(queued)
         if not title:
             continue
         for req in by_title.get(title.lower().strip(), []):
@@ -89,10 +89,10 @@ async def _check_service(
                 await _fire_queued_notification(req, title, settings_obj)
 
     # ── History check (imported) ───────────────────────────────────────────
-    for record in history_data.get("records", []):
-        if record.get("eventType") != "downloadFolderImported":
+    for event in history_data.records:
+        if event.event_type != "downloadFolderImported":
             continue
-        title = _extract_title(record, service)
+        title = _extract_title(event)
         if not title:
             continue
         for req in by_title.get(title.lower().strip(), []):
@@ -102,11 +102,15 @@ async def _check_service(
                 req.notified_imported = True
 
 
-def _extract_title(record: dict, service: str) -> str:
-    """Pull the series/movie title out of a Sonarr or Radarr API record."""
-    if service == "sonarr":
-        return (record.get("series") or {}).get("title") or ""
-    return (record.get("movie") or {}).get("title") or ""
+def _extract_title(
+    record: SonarrQueueRecord | RadarrQueueRecord | SonarrHistoryRecord | RadarrHistoryRecord,
+) -> str:
+    """The series or movie title a queue or history record belongs to."""
+    match record:
+        case SonarrQueueRecord() | SonarrHistoryRecord():
+            return record.series.title if record.series else ""
+        case RadarrQueueRecord() | RadarrHistoryRecord():
+            return record.movie.title if record.movie else ""
 
 
 async def _fire_queued_notification(req: MediaRequest, title: str, settings_obj: Settings) -> None:

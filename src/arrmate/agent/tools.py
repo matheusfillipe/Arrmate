@@ -11,12 +11,13 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Any, Literal, TypeAlias, assert_never
+from typing import Literal, assert_never
 
 import httpx
 from pydantic import BaseModel, JsonValue
 from pydantic_ai import Agent, RunContext
 
+from arrmate.clients.base_arr import BlocklistItem, Command, Release
 from arrmate.clients.discovery import discover_services
 from arrmate.clients.gamearr import (
     Game,
@@ -30,21 +31,41 @@ from arrmate.clients.gamearr import (
     NpsPlatform,
     ReleaseProtocol,
 )
-from arrmate.clients.prowlarr import IndexerStats
-from arrmate.clients.qbittorrent import Torrent, TorrentFile
 from arrmate.clients.jellyfin import JellyfinItem, JellyfinItemType
 from arrmate.clients.jellyseerr import JellyseerrRequest, JellyseerrSearchResult, RequestFilter
 from arrmate.clients.listenarr import (
     AddResult,
     AudibleMetadata,
-    GrabResult,
     LibraryBook,
-    QueueItem,
-    Release,
     SystemHealth,
 )
-from arrmate.core.library_service import add_first_match
+from arrmate.clients.listenarr import GrabResult as ListenarrGrab
+from arrmate.clients.listenarr import QueueItem as ListenarrQueueItem
+from arrmate.clients.listenarr import Release as ListenarrRelease
+from arrmate.clients.prowlarr import IndexerStats
+from arrmate.clients.qbittorrent import Torrent, TorrentFile
+from arrmate.clients.radarr import Movie, RadarrQueueRecord
+from arrmate.clients.sonarr import Series, SonarrQueueRecord
+from arrmate.config import instances
+from arrmate.config.instances import MediaInstance
+from arrmate.core.library_service import add_first_movie, add_first_series
 
+from .arr_views import (
+    AddOptions,
+    EpisodeRow,
+    HistoryRow,
+    LibraryEntry,
+    LookupMatch,
+    MissingEpisode,
+    ReleaseRow,
+    Removed,
+    episode_row,
+    history_row,
+    library_entry,
+    lookup_match,
+    missing_episode,
+    release_row,
+)
 from .deps import AgentDeps
 
 logger = logging.getLogger(__name__)
@@ -61,29 +82,11 @@ _MAX_WAIT_SECONDS = 900
 #: of characters and are truncated on the way out to the model, so one that makes the round
 #: trip is a corrupted one: the indexer then answers an error, and a torrent client accepts
 #: the dead link and silently discards it, which reads as a successful grab that never
-#: downloads anything. Keyed by tool and subject; the last search for a subject wins.
-_RELEASE_CACHE: dict[str, list[dict[str, Any]]] = {}
-
-
-def _cached_release(key: str, index: int, search_tool: str) -> dict[str, Any] | dict[str, str]:
-    """The chosen release from the last search, or an error the model can act on."""
-    releases = _RELEASE_CACHE.get(key)
-    if releases is None:
-        return {"error": "no-search", "detail": f"run {search_tool} for this first"}
-    if not 0 <= index < len(releases):
-        return {"error": "bad-index", "detail": f"pick 0..{len(releases) - 1}"}
-    return releases[index]
-
-
-#: Gamearr releases from the last search per game, for the same reason as _RELEASE_CACHE.
+#: downloads anything. The last search for a subject wins.
+_ARR_RELEASE_CACHE: dict[str, list[Release]] = {}
 _GAMEARR_RELEASES: dict[int, list[GameRelease]] = {}
 
 TorrentAction = Literal["delete", "recheck", "reannounce"]
-
-
-class ReleasePickError(BaseModel):
-    error: Literal["no-search", "bad-index"]
-    detail: str
 
 
 class GameReleaseChoice(BaseModel):
@@ -95,6 +98,16 @@ class GameReleaseChoice(BaseModel):
     indexer: str | None
     protocol: ReleaseProtocol | None
     score: int | None
+
+
+class ServiceAvailability(BaseModel):
+    name: str
+    available: bool
+
+
+class Waited(BaseModel):
+    waited_seconds: int
+    reason: str
 
 
 class TorrentActionResult(BaseModel):
@@ -113,11 +126,9 @@ _DATA_OPEN = "<<<TOOL_DATA"
 _DATA_CLOSE = "TOOL_DATA>>>"
 
 
-#: Anything a tool may hand back: models, JSON, or containers of either. Recursive aliases
-#: need the string form until the project targets Python 3.12.
-ToolPayload: TypeAlias = (
-    "BaseModel | str | int | float | bool"
-    " | Sequence[ToolPayload] | Mapping[str, ToolPayload] | None"
+#: Anything a tool may hand back: models, JSON, or containers of either.
+type ToolPayload = (
+    BaseModel | str | int | float | bool | Sequence[ToolPayload] | Mapping[str, ToolPayload] | None
 )
 
 ToolErrorCode = Literal[
@@ -136,6 +147,17 @@ class ToolError(BaseModel):
 
     error: ToolErrorCode
     detail: str
+
+
+def _cached_release[ReleaseT](
+    releases: list[ReleaseT] | None, index: int, search_tool: str
+) -> ReleaseT | ToolError:
+    """The chosen release from the last search, or an error the model can act on."""
+    if releases is None:
+        return ToolError(error="no-search", detail=f"run {search_tool} for this first")
+    if not 0 <= index < len(releases):
+        return ToolError(error="bad-index", detail=f"pick 0..{len(releases) - 1}")
+    return releases[index]
 
 
 def _is_empty(value: ToolPayload) -> bool:
@@ -191,9 +213,12 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def list_services(ctx: RunContext[AgentDeps]) -> str:
         """List configured media services and whether they are currently reachable."""
 
-        async def body() -> Any:
+        async def body() -> list[ServiceAvailability]:
             services = await discover_services()
-            return [{"name": name, "available": info.available} for name, info in services.items()]
+            return [
+                ServiceAvailability(name=name, available=info.available)
+                for name, info in services.items()
+            ]
 
         return await _safe(body)
 
@@ -202,9 +227,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         """List addressable Sonarr/Radarr instances (primary plus any extras).
         Pass the id as service_id to other tools to target one."""
 
-        async def body() -> Any:
-            from arrmate.config import instances
-
+        async def body() -> list[MediaInstance]:
             return instances.list_instances()
 
         return await _safe(body)
@@ -219,27 +242,13 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         specific instance when several are configured (see list_instances).
         """
 
-        async def body() -> Any:
-            def slim(items: list) -> list:
-                return [
-                    {
-                        "id": i.get("id"),
-                        "title": i.get("title"),
-                        "tvdbId": i.get("tvdbId"),
-                        "tmdbId": i.get("tmdbId"),
-                        "year": i.get("year"),
-                        "monitored": i.get("monitored"),
-                        "statistics": i.get("statistics"),
-                    }
-                    for i in items
-                ]
-
+        async def body() -> list[LookupMatch]:
             if media_type == "tv":
                 async with ctx.deps.sonarr(service_id) as sonarr_client:
-                    return slim(await sonarr_client.search(title))
+                    return [lookup_match(found) for found in await sonarr_client.search(title)]
             elif media_type == "movie":
                 async with ctx.deps.radarr(service_id) as radarr_client:
-                    return slim(await radarr_client.search(title))
+                    return [lookup_match(found) for found in await radarr_client.search(title)]
             raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
@@ -253,25 +262,10 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         media_type: 'tv' or 'movie'.
         """
 
-        async def body() -> Any:
-            def slim(items: list) -> list:
-                out = []
-                for i in items:
-                    t = (i.get("title") or "").lower()
-                    if title_filter and title_filter.lower() not in t:
-                        continue
-                    out.append(
-                        {
-                            "id": i.get("id"),
-                            "title": i.get("title"),
-                            "monitored": i.get("monitored"),
-                            "qualityProfileId": i.get("qualityProfileId"),
-                            "sizeOnDisk": (i.get("statistics") or {}).get("sizeOnDisk")
-                            or i.get("sizeOnDisk"),
-                            "hasFile": i.get("hasFile"),
-                        }
-                    )
-                return out
+        async def body() -> list[LibraryEntry]:
+            def slim(items: list[Series] | list[Movie]) -> list[LibraryEntry]:
+                needle = title_filter.lower()
+                return [library_entry(i) for i in items if needle in i.title.lower()]
 
             if media_type == "tv":
                 async with ctx.deps.sonarr(service_id) as sonarr_client:
@@ -289,7 +283,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     ) -> str:
         """Get full details for one library item (series with seasons, or movie with file)."""
 
-        async def body() -> Any:
+        async def body() -> Series | Movie:
             if media_type == "tv":
                 async with ctx.deps.sonarr(service_id) as c:
                     return await c.get_item(item_id)
@@ -309,21 +303,10 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         Pass season_number=-1 for all seasons.
         """
 
-        async def body() -> Any:
+        async def body() -> list[EpisodeRow]:
             async with ctx.deps.sonarr() as c:
                 eps = await c.get_episodes(series_id, None if season_number < 0 else season_number)
-                return [
-                    {
-                        "id": e.get("id"),
-                        "season": e.get("seasonNumber"),
-                        "episode": e.get("episodeNumber"),
-                        "title": e.get("title"),
-                        "hasFile": e.get("hasFile"),
-                        "monitored": e.get("monitored"),
-                        "airDate": e.get("airDate"),
-                    }
-                    for e in eps
-                ]
+                return [episode_row(e) for e in eps]
 
         return await _safe(body)
 
@@ -341,37 +324,18 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         generic per-item history otherwise.
         """
 
-        async def body() -> Any:
+        async def body() -> list[HistoryRow]:
             if media_type == "tv":
                 async with ctx.deps.sonarr(service_id) as c:
                     if episode_id:
-                        data = await c.get_episode_history(episode_id)
+                        tv_history = await c.get_episode_history(episode_id)
                     else:
-                        data = await c.get_history()
-                    return [
-                        {
-                            "eventType": r.get("eventType"),
-                            "date": r.get("date"),
-                            "quality": (r.get("quality") or {}).get("quality", {}).get("name"),
-                            "message": r.get("message"),
-                            "downloadId": r.get("downloadId"),
-                            "episodeTitle": (r.get("episode") or {}).get("title"),
-                        }
-                        for r in data.get("records", [])
-                    ]
+                        tv_history = await c.get_history()
+                    return [history_row(r) for r in tv_history.records]
             if media_type == "movie":
                 async with ctx.deps.radarr(service_id) as c:
-                    data = await c.get_movie_history(item_id)
-                    return [
-                        {
-                            "eventType": r.get("eventType"),
-                            "date": r.get("date"),
-                            "quality": (r.get("quality") or {}).get("quality", {}).get("name"),
-                            "message": r.get("message"),
-                            "downloadId": r.get("downloadId"),
-                        }
-                        for r in data.get("records", [])
-                    ]
+                    movie_history = await c.get_movie_history(item_id)
+                    return [history_row(r) for r in movie_history.records]
             raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
@@ -380,13 +344,13 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def get_queue(ctx: RunContext[AgentDeps], media_type: str, service_id: str = "") -> str:
         """Get the current download queue from Sonarr or Radarr."""
 
-        async def body() -> Any:
+        async def body() -> list[SonarrQueueRecord] | list[RadarrQueueRecord]:
             if media_type == "tv":
                 async with ctx.deps.sonarr(service_id) as c:
-                    return (await c.get_queue()).get("records", [])
+                    return (await c.get_queue()).records
             if media_type == "movie":
                 async with ctx.deps.radarr(service_id) as c:
-                    return (await c.get_queue()).get("records", [])
+                    return (await c.get_queue()).records
             raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
@@ -395,19 +359,9 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def get_missing_episodes(ctx: RunContext[AgentDeps]) -> str:
         """Get monitored TV episodes that have aired but have no file (wanted/missing)."""
 
-        async def body() -> Any:
+        async def body() -> list[MissingEpisode]:
             async with ctx.deps.sonarr() as c:
-                data = await c.get_wanted_missing()
-                return [
-                    {
-                        "episodeId": r.get("id"),
-                        "seriesTitle": (r.get("series") or {}).get("title"),
-                        "season": r.get("seasonNumber"),
-                        "episode": r.get("episodeNumber"),
-                        "airDate": r.get("airDate"),
-                    }
-                    for r in data.get("records", [])
-                ]
+                return [missing_episode(r) for r in (await c.get_wanted_missing()).records]
 
         return await _safe(body)
 
@@ -428,25 +382,10 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         (blocklists, quality refusals), not noise.
         """
 
-        async def body() -> Any:
-            def slim(releases: list) -> list:
-                _RELEASE_CACHE[f"arr:{media_type}"] = releases
-                return [
-                    {
-                        # guid and indexerId together are what a grab is keyed on. Dropping
-                        # indexerId leaves every push_release rejected with a 400.
-                        "guid": r.get("guid"),
-                        "indexerId": r.get("indexerId"),
-                        "title": r.get("title"),
-                        "indexer": r.get("indexer"),
-                        "size": r.get("size"),
-                        "seeders": r.get("seeders"),
-                        "quality": (r.get("quality") or {}).get("quality", {}).get("name"),
-                        "rejections": r.get("rejections") or [],
-                        "approved": r.get("approved"),
-                    }
-                    for r in releases
-                ]
+        async def body() -> list[ReleaseRow]:
+            def slim(releases: list[Release]) -> list[ReleaseRow]:
+                _ARR_RELEASE_CACHE[media_type] = releases
+                return [release_row(index, release) for index, release in enumerate(releases)]
 
             if media_type == "movie":
                 if not movie_id:
@@ -470,13 +409,13 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def get_blocklist(ctx: RunContext[AgentDeps], media_type: str) -> str:
         """Get blocklisted releases from Sonarr or Radarr."""
 
-        async def body() -> Any:
+        async def body() -> list[BlocklistItem]:
             if media_type == "tv":
                 async with ctx.deps.sonarr() as c:
-                    return (await c.get_blocklist()).get("records", [])
+                    return (await c.get_blocklist()).records
             if media_type == "movie":
                 async with ctx.deps.radarr() as c:
-                    return (await c.get_blocklist()).get("records", [])
+                    return (await c.get_blocklist()).records
             raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
@@ -523,10 +462,10 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         reach you.
         """
 
-        async def body() -> Any:
+        async def body() -> Waited:
             delay = max(0, min(seconds, _MAX_WAIT_SECONDS))
             await asyncio.sleep(delay)
-            return {"waited_seconds": delay, "reason": reason}
+            return Waited(waited_seconds=delay, reason=reason)
 
         return await _safe(body)
 
@@ -534,31 +473,19 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def get_add_options(ctx: RunContext[AgentDeps], media_type: str) -> str:
         """Get quality profiles and root folders for adding new media."""
 
-        async def body() -> Any:
+        async def body() -> AddOptions:
             if media_type == "tv":
                 async with ctx.deps.sonarr() as c:
-                    return {
-                        "profiles": [
-                            {"id": p.get("id"), "name": p.get("name")}
-                            for p in await c.get_quality_profiles()
-                        ],
-                        "rootFolders": [
-                            {"id": r.get("id"), "path": r.get("path")}
-                            for r in await c.get_root_folders()
-                        ],
-                    }
+                    return AddOptions(
+                        profiles=await c.get_quality_profiles(),
+                        root_folders=await c.get_root_folders(),
+                    )
             if media_type == "movie":
                 async with ctx.deps.radarr() as c:
-                    return {
-                        "profiles": [
-                            {"id": p.get("id"), "name": p.get("name")}
-                            for p in await c.get_quality_profiles()
-                        ],
-                        "rootFolders": [
-                            {"id": r.get("id"), "path": r.get("path")}
-                            for r in await c.get_root_folders()
-                        ],
-                    }
+                    return AddOptions(
+                        profiles=await c.get_quality_profiles(),
+                        root_folders=await c.get_root_folders(),
+                    )
             raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
@@ -572,20 +499,22 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         Pass the index of the chosen result.
         """
 
-        async def body() -> Any:
+        async def body() -> ReleaseRow | ToolError:
             ctx.deps.require_write("push_release")
-            release = _cached_release(f"arr:{media_type}", index, "interactive_search")
-            if "error" in release:
+            release = _cached_release(
+                _ARR_RELEASE_CACHE.get(media_type), index, "interactive_search"
+            )
+            if isinstance(release, ToolError):
                 return release
-            if not release.get("indexerId"):
-                raise ValueError("that release carries no indexerId, so it cannot be grabbed")
             if media_type == "tv":
-                async with ctx.deps.sonarr() as c:
-                    return await c.push_release(release)
-            if media_type == "movie":
-                async with ctx.deps.radarr() as c:
-                    return await c.push_release(release)
-            raise ValueError(_unsupported_media_type(media_type))
+                async with ctx.deps.sonarr() as sonarr_client:
+                    await sonarr_client.push_release(release)
+            elif media_type == "movie":
+                async with ctx.deps.radarr() as radarr_client:
+                    await radarr_client.push_release(release)
+            else:
+                raise ValueError(_unsupported_media_type(media_type))
+            return release_row(index, release)
 
         return await _safe(body)
 
@@ -600,7 +529,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         """Tell Sonarr/Radarr to auto-search. TV: item_id is series_id; pass
         season_number for one season, episode_ids for specific episodes."""
 
-        async def body() -> Any:
+        async def body() -> Command:
             ctx.deps.require_write("trigger_search")
             if media_type == "tv":
                 async with ctx.deps.sonarr() as c:
@@ -628,14 +557,14 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         quality profile and root folder; searches for missing content
         immediately."""
 
-        async def body() -> Any:
+        async def body() -> Series | Movie:
             ctx.deps.require_write("add_media")
             if media_type == "tv":
-                async with ctx.deps.sonarr(service_id) as c:
-                    return await add_first_match(c, media_type, title, monitored=monitored)
+                async with ctx.deps.sonarr(service_id) as sonarr_client:
+                    return await add_first_series(sonarr_client, title, monitored=monitored)
             if media_type == "movie":
-                async with ctx.deps.radarr(service_id) as c:
-                    return await add_first_match(c, media_type, title, monitored=monitored)
+                async with ctx.deps.radarr(service_id) as radarr_client:
+                    return await add_first_movie(radarr_client, title, monitored=monitored)
             raise ValueError(_unsupported_media_type(media_type))
 
         return await _safe(body)
@@ -651,17 +580,17 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         """Remove a series/movie from the library. delete_files also deletes
         the media files — destructive, use deliberately."""
 
-        async def body() -> Any:
+        async def body() -> Removed:
             ctx.deps.require_write("remove_media")
             if media_type == "tv":
-                async with ctx.deps.sonarr(service_id) as c:
-                    ok = await c.delete_item(item_id, delete_files)
+                async with ctx.deps.sonarr(service_id) as sonarr_client:
+                    await sonarr_client.delete_item(item_id, delete_files)
             elif media_type == "movie":
-                async with ctx.deps.radarr(service_id) as c:
-                    ok = await c.delete_item(item_id, delete_files)
+                async with ctx.deps.radarr(service_id) as radarr_client:
+                    await radarr_client.delete_item(item_id, delete_files)
             else:
                 raise ValueError(_unsupported_media_type(media_type))
-            return {"removed": ok, "filesDeleted": delete_files}
+            return Removed(item_id=item_id, files_deleted=delete_files)
 
         return await _safe(body)
 
@@ -671,7 +600,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     ) -> str:
         """Set monitored on/off for a series or movie."""
 
-        async def body() -> Any:
+        async def body() -> Series | Movie:
             ctx.deps.require_write("set_monitored")
             if media_type == "tv":
                 async with ctx.deps.sonarr() as c:
@@ -827,7 +756,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         """Search Listenarr's configured indexers for downloadable audiobook
         releases. Returns candidates for listenarr_grab."""
 
-        async def body() -> list[Release]:
+        async def body() -> list[ListenarrRelease]:
             async with ctx.deps.listenarr() as client:
                 return await client.search(query, category=category or None, limit=25)
 
@@ -869,7 +798,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         result. Pass audiobook_id to attach the grab to a library entry.
         """
 
-        async def body() -> GrabResult:
+        async def body() -> ListenarrGrab:
             ctx.deps.require_write("listenarr_grab")
             async with ctx.deps.listenarr() as client:
                 return await client.grab_release(
@@ -882,7 +811,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def listenarr_queue(ctx: RunContext[AgentDeps]) -> str:
         """Get Listenarr's active download queue (progress, state, client)."""
 
-        async def body() -> list[QueueItem]:
+        async def body() -> list[ListenarrQueueItem]:
             async with ctx.deps.listenarr() as client:
                 return await client.get_queue()
 
@@ -1028,17 +957,13 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         Pass the index of the chosen result.
         """
 
-        async def body() -> GrabResult | ReleasePickError:
+        async def body() -> GrabResult | ToolError:
             ctx.deps.require_write("gamearr_grab")
-            releases = _GAMEARR_RELEASES.get(game_id)
-            if releases is None:
-                return ReleasePickError(
-                    error="no-search", detail="run gamearr_releases for this first"
-                )
-            if not 0 <= index < len(releases):
-                return ReleasePickError(error="bad-index", detail=f"pick 0..{len(releases) - 1}")
+            release = _cached_release(_GAMEARR_RELEASES.get(game_id), index, "gamearr_releases")
+            if isinstance(release, ToolError):
+                return release
             async with ctx.deps.gamearr() as client:
-                return await client.grab_release(game_id, releases[index])
+                return await client.grab_release(game_id, release)
 
         return await _safe(body)
 

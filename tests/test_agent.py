@@ -27,7 +27,7 @@ from arrmate.agent.deps import AgentDeps
 from arrmate.agent.models import RUN_DEADLINE_SECONDS
 from arrmate.agent.tools import (
     _MAX_LIST_ITEMS,
-    _RELEASE_CACHE,
+    ToolError,
     _cached_release,
     _compact,
     _wrap,
@@ -65,30 +65,24 @@ class TestHistoryCheckpoint:
 class TestReleaseCache:
     """A grab must never depend on the model reproducing an indexer download URL."""
 
-    def setup_method(self):
-        _RELEASE_CACHE.clear()
-
     def test_indexer_urls_do_not_survive_the_trip_to_the_model(self):
         url = "http://prowlarr:9696/22/download?apikey=k&link=" + "A" * 2000
         assert _compact({"downloadUrl": url})["downloadUrl"] != url
 
     def test_returns_the_release_the_search_found(self):
         url = "http://prowlarr:9696/22/download?apikey=k&link=" + "A" * 2000
-        _RELEASE_CACHE["gamearr:7"] = [{"title": "a"}, {"title": "b", "downloadUrl": url}]
-        assert _cached_release("gamearr:7", 1, "gamearr_releases")["downloadUrl"] == url
-
-    def test_arr_guids_are_kept_out_of_the_model_too(self):
-        guid = "https://indexer.example/download?token=" + "B" * 2000
-        _RELEASE_CACHE["arr:tv"] = [{"guid": guid, "indexerId": 3}]
-        assert _cached_release("arr:tv", 0, "interactive_search")["guid"] == guid
+        assert _cached_release(["a", url], 1, "gamearr_releases") == url
 
     def test_reports_a_grab_before_any_search(self):
-        assert _cached_release("gamearr:7", 0, "gamearr_releases")["error"] == "no-search"
+        picked = _cached_release(None, 0, "gamearr_releases")
+        assert isinstance(picked, ToolError)
+        assert picked.error == "no-search"
 
     def test_reports_an_index_outside_the_results(self):
-        _RELEASE_CACHE["gamearr:7"] = [{"title": "a"}]
-        assert _cached_release("gamearr:7", 5, "gamearr_releases")["error"] == "bad-index"
-        assert _cached_release("gamearr:7", -1, "gamearr_releases")["error"] == "bad-index"
+        for index in (5, -1):
+            picked = _cached_release(["a"], index, "gamearr_releases")
+            assert isinstance(picked, ToolError)
+            assert picked.error == "bad-index"
 
 
 class TestCompact:

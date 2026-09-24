@@ -150,10 +150,10 @@ class LazyLibrarianClient(BaseMediaClient):
         except (httpx.HTTPError, ValueError):
             return False
 
-    async def get_system_status(self) -> VersionInfo:  # type: ignore[override]
+    async def get_system_status(self) -> VersionInfo:
         return VersionInfo.model_validate(await self._query("getVersion"))
 
-    async def search(self, query: str) -> list[SearchResult]:  # type: ignore[override]
+    async def search(self, query: str) -> list[SearchResult]:
         """Search every enabled provider for releases matching a title or author."""
         return _RESULTS.validate_python(await self._query("searchItem", {"item": query}))
 
@@ -175,7 +175,7 @@ class LazyLibrarianClient(BaseMediaClient):
         """Author row plus every book LazyLibrarian holds for them."""
         return AuthorDetail.model_validate(await self._query("getAuthor", {"id": author_id}))
 
-    async def get_item(self, item_id: int) -> AuthorDetail:  # type: ignore[override]
+    async def get_item(self, item_id: int) -> AuthorDetail:
         return await self.get_author(str(item_id))
 
     async def delete_item(self, item_id: int, delete_files: bool = False) -> bool:

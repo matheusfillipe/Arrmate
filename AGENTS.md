@@ -15,7 +15,7 @@ Self-hosted web app that manages the *arr media stack (Sonarr, Radarr, Lidarr, R
 - The `Makefile` is the single canonical interface for all checks; CI and pre-commit both call it.
 
 ## Stack
-- Python 3.11+ (dev on 3.14), managed with `uv`
+- Python 3.12+ (dev on 3.14), managed with `uv`
 - FastAPI + Jinja2 + HTMX; pydantic-ai for the agent loop; httpx everywhere outbound
 
 ## Commands (Makefile is SSoT)

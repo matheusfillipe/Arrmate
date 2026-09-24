@@ -138,16 +138,6 @@ class ReadMeABookClient(BaseExternalService):
         except (httpx.HTTPError, ValueError):
             return False
 
-    async def get_stats(self) -> dict[str, Any]:
-        """Get ReadMeABook library statistics."""
-        try:
-            data = await self._get("api/stats")
-            if isinstance(data, dict):
-                return data
-            return {}
-        except (httpx.HTTPError, ValueError):
-            return {}
-
     async def get_version(self) -> str | None:
         try:
             return _Version.model_validate(await self._get("api/version")).version
