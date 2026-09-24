@@ -1,87 +1,105 @@
 """Add-media flow shared by the web library page and the agent add_media tool."""
 
-import logging
-from typing import Any, cast
+from typing import Any
 
-from arrmate.clients.base_arr import BaseArrClient
+from arrmate.clients.base_arr import QualityProfile, RootFolder
+from arrmate.clients.discovery import ArrClient
 from arrmate.clients.lidarr import LidarrClient
-from arrmate.clients.radarr import RadarrClient
-from arrmate.clients.readarr import ReadarrClient
-from arrmate.clients.sonarr import SonarrClient
-from arrmate.core.models import MediaType
-
-logger = logging.getLogger(__name__)
+from arrmate.clients.radarr import Movie, RadarrClient
+from arrmate.clients.readarr import Author, ReadarrClient
+from arrmate.clients.sonarr import Series, SonarrClient
 
 
-async def add_first_match(
-    client: BaseArrClient,
-    media_type: str,
-    title: str,
-    monitored: bool = True,
-) -> dict[str, Any]:
-    """Search by title, add the first match using the first profile and root folder.
-
-    Raises ValueError when the service lacks a match, profiles, or folders.
-    """
-    results = await client.search(title)
-    if not results:
-        raise ValueError(f"no {media_type} match for {title!r}")
-
+async def _first_profile_and_folder(client: ArrClient) -> tuple[QualityProfile, RootFolder]:
     profiles = await client.get_quality_profiles()
     root_folders = await client.get_root_folders()
     if not profiles or not root_folders:
         raise ValueError("no quality profiles or root folders configured in your service")
-    profile_id = profiles[0]["id"]
-    root_folder = root_folders[0]["path"]
-    item = results[0]
+    return profiles[0], root_folders[0]
 
-    if media_type == MediaType.TV:
-        sonarr = cast(SonarrClient, client)
-        tvdb_id = item.get("tvdbId")
-        if tvdb_id:
-            full_lookup = await sonarr.search(f"tvdb:{tvdb_id}")
-            item = full_lookup[0] if full_lookup else item
-        return await sonarr.add_series_from_lookup(
-            item,
-            quality_profile_id=profile_id,
-            root_folder_path=root_folder,
-            monitored=monitored,
-        )
 
-    if media_type == MediaType.MOVIE:
-        radarr = cast(RadarrClient, client)
-        return await radarr.add_movie(
-            tmdb_id=item["tmdbId"],
-            title=item["title"],
-            quality_profile_id=profile_id,
-            root_folder_path=root_folder,
-            monitored=monitored,
-        )
+async def add_first_series(client: SonarrClient, title: str, monitored: bool = True) -> Series:
+    """Add the first Sonarr match for a title with the first profile and root folder.
 
-    if media_type == MediaType.MUSIC:
-        lidarr = cast(LidarrClient, client)
-        metadata_profiles = await lidarr.get_metadata_profiles()
-        metadata_profile_id = metadata_profiles[0]["id"] if metadata_profiles else 1
-        return await lidarr.add_artist(
-            foreign_artist_id=item["foreignArtistId"],
-            artist_name=item.get("artistName", title),
-            quality_profile_id=profile_id,
-            metadata_profile_id=metadata_profile_id,
-            root_folder_path=root_folder,
-            monitored=monitored,
-        )
+    Raises ValueError when Sonarr has no match, profile or folder.
+    """
+    results = await client.search(title)
+    if not results:
+        raise ValueError(f"no tv match for {title!r}")
+    profile, folder = await _first_profile_and_folder(client)
+    return await client.add_series(
+        results[0].tvdb_id,
+        quality_profile_id=profile.id,
+        root_folder_path=folder.path,
+        monitored=monitored,
+    )
 
-    if media_type in (MediaType.AUDIOBOOK, MediaType.BOOK):
-        readarr = cast(ReadarrClient, client)
-        metadata_profiles = await readarr.get_metadata_profiles()
-        metadata_profile_id = metadata_profiles[0]["id"] if metadata_profiles else 1
-        return await readarr.add_author(
-            foreign_author_id=item["foreignAuthorId"],
-            author_name=item.get("authorName", title),
-            quality_profile_id=profile_id,
-            metadata_profile_id=metadata_profile_id,
-            root_folder_path=root_folder,
-            monitored=monitored,
-        )
 
-    raise ValueError(f"unsupported media type: {media_type}")
+async def add_first_movie(client: RadarrClient, title: str, monitored: bool = True) -> Movie:
+    """Add the first Radarr match for a title with the first profile and root folder."""
+    results = await client.search(title)
+    if not results:
+        raise ValueError(f"no movie match for {title!r}")
+    profile, folder = await _first_profile_and_folder(client)
+    return await client.add_movie(
+        tmdb_id=results[0].tmdb_id,
+        title=results[0].title,
+        quality_profile_id=profile.id,
+        root_folder_path=folder.path,
+        monitored=monitored,
+    )
+
+
+async def add_first_author(client: ReadarrClient, title: str, monitored: bool = True) -> Author:
+    """Add the author of the first Readarr match for a title or author name."""
+    authors = [result.author for result in await client.search(title) if result.author]
+    if not authors:
+        raise ValueError(f"no author match for {title!r}")
+    profile, folder = await _first_profile_and_folder(client)
+    metadata_profiles = await client.get_metadata_profiles()
+    return await client.add_author(
+        foreign_author_id=authors[0].foreign_author_id,
+        author_name=authors[0].author_name,
+        quality_profile_id=profile.id,
+        metadata_profile_id=metadata_profiles[0].id if metadata_profiles else 1,
+        root_folder_path=folder.path,
+        monitored=monitored,
+    )
+
+
+async def add_first_artist(
+    client: LidarrClient, title: str, monitored: bool = True
+) -> dict[str, Any]:
+    """Add the first Lidarr match for an artist name."""
+    results = await client.search(title)
+    if not results:
+        raise ValueError(f"no music match for {title!r}")
+    profile, folder = await _first_profile_and_folder(client)
+    metadata_profiles = await client.get_metadata_profiles()
+    artist = results[0]
+    return await client.add_artist(
+        foreign_artist_id=artist["foreignArtistId"],
+        artist_name=artist.get("artistName", title),
+        quality_profile_id=profile.id,
+        metadata_profile_id=metadata_profiles[0]["id"] if metadata_profiles else 1,
+        root_folder_path=folder.path,
+        monitored=monitored,
+    )
+
+
+async def add_first_match(
+    client: ArrClient, title: str, monitored: bool = True
+) -> Series | Movie | Author | dict[str, Any]:
+    """Search by title and add the first match using the first profile and root folder.
+
+    Raises ValueError when the service lacks a match, profiles, or folders.
+    """
+    match client:
+        case SonarrClient():
+            return await add_first_series(client, title, monitored)
+        case RadarrClient():
+            return await add_first_movie(client, title, monitored)
+        case ReadarrClient():
+            return await add_first_author(client, title, monitored)
+        case LidarrClient():
+            return await add_first_artist(client, title, monitored)

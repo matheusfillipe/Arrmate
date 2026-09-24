@@ -1,12 +1,26 @@
 """Intent validation and enrichment engine."""
 
-from typing import cast
+from collections.abc import Sequence
 
-from arrmate.clients.base import BaseMediaClient
-from arrmate.clients.discovery import get_client_for_media_type
+from arrmate.clients.base_arr import ArrItem
+from arrmate.clients.discovery import ArrClient, get_client_for_media_type
+from arrmate.clients.lidarr import LidarrClient
+from arrmate.clients.radarr import RadarrClient
+from arrmate.clients.readarr import ReadarrClient
 from arrmate.clients.sonarr import SonarrClient
 
 from .models import Intent
+
+
+def _library_match(items: Sequence[ArrItem], title: str) -> int | None:
+    """The id of the item named ``title``, else of the first whose title contains it."""
+    for item in items:
+        if item.title.lower() == title:
+            return item.id
+    for item in items:
+        if title in item.title.lower():
+            return item.id
+    return None
 
 
 class IntentEngine:
@@ -15,10 +29,8 @@ class IntentEngine:
     async def enrich(self, intent: Intent) -> Intent:
         """Enrich an intent with additional context.
 
-        This includes:
-        - Fuzzy matching titles to find exact IDs
-        - Resolving season/episode references
-        - Validating criteria
+        This matches the title against the library, then against the service lookup, to
+        fill in the item IDs.
 
         Args:
             intent: The intent to enrich
@@ -37,76 +49,42 @@ class IntentEngine:
         client = get_client_for_media_type(intent.media_type)
 
         try:
-            # If we have a title, try to find the item in the service
             if intent.title and not intent.item_id:
                 await self._resolve_title(intent, client)
-
-            # For TV shows, resolve episode information
-            if intent.media_type == "tv" and intent.series_id:
-                await self._resolve_episodes(intent, cast(SonarrClient, client))
-
             return intent
-
         finally:
             await client.close()
 
-    async def _resolve_title(self, intent: Intent, client: BaseMediaClient) -> None:
-        """Resolve a title to an item ID using fuzzy matching.
+    async def _resolve_title(self, intent: Intent, client: ArrClient) -> None:
+        """Point the intent at the library item with its title, else at the first lookup match.
 
-        Args:
-            intent: Intent to update
-            client: Media client to use for lookup
+        A Sonarr lookup match sets ``item_id`` to the TVDB id the executor adds it by. Other
+        lookup matches leave ``item_id`` unset, because the executor reads it as a library id
+        for movies, artists and authors. Raises ValueError when neither the library nor the
+        lookup knows the title.
         """
-        # First, search in the library
-        if hasattr(client, "get_all_items"):
-            all_items = await client.get_all_items()
-        else:
-            all_items = []
-
-        title = (intent.title or "").lower()
-        # Try exact match first
-        for item in all_items:
-            if item.get("title", "").lower() == title:
-                intent.item_id = item.get("id")
-                if intent.media_type == "tv":
-                    intent.series_id = item.get("id")
-                return
-
-        # Try partial match
-        for item in all_items:
-            if title in item.get("title", "").lower():
-                intent.item_id = item.get("id")
-                if intent.media_type == "tv":
-                    intent.series_id = item.get("id")
-                return
-
-        # If not found in library, search external sources
-        search_results = await client.search(intent.title or "")
-
-        if not search_results:
-            raise ValueError(f"Could not find '{intent.title}' in library or search results")
-
-        # Use the first result
-        first_result = search_results[0]
-
-        # For items not in library, we may need to add them first
-        # Store the search result for later use in executor
-        if intent.media_type == "tv":
-            intent.item_id = first_result.get("tvdbId")
-        elif intent.media_type == "movie":
-            intent.item_id = first_result.get("tmdbId")
-
-    async def _resolve_episodes(self, intent: Intent, client: SonarrClient) -> None:
-        """Resolve episode references for TV shows.
-
-        Args:
-            intent: Intent to update
-            client: SonarrClient
-        """
-        if not intent.series_id:
+        title = intent.title or ""
+        match client:
+            case SonarrClient() | RadarrClient() | ReadarrClient():
+                library_id = _library_match(await client.get_all_items(), title.lower())
+            case LidarrClient():
+                # Lidarr artists carry an artistName and no title, so we only look them up.
+                library_id = None
+        if library_id is not None:
+            intent.item_id = library_id
+            if isinstance(client, SonarrClient):
+                intent.series_id = library_id
             return
 
-        await client.get_episodes(intent.series_id, season_number=intent.season)
+        if isinstance(client, SonarrClient):
+            series = await client.search(title)
+            if series:
+                intent.item_id = series[0].tvdb_id
+            found = bool(series)
+        else:
+            found = bool(await client.search(title))
+        if not found:
+            raise ValueError(f"Could not find '{intent.title}' in library or search results")
 
     def validate(self, intent: Intent) -> list[str]:
         """Validate an intent and return any validation errors.

@@ -15,6 +15,7 @@ from pydantic_ai import Agent, RunContext
 
 from arrmate.agent.deps import AgentDeps
 from arrmate.agent.tools import _RELEASE_CACHE, _cached_release, _safe
+from arrmate.clients.base_arr import Release
 from arrmate.clients.lidarr import LidarrClient
 from arrmate.clients.navidrome import NavidromeClient
 from arrmate.config.settings import settings
@@ -129,7 +130,7 @@ async def _library_defaults(client: LidarrClient) -> dict[str, Any]:
         counted = Counter(v for v in values if v is not None).most_common(1)
         return counted[0][0] if counted else fallback
 
-    root_paths = [r["path"].rstrip("/") for r in roots]
+    root_paths = [r.path.rstrip("/") for r in roots]
     artist_roots = [
         max(
             (p for p in root_paths if (a.get("path") or "").startswith(p + "/")),
@@ -140,7 +141,7 @@ async def _library_defaults(client: LidarrClient) -> dict[str, Any]:
     ]
     return {
         "quality_profile_id": most_common(
-            [a.get("qualityProfileId") for a in artists], quality[0]["id"]
+            [a.get("qualityProfileId") for a in artists], quality[0].id
         ),
         "metadata_profile_id": most_common(
             [a.get("metadataProfileId") for a in artists], metadata[0]["id"]
@@ -512,8 +513,8 @@ def register_music_tools(agent: Agent[AgentDeps, str]) -> None:
             if "error" in release:
                 return release
             async with ctx.deps.lidarr() as client:
-                queued = await client.push_release(release)
-            return {"grabbed": release.get("title"), "indexer": release.get("indexer"), **queued}
+                await client.push_release(Release.model_validate(release))
+            return {"grabbed": release.get("title"), "indexer": release.get("indexer")}
 
         return await _safe(body)
 

@@ -1,5 +1,7 @@
 """Web routes: discover."""
 
+from arrmate.clients.readarr import ReadarrClient
+
 from ._shared import (  # noqa: F401
     _AUDIOBOOK_CATEGORIES,
     _BOOK_CATEGORIES,
@@ -112,14 +114,10 @@ async def discover_results(
             library_names = set()
             if settings.readarr_url and settings.readarr_api_key:
                 try:
-                    from arrmate.clients.readarr import ReadarrClient
-
                     readarr = ReadarrClient(settings.readarr_url, settings.readarr_api_key)
                     all_authors = await readarr.get_all_items()
                     await readarr.close()
-                    library_names = {
-                        a.get("authorName", "").lower() for a in all_authors if a.get("authorName")
-                    }
+                    library_names = {a.author_name.lower() for a in all_authors}
                 except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
                     pass
             for item in items:
@@ -209,7 +207,7 @@ async def discover_results(
                             radarr = RadarrClient(settings.radarr_url, settings.radarr_api_key)
                             all_movies = await radarr.get_all_items()
                             await radarr.close()
-                            library_tmdb_ids = {m["tmdbId"] for m in all_movies if m.get("tmdbId")}
+                            library_tmdb_ids = {m.tmdb_id for m in all_movies}
                         except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
                             pass
                     elif media_type == "tv" and settings.sonarr_url and settings.sonarr_api_key:
@@ -217,10 +215,8 @@ async def discover_results(
                             sonarr_lib = SonarrClient(settings.sonarr_url, settings.sonarr_api_key)
                             all_series = await sonarr_lib.get_all_items()
                             await sonarr_lib.close()
-                            library_tmdb_ids = {s["tmdbId"] for s in all_series if s.get("tmdbId")}
-                            library_titles = {
-                                s["title"].lower() for s in all_series if s.get("title")
-                            }
+                            library_tmdb_ids = {s.tmdb_id for s in all_series if s.tmdb_id}
+                            library_titles = {s.title.lower() for s in all_series}
                         except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
                             pass
                     for item in items:
@@ -274,11 +270,11 @@ async def discover_add(
             added = await radarr.add_movie(
                 tmdb_id=tmdb_id,
                 title=title,
-                quality_profile_id=profiles[0]["id"],
-                root_folder_path=root_folders[0]["path"],
+                quality_profile_id=profiles[0].id,
+                root_folder_path=root_folders[0].path,
             )
             await radarr.close()
-            msg = f"Added '{added.get('title', title)}' to Radarr"
+            msg = f"Added '{added.title}' to Radarr"
             success = True
 
         elif media_type == "tv":
@@ -301,18 +297,13 @@ async def discover_add(
             root_folders = await sonarr.get_root_folders()
             if not profiles or not root_folders:
                 raise ValueError("Sonarr has no quality profiles or root folders configured")
-            # Lookup via tvdb: to get the full series object (titleSlug, seasons, etc.)
-            lookup = await sonarr.search(f"tvdb:{tvdb_id}")
-            if not lookup:
-                raise ValueError(f"Could not find '{title}' in Sonarr's database (TVDB:{tvdb_id})")
-            # Pass the full lookup result so all Sonarr-required fields are present
-            added = await sonarr.add_series_from_lookup(
-                lookup_result=lookup[0],
-                quality_profile_id=profiles[0]["id"],
-                root_folder_path=root_folders[0]["path"],
+            series = await sonarr.add_series(
+                tvdb_id,
+                quality_profile_id=profiles[0].id,
+                root_folder_path=root_folders[0].path,
             )
             await sonarr.close()
-            msg = f"Added '{added.get('title', title)}' to Sonarr"
+            msg = f"Added '{series.title}' to Sonarr"
             success = True
 
         else:
