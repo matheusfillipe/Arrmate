@@ -18,6 +18,15 @@ from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 
 from arrmate.clients.discovery import discover_services
+from arrmate.clients.listenarr import (
+    AddResult,
+    AudibleMetadata,
+    GrabResult,
+    LibraryBook,
+    QueueItem,
+    Release,
+    SystemHealth,
+)
 from arrmate.core.library_service import add_first_match
 
 from .deps import AgentDeps
@@ -754,26 +763,11 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         """List audiobooks already in the Listenarr library, optionally filtered
         by title or author."""
 
-        async def body() -> Any:
+        async def body() -> list[LibraryBook]:
             async with ctx.deps.listenarr() as client:
                 books = await client.get_all_items()
-                needle = title_filter.lower()
-                out = []
-                for b in books:
-                    haystack = f"{b.get('title') or ''} {b.get('author') or ''}".lower()
-                    if needle and needle not in haystack:
-                        continue
-                    out.append(
-                        {
-                            "id": b.get("id"),
-                            "title": b.get("title"),
-                            "author": b.get("author"),
-                            "narrator": b.get("narrator"),
-                            "status": b.get("status"),
-                            "monitored": b.get("monitored"),
-                        }
-                    )
-                return out
+            needle = title_filter.lower()
+            return [b for b in books if needle in f"{b.title} {' '.join(b.authors)}".lower()]
 
         return await _safe(body)
 
@@ -782,22 +776,9 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         """Search Audible/Audnexus metadata for an audiobook. Use this to find the
         book to hand to listenarr_add; it does not search indexers."""
 
-        async def body() -> Any:
+        async def body() -> list[AudibleMetadata]:
             async with ctx.deps.listenarr() as client:
-                results = await client.search_metadata(query, limit=10)
-                return [
-                    {
-                        "asin": r.get("asin"),
-                        "title": r.get("title"),
-                        "subtitle": r.get("subtitle"),
-                        "author": r.get("author") or r.get("authors"),
-                        "narrator": r.get("narrator"),
-                        "publisher": r.get("publisher"),
-                        "releaseDate": r.get("releaseDate"),
-                        "runtimeMinutes": r.get("runtimeMinutes") or r.get("lengthMinutes"),
-                    }
-                    for r in results
-                ]
+                return await client.search_metadata(query, limit=10)
 
         return await _safe(body)
 
@@ -806,23 +787,9 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         """Search Listenarr's configured indexers for downloadable audiobook
         releases. Returns candidates for listenarr_grab."""
 
-        async def body() -> Any:
+        async def body() -> list[Release]:
             async with ctx.deps.listenarr() as client:
-                results = await client.search(query, category=category or None, limit=25)
-                return [
-                    {
-                        "downloadReference": r.get("downloadReference"),
-                        "title": r.get("title"),
-                        "indexer": r.get("indexer"),
-                        "indexerId": r.get("indexerId"),
-                        "size": r.get("size"),
-                        "seeders": r.get("seeders"),
-                        "leechers": r.get("leechers"),
-                        "protocol": r.get("protocol"),
-                        "ageHours": r.get("ageHours"),
-                    }
-                    for r in results
-                ]
+                return await client.search(query, category=category or None, limit=25)
 
         return await _safe(body)
 
@@ -840,11 +807,11 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         metadata_json. Leave quality_profile_id at 0 to let Listenarr decide.
         """
 
-        async def body() -> Any:
+        async def body() -> AddResult:
             ctx.deps.require_write("listenarr_add")
             async with ctx.deps.listenarr() as client:
                 return await client.add_book(
-                    json.loads(metadata_json),
+                    AudibleMetadata.model_validate_json(metadata_json),
                     quality_profile_id=quality_profile_id or None,
                     monitored=monitored,
                     auto_search=auto_search,
@@ -858,11 +825,11 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     ) -> str:
         """Send one release from listenarr_search to a download client.
 
-        download_reference is the downloadReference field of the chosen search
+        download_reference is the download_reference field of the chosen search
         result. Pass audiobook_id to attach the grab to a library entry.
         """
 
-        async def body() -> Any:
+        async def body() -> GrabResult:
             ctx.deps.require_write("listenarr_grab")
             async with ctx.deps.listenarr() as client:
                 return await client.grab_release(
@@ -875,20 +842,9 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def listenarr_queue(ctx: RunContext[AgentDeps]) -> str:
         """Get Listenarr's active download queue (progress, state, client)."""
 
-        async def body() -> Any:
+        async def body() -> list[QueueItem]:
             async with ctx.deps.listenarr() as client:
-                downloads = await client.get_queue()
-                return [
-                    {
-                        "id": d.get("id"),
-                        "title": d.get("title") or d.get("name"),
-                        "status": d.get("status"),
-                        "progress": d.get("progress"),
-                        "downloadClient": d.get("downloadClient"),
-                        "errorMessage": d.get("errorMessage"),
-                    }
-                    for d in downloads
-                ]
+                return await client.get_queue()
 
         return await _safe(body)
 
@@ -897,7 +853,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         """Listenarr health: whether its indexers, download clients and metadata
         providers are reachable. Check this first when a grab or import fails."""
 
-        async def body() -> Any:
+        async def body() -> SystemHealth:
             async with ctx.deps.listenarr() as client:
                 return await client.get_health()
 

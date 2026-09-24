@@ -3,14 +3,124 @@
 LazyLibrarian is an automated book and audiobook manager similar to
 Sonarr/Radarr, with support for NZB/torrent downloads, Goodreads/GoogleBooks
 metadata, and Calibre integration.
+
+Every call is ``GET /api?apikey=..&cmd=..``. Query commands answer with JSON
+built from database rows, so their keys are the table's column names; action
+commands answer with plain text such as ``OK`` or an error message.
 """
 
-from typing import Any
-from urllib.parse import quote_plus
+from typing import Any, Literal
 
 import httpx
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, TypeAdapter
 
 from .base import BaseMediaClient
+
+BookType = Literal["eBook", "AudioBook"]
+
+
+class _LazyLibrarianRecord(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
+class VersionInfo(_LazyLibrarianRecord):
+    success: bool = Field(alias="Success")
+    version: str | None = Field(default=None, alias="current_version")
+    latest_version: str | None = None
+    install_type: str | None = None
+    commits_behind: int | None = None
+
+
+class Author(_LazyLibrarianRecord):
+    author_id: str = Field(alias="AuthorID")
+    author_name: str = Field(alias="AuthorName")
+    status: str | None = Field(default=None, alias="Status")
+    have_books: int | None = Field(default=None, alias="HaveBooks")
+    total_books: int | None = Field(default=None, alias="TotalBooks")
+    last_book: str | None = Field(default=None, alias="LastBook")
+    date_added: str | None = Field(default=None, alias="DateAdded")
+
+
+class Book(_LazyLibrarianRecord):
+    book_id: str = Field(alias="BookID")
+    book_name: str = Field(alias="BookName")
+    author_id: str | None = Field(default=None, alias="AuthorID")
+    author_name: str | None = Field(default=None, alias="AuthorName")
+    book_sub: str | None = Field(default=None, alias="BookSub")
+    book_isbn: str | None = Field(default=None, alias="BookIsbn")
+    book_pub: str | None = Field(default=None, alias="BookPub")
+    book_date: str | None = Field(default=None, alias="BookDate")
+    book_lang: str | None = Field(default=None, alias="BookLang")
+    book_img: str | None = Field(default=None, alias="BookImg")
+    status: str | None = Field(default=None, alias="Status")
+    audio_status: str | None = Field(
+        default=None, validation_alias=AliasChoices("AudioStatus", "audiostatus", "audio_status")
+    )
+
+
+class AuthorDetail(_LazyLibrarianRecord):
+    author: list[Author] = []
+    books: list[Book] = []
+
+
+class MetadataMatch(_LazyLibrarianRecord):
+    """One hit from the Goodreads/GoogleBooks/OpenLibrary lookup behind findAuthor/findBook."""
+
+    author_name: str | None = Field(default=None, alias="authorname")
+    author_id: str | None = Field(default=None, alias="authorid")
+    book_id: str | None = Field(default=None, alias="bookid")
+    book_name: str | None = Field(default=None, alias="bookname")
+    book_sub: str | None = Field(default=None, alias="booksub")
+    book_isbn: str | None = Field(default=None, alias="bookisbn")
+    book_date: str | None = Field(default=None, alias="bookdate")
+    book_lang: str | None = Field(default=None, alias="booklang")
+    source: str | None = None
+    highest_fuzz: float | None = None
+
+
+class SearchResult(_LazyLibrarianRecord):
+    """One provider release from searchItem."""
+
+    title: str
+    provider: str
+    score: float | None = None
+    size: str | None = None
+    date: str | None = None
+    url: str | None = None
+    mode: str | None = None
+
+
+class Magazine(_LazyLibrarianRecord):
+    title: str = Field(alias="Title")
+    status: str | None = Field(default=None, alias="Status")
+    issue_status: str | None = Field(default=None, alias="IssueStatus")
+    issue_date: str | None = Field(default=None, alias="IssueDate")
+    last_acquired: str | None = Field(default=None, alias="LastAcquired")
+
+
+class Issue(_LazyLibrarianRecord):
+    title: str = Field(alias="Title")
+    issue_id: str = Field(alias="IssueID")
+    issue_date: str | None = Field(default=None, alias="IssueDate")
+    issue_acquired: str | None = Field(default=None, alias="IssueAcquired")
+    issue_file: str | None = Field(default=None, alias="IssueFile")
+
+
+class MagazineIssues(_LazyLibrarianRecord):
+    magazine: list[Magazine] = []
+    issues: list[Issue] = []
+
+
+_AUTHORS = TypeAdapter(list[Author])
+_BOOKS = TypeAdapter(list[Book])
+_MATCHES = TypeAdapter(list[MetadataMatch])
+_RESULTS = TypeAdapter(list[SearchResult])
+_MAGAZINES = TypeAdapter(list[Magazine])
+
+
+def _flags(**flags: bool) -> dict[str, str]:
+    """LazyLibrarian reads a flag as set when its key is present at all."""
+    return {name: "1" for name, enabled in flags.items() if enabled}
 
 
 class LazyLibrarianClient(BaseMediaClient):
@@ -20,403 +130,117 @@ class LazyLibrarianClient(BaseMediaClient):
     books and audiobooks with Goodreads/GoogleBooks integration.
     """
 
-    async def test_connection(self) -> bool:
-        """Test connection to LazyLibrarian.
+    async def _call(self, cmd: str, params: dict[str, str] | None = None) -> httpx.Response:
+        response = await self.client.get(
+            f"{self.base_url}/api", params={"apikey": self.api_key, "cmd": cmd, **(params or {})}
+        )
+        response.raise_for_status()
+        return response
 
-        Returns:
-            True if connection successful
-        """
+    async def _query(self, cmd: str, params: dict[str, str] | None = None) -> Any:
+        return (await self._call(cmd, params)).json()
+
+    async def _command(self, cmd: str, params: dict[str, str] | None = None) -> str:
+        """Run an action command and return LazyLibrarian's text reply, ``OK`` on success."""
+        return (await self._call(cmd, params)).text
+
+    async def test_connection(self) -> bool:
         try:
-            await self._api_call("getVersion")
-            return True
+            return (await self.get_system_status()).success
         except (httpx.HTTPError, ValueError):
             return False
 
-    async def _api_call(self, cmd: str, params: dict[str, Any] | None = None) -> Any:
-        """Make a LazyLibrarian API call.
+    async def get_system_status(self) -> VersionInfo:  # type: ignore[override]
+        return VersionInfo.model_validate(await self._query("getVersion"))
 
-        LazyLibrarian uses ?cmd= style API with API key parameter.
+    async def search(self, query: str) -> list[SearchResult]:  # type: ignore[override]
+        """Search every enabled provider for releases matching a title or author."""
+        return _RESULTS.validate_python(await self._query("searchItem", {"item": query}))
 
-        Args:
-            cmd: Command name
-            params: Additional parameters
+    async def find_author(self, name: str) -> list[MetadataMatch]:
+        """Look an author up on the configured metadata source."""
+        return _MATCHES.validate_python(await self._query("findAuthor", {"name": name}))
 
-        Returns:
-            API response data
-        """
-        call_params = {"apikey": self.api_key, "cmd": cmd}
-        if params:
-            # URL encode parameters properly
-            for key, value in params.items():
-                if isinstance(value, str):
-                    call_params[key] = quote_plus(value)
-                else:
-                    call_params[key] = value
+    async def find_book(self, name: str) -> list[MetadataMatch]:
+        """Look a book up on the configured metadata source."""
+        return _MATCHES.validate_python(await self._query("findBook", {"name": name}))
 
-        result = await self._get("api", params=call_params)
+    async def add_author(self, name: str) -> str:
+        return await self._command("addAuthor", {"name": name})
 
-        # LazyLibrarian returns results in different formats
-        # Simple commands return "OK", complex ones return data
-        if isinstance(result, dict):
-            return result
-        return result
+    async def add_author_by_id(self, author_id: str) -> str:
+        return await self._command("addAuthorID", {"id": author_id})
 
-    async def get_system_status(self) -> dict[str, Any]:
-        """Get system version.
+    async def get_author(self, author_id: str) -> AuthorDetail:
+        """Author row plus every book LazyLibrarian holds for them."""
+        return AuthorDetail.model_validate(await self._query("getAuthor", {"id": author_id}))
 
-        Returns:
-            Version information
-        """
-        version = await self._api_call("getVersion")
-        return {"version": version}
-
-    async def search(self, query: str) -> list[dict[str, Any]]:
-        """Search for books or authors.
-
-        Args:
-            query: Book title or author name
-
-        Returns:
-            List of search results
-        """
-        result = await self._api_call("searchItem", {"item": query})
-        # Return results if available, otherwise empty list
-        if isinstance(result, dict):
-            return result.get("results", [])
-        return []
-
-    async def find_author(self, name: str) -> list[dict[str, Any]]:
-        """Search for an author on GoodReads/GoogleBooks.
-
-        Args:
-            name: Author name
-
-        Returns:
-            List of matching authors
-        """
-        result = await self._api_call("findAuthor", {"name": name})
-        if isinstance(result, dict):
-            return result.get("results", [])
-        return []
-
-    async def find_book(self, name: str) -> list[dict[str, Any]]:
-        """Search for a book on GoodReads/GoogleBooks.
-
-        Args:
-            name: Book title
-
-        Returns:
-            List of matching books
-        """
-        result = await self._api_call("findBook", {"name": name})
-        if isinstance(result, dict):
-            return result.get("results", [])
-        return []
-
-    async def add_author(self, name: str) -> dict[str, Any]:
-        """Add an author to the database.
-
-        Args:
-            name: Author name
-
-        Returns:
-            Result of add operation
-        """
-        return await self._api_call("addAuthor", {"name": name})
-
-    async def add_author_by_id(self, author_id: str) -> dict[str, Any]:
-        """Add an author by their AuthorID.
-
-        Args:
-            author_id: GoodReads/GoogleBooks author ID
-
-        Returns:
-            Result of add operation
-        """
-        return await self._api_call("addAuthorID", {"id": author_id})
-
-    async def get_author(self, author_id: str) -> dict[str, Any]:
-        """Get author details and their books.
-
-        Args:
-            author_id: Author ID
-
-        Returns:
-            Author details with books
-        """
-        result = await self._api_call("getAuthor", {"id": author_id})
-        if isinstance(result, dict):
-            return result
-        return {}
-
-    async def get_item(self, item_id: int) -> dict[str, Any]:
-        """Get author details by ID.
-
-        Args:
-            item_id: Author ID
-
-        Returns:
-            Author details
-        """
+    async def get_item(self, item_id: int) -> AuthorDetail:  # type: ignore[override]
         return await self.get_author(str(item_id))
 
     async def delete_item(self, item_id: int, delete_files: bool = False) -> bool:
-        """Delete an author.
+        """Remove an author; LazyLibrarian never deletes files through the API."""
+        return await self._command("removeAuthor", {"id": str(item_id)}) == "OK"
 
-        Args:
-            item_id: Author ID
-            delete_files: LazyLibrarian doesn't support this parameter
+    async def pause_author(self, author_id: str) -> str:
+        return await self._command("pauseAuthor", {"id": author_id})
 
-        Returns:
-            True if successful
-        """
-        result = await self._api_call("removeAuthor", {"id": str(item_id)})
-        if result == "OK":
-            return True
-        return bool(isinstance(result, dict) and result.get("success"))
+    async def resume_author(self, author_id: str) -> str:
+        return await self._command("resumeAuthor", {"id": author_id})
 
-    async def pause_author(self, author_id: str) -> dict[str, Any]:
-        """Pause author monitoring.
+    async def refresh_author(self, name: str, refresh: bool = True) -> str:
+        """Reload an author from the metadata source; ``refresh`` forces it even when recent."""
+        return await self._command("refreshAuthor", {"name": name, **_flags(refresh=refresh)})
 
-        Args:
-            author_id: Author ID
+    async def get_all_books(self) -> list[Book]:
+        return _BOOKS.validate_python(await self._query("getAllBooks"))
 
-        Returns:
-            Result
-        """
-        return await self._api_call("pauseAuthor", {"id": author_id})
+    async def get_all_authors(self) -> list[Author]:
+        return _AUTHORS.validate_python(await self._query("getIndex"))
 
-    async def resume_author(self, author_id: str) -> dict[str, Any]:
-        """Resume author monitoring.
+    async def add_book(self, book_id: str) -> str:
+        return await self._command("addBook", {"id": book_id})
 
-        Args:
-            author_id: Author ID
+    async def queue_book(self, book_id: str, book_type: BookType = "eBook") -> str:
+        """Mark a book as wanted."""
+        return await self._command("queueBook", {"id": book_id, "type": book_type})
 
-        Returns:
-            Result
-        """
-        return await self._api_call("resumeAuthor", {"id": author_id})
-
-    async def refresh_author(self, name: str, refresh: bool = True) -> dict[str, Any]:
-        """Refresh author data from GoodReads/GoogleBooks.
-
-        Args:
-            name: Author name
-            refresh: Force refresh even if recently updated
-
-        Returns:
-            Result
-        """
-        params = {"name": name}
-        if refresh:
-            params["refresh"] = "1"
-        return await self._api_call("refreshAuthor", params)
-
-    async def get_all_books(self) -> list[dict[str, Any]]:
-        """Get all books in the database.
-
-        Returns:
-            List of all books
-        """
-        result = await self._api_call("getAllBooks")
-        if isinstance(result, dict):
-            return result.get("books", [])
-        return []
-
-    async def get_all_authors(self) -> list[dict[str, Any]]:
-        """Get all authors (index).
-
-        Returns:
-            List of all authors
-        """
-        result = await self._api_call("getIndex")
-        if isinstance(result, dict):
-            return result.get("authors", [])
-        return []
-
-    async def add_book(self, book_id: str) -> dict[str, Any]:
-        """Add a book to the database.
-
-        Args:
-            book_id: Book ID
-
-        Returns:
-            Result
-        """
-        return await self._api_call("addBook", {"id": book_id})
-
-    async def queue_book(
-        self, book_id: str | None = None, book_type: str | None = None
-    ) -> dict[str, Any]:
-        """Mark a book as wanted.
-
-        Args:
-            book_id: Book ID
-            book_type: Type (eBook or AudioBook)
-
-        Returns:
-            Result
-        """
-        params = {}
-        if book_id:
-            params["id"] = book_id
-        if book_type:
-            params["type"] = book_type
-        return await self._api_call("queueBook", params)
-
-    async def unqueue_book(
-        self, book_id: str | None = None, book_type: str | None = None
-    ) -> dict[str, Any]:
-        """Mark a book as skipped.
-
-        Args:
-            book_id: Book ID
-            book_type: Type (eBook or AudioBook)
-
-        Returns:
-            Result
-        """
-        params = {}
-        if book_id:
-            params["id"] = book_id
-        if book_type:
-            params["type"] = book_type
-        return await self._api_call("unqueueBook", params)
+    async def unqueue_book(self, book_id: str, book_type: BookType = "eBook") -> str:
+        """Mark a book as skipped."""
+        return await self._command("unqueueBook", {"id": book_id, "type": book_type})
 
     async def search_book(
-        self, book_id: str, book_type: str | None = None, wait: bool = False
-    ) -> dict[str, Any]:
-        """Search for a specific book by ID.
-
-        Args:
-            book_id: Book ID
-            book_type: Type (eBook or AudioBook)
-            wait: Wait for completion
-
-        Returns:
-            Search result
-        """
-        params = {"id": book_id}
+        self, book_id: str, book_type: BookType | None = None, wait: bool = False
+    ) -> str:
+        params = {"id": book_id, **_flags(wait=wait)}
         if book_type:
             params["type"] = book_type
-        if wait:
-            params["wait"] = "1"
-        return await self._api_call("searchBook", params)
+        return await self._command("searchBook", params)
 
     async def force_library_scan(
         self, wait: bool = False, remove: bool = False, directory: str | None = None
-    ) -> dict[str, Any]:
-        """Force a library scan.
-
-        Args:
-            wait: Wait for completion
-            remove: Remove missing books
-            directory: Specific directory to scan
-
-        Returns:
-            Scan result
-        """
-        params = {}
-        if wait:
-            params["wait"] = "1"
-        if remove:
-            params["remove"] = "1"
+    ) -> str:
+        params = _flags(wait=wait, remove=remove)
         if directory:
             params["dir"] = directory
-        return await self._api_call("forceLibraryScan", params)
+        return await self._command("forceLibraryScan", params)
 
-    async def force_audiobook_scan(self, wait: bool = False) -> dict[str, Any]:
-        """Force an audiobook library scan.
+    async def force_audiobook_scan(self, wait: bool = False) -> str:
+        return await self._command("forceAudioBookScan", _flags(wait=wait))
 
-        Args:
-            wait: Wait for completion
+    async def get_magazines(self) -> list[Magazine]:
+        return _MAGAZINES.validate_python(await self._query("getMagazines"))
 
-        Returns:
-            Scan result
-        """
-        params = {}
-        if wait:
-            params["wait"] = "1"
-        return await self._api_call("forceAudioBookScan", params)
+    async def add_magazine(self, name: str) -> str:
+        return await self._command("addMagazine", {"name": name})
 
-    async def get_magazines(self) -> list[dict[str, Any]]:
-        """Get all magazines.
+    async def get_issues(self, magazine_name: str) -> MagazineIssues:
+        return MagazineIssues.model_validate(
+            await self._query("getIssues", {"name": magazine_name})
+        )
 
-        Returns:
-            List of magazines
-        """
-        result = await self._api_call("getMagazines")
-        if isinstance(result, dict):
-            return result.get("magazines", [])
-        return []
+    async def restart(self) -> str:
+        return await self._command("restart")
 
-    async def add_magazine(self, name: str) -> dict[str, Any]:
-        """Add a magazine.
-
-        Args:
-            name: Magazine name
-
-        Returns:
-            Result
-        """
-        return await self._api_call("addMagazine", {"name": name})
-
-    async def get_issues(self, magazine_name: str) -> list[dict[str, Any]]:
-        """Get issues for a magazine.
-
-        Args:
-            magazine_name: Magazine name
-
-        Returns:
-            List of issues
-        """
-        result = await self._api_call("getIssues", {"name": magazine_name})
-        if isinstance(result, dict):
-            return result.get("issues", [])
-        return []
-
-    async def restart(self) -> dict[str, Any]:
-        """Restart LazyLibrarian.
-
-        Returns:
-            Result
-        """
-        return await self._api_call("restart")
-
-    async def shutdown(self) -> dict[str, Any]:
-        """Shutdown LazyLibrarian.
-
-        Returns:
-            Result
-        """
-        return await self._api_call("shutdown")
-
-    # Implement abstract methods from BaseMediaClient
-
-    async def get_all_series(self) -> list[dict[str, Any]]:
-        """Get all authors (LazyLibrarian uses authors not series).
-
-        Returns:
-            List of all authors
-        """
-        return await self.get_all_authors()
-
-    async def get_all_movies(self) -> list[dict[str, Any]]:
-        """Alias for get_all_authors."""
-        return await self.get_all_authors()
-
-    async def get_quality_profiles(self) -> list[dict[str, Any]]:
-        """LazyLibrarian doesn't have quality profiles.
-
-        Returns:
-            Empty list
-        """
-        return []
-
-    async def get_root_folders(self) -> list[dict[str, Any]]:
-        """LazyLibrarian doesn't expose root folders via API.
-
-        Returns:
-            Empty list
-        """
-        return []
+    async def shutdown(self) -> str:
+        return await self._command("shutdown")

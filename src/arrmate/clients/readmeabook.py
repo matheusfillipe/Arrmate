@@ -9,18 +9,104 @@ Default port: 3030
 Auth: Bearer token (JWT from login or admin-generated API token)
 """
 
-from typing import Any, cast
+from typing import Any, Literal
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 from .base_external import BaseExternalService
+
+RequestStatus = Literal[
+    "pending",
+    "awaiting_approval",
+    "denied",
+    "searching",
+    "downloading",
+    "processing",
+    "downloaded",
+    "available",
+    "failed",
+    "cancelled",
+    "awaiting_search",
+    "awaiting_import",
+    "awaiting_release",
+    "warn",
+]
+
+
+class _RmabRecord(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
+class AudibleBook(_RmabRecord):
+    """An Audible catalogue entry as ReadMeABook serves it in search and discovery lists."""
+
+    asin: str
+    title: str
+    author: str = ""
+    narrator: str | None = None
+    description: str | None = None
+    cover_art_url: str | None = Field(default=None, alias="coverArtUrl")
+    duration_minutes: int | None = Field(default=None, alias="durationMinutes")
+    release_date: str | None = Field(default=None, alias="releaseDate")
+    rating: float | None = None
+
+
+class RequestedAudiobook(_RmabRecord):
+    title: str
+    author: str = ""
+    audible_asin: str | None = Field(default=None, alias="audibleAsin")
+
+
+class BookRequest(_RmabRecord):
+    id: str
+    status: RequestStatus
+    type: Literal["audiobook", "ebook"] = "audiobook"
+    progress: int | None = None
+    error_message: str | None = Field(default=None, alias="errorMessage")
+    audiobook: RequestedAudiobook | None = None
+
+    def matches(self, asin: str, title: str) -> bool:
+        """True when this request is for the book with this ASIN or title."""
+        if self.audiobook is None:
+            return False
+        return self.audiobook.audible_asin == asin or (
+            self.audiobook.title.lower() == title.lower()
+        )
+
+
+class _NewRequest(_RmabRecord):
+    asin: str
+    title: str
+    author: str
+
+
+class _NewRequestBody(_RmabRecord):
+    audiobook: _NewRequest
+
+
+class _SearchPage(_RmabRecord):
+    results: list[AudibleBook] = []
+
+
+class _Shelf(_RmabRecord):
+    audiobooks: list[AudibleBook] = []
+
+
+class _RequestsPage(_RmabRecord):
+    requests: list[BookRequest] = []
+
+
+class _Created(_RmabRecord):
+    request: BookRequest
+
+
+class _Version(_RmabRecord):
+    version: str
 
 
 class ReadMeABookClient(BaseExternalService):
     """Client for ReadMeABook REST API."""
-
-    def __init__(self, base_url: str, api_key: str, timeout: int = 30) -> None:
-        super().__init__(base_url, api_key, timeout)
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -31,11 +117,6 @@ class ReadMeABookClient(BaseExternalService):
                 timeout=self.timeout,
             )
         return self._client
-
-    async def close(self) -> None:
-        if self._client:
-            await self._client.aclose()
-            self._client = None
 
     async def _get(self, endpoint: str, params: dict[str, Any] | None = None) -> Any:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -68,87 +149,40 @@ class ReadMeABookClient(BaseExternalService):
             return {}
 
     async def get_version(self) -> str | None:
-        """Get application version."""
         try:
-            data = await self._get("api/version")
-            if isinstance(data, dict):
-                return data.get("version") or data.get("tag")
-            return None
+            return _Version.model_validate(await self._get("api/version")).version
         except (httpx.HTTPError, ValueError):
             return None
 
-    async def search(self, query: str) -> list[dict[str, Any]]:
-        """Search audiobooks by title or author.
-
-        Returns list of audiobook dicts with title, author, asin fields.
-        """
+    async def search(self, query: str) -> list[AudibleBook]:
+        """Search the Audible catalogue by title or author."""
         try:
             data = await self._get("api/audiobooks/search", params={"q": query})
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict):
-                items = data.get("results", data.get("audiobooks", data.get("books", [])))
-                return cast("list[dict[str, Any]]", items)
-            return []
+            return _SearchPage.model_validate(data).results
         except (httpx.HTTPError, ValueError):
             return []
 
-    async def get_popular(self) -> list[dict[str, Any]]:
-        """Get popular audiobooks."""
+    async def get_popular(self) -> list[AudibleBook]:
         try:
-            data = await self._get("api/audiobooks/popular")
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict):
-                items = data.get("results", data.get("audiobooks", []))
-                return cast("list[dict[str, Any]]", items)
-            return []
+            return _Shelf.model_validate(await self._get("api/audiobooks/popular")).audiobooks
         except (httpx.HTTPError, ValueError):
             return []
 
-    async def get_new_releases(self) -> list[dict[str, Any]]:
-        """Get new audiobook releases."""
+    async def get_new_releases(self) -> list[AudibleBook]:
         try:
             data = await self._get("api/audiobooks/new-releases")
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict):
-                items = data.get("results", data.get("audiobooks", []))
-                return cast("list[dict[str, Any]]", items)
-            return []
+            return _Shelf.model_validate(data).audiobooks
         except (httpx.HTTPError, ValueError):
             return []
 
-    async def get_requests(self) -> list[dict[str, Any]]:
-        """List all audiobook requests."""
+    async def get_requests(self) -> list[BookRequest]:
+        """The first page of requests visible to the token owner, newest first."""
         try:
-            data = await self._get("api/requests")
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict):
-                items = data.get("requests", data.get("results", []))
-                return cast("list[dict[str, Any]]", items)
-            return []
+            return _RequestsPage.model_validate(await self._get("api/requests")).requests
         except (httpx.HTTPError, ValueError):
             return []
 
-    async def create_request(
-        self,
-        asin: str,
-        title: str,
-        author: str = "",
-    ) -> dict[str, Any]:
-        """Submit an audiobook request.
-
-        Args:
-            asin: Amazon ASIN for the audiobook
-            title: Audiobook title
-            author: Author name
-
-        Returns:
-            Created request details
-        """
-        payload: dict[str, Any] = {"asin": asin, "title": title}
-        if author:
-            payload["author"] = author
-        return await self._post("api/requests", data=payload)
+    async def create_request(self, asin: str, title: str, author: str = "") -> BookRequest:
+        body = _NewRequestBody(audiobook=_NewRequest(asin=asin, title=title, author=author))
+        created = await self._post("api/requests", data=body.model_dump())
+        return _Created.model_validate(created).request

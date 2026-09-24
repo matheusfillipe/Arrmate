@@ -1,5 +1,12 @@
 """Web routes: discover."""
 
+from typing import Literal
+from urllib.parse import urljoin
+
+from pydantic import BaseModel
+
+from arrmate.clients.readmeabook import AudibleBook
+
 from ._shared import (  # noqa: F401
     _AUDIOBOOK_CATEGORIES,
     _BOOK_CATEGORIES,
@@ -27,6 +34,34 @@ from ._shared import (  # noqa: F401
     sqlite3,
     templates,
 )
+
+_BOOK_SUBJECTS = {
+    "books_fiction": "fiction",
+    "books_mystery": "mystery",
+    "books_scifi": "science_fiction",
+}
+
+
+class AudiobookCard(BaseModel):
+    display_title: str
+    author: str
+    poster: str | None
+    overview: str
+    asin: str
+    in_library: bool
+    media_type: Literal["audiobook"] = "audiobook"
+
+
+def _audiobook_card(book: AudibleBook, base_url: str, requested: bool) -> AudiobookCard:
+    """ReadMeABook serves cached covers as paths on its own host."""
+    return AudiobookCard(
+        display_title=book.title,
+        author=book.author,
+        poster=urljoin(f"{base_url}/", book.cover_art_url) if book.cover_art_url else None,
+        overview=book.description or "",
+        asin=book.asin,
+        in_library=requested,
+    )
 
 
 @router.get("/discover", response_class=HTMLResponse)
@@ -96,15 +131,11 @@ async def discover_results(
             ol = OpenLibraryClient()
             try:
                 if category == "books_trending":
-                    items = await ol.get_trending_daily()
+                    books = await ol.get_trending_daily()
                 elif category == "books_weekly":
-                    items = await ol.get_trending_weekly()
-                elif category == "books_fiction":
-                    items = await ol.get_subject("fiction")
-                elif category == "books_mystery":
-                    items = await ol.get_subject("mystery")
-                elif category == "books_scifi":
-                    items = await ol.get_subject("science_fiction")
+                    books = await ol.get_trending_weekly()
+                else:
+                    books = await ol.get_subject(_BOOK_SUBJECTS[category])
             finally:
                 await ol.close()
 
@@ -122,8 +153,9 @@ async def discover_results(
                     }
                 except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
                     pass
-            for item in items:
-                item["in_library"] = item.get("author", "").lower() in library_names
+            for book in books:
+                book.in_library = book.author.lower() in library_names
+            items = books
 
         # ── Audiobooks (ReadMeABook) ───────────────────────────────────────────
         elif category in _AUDIOBOOK_CATEGORIES:
@@ -134,33 +166,19 @@ async def discover_results(
                 rmab = ReadMeABookClient(settings.readmeabook_url, settings.readmeabook_api_key)
                 try:
                     if category == "audiobooks_popular":
-                        raw = await rmab.get_popular()
+                        shelf = await rmab.get_popular()
                     else:
-                        raw = await rmab.get_new_releases()
+                        shelf = await rmab.get_new_releases()
 
-                    # Normalise to common card schema
-                    existing_asins: set[str] = set()
-                    try:
-                        reqs = await rmab.get_requests()
-                        existing_asins = {r.get("asin", "") for r in reqs if r.get("asin")}
-                    except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
-                        pass
-
-                    for b in raw:
-                        title = b.get("title") or b.get("name", "Unknown")
-                        asin = b.get("asin", "")
-                        items.append(
-                            {
-                                "display_title": title,
-                                "author": b.get("author", ""),
-                                "year": "",
-                                "poster": b.get("image") or b.get("cover") or b.get("coverUrl"),
-                                "overview": b.get("description", ""),
-                                "asin": asin,
-                                "media_type": "audiobook",
-                                "in_library": asin in existing_asins,
-                            }
+                    requested = await rmab.get_requests()
+                    items = [
+                        _audiobook_card(
+                            book,
+                            settings.readmeabook_url,
+                            requested=any(r.matches(book.asin, book.title) for r in requested),
                         )
+                        for book in shelf
+                    ]
                 finally:
                     await rmab.close()
 
@@ -373,10 +391,7 @@ async def discover_request(
     try:
         # Check for duplicate before submitting
         existing = await rmab.get_requests()
-        already = any(
-            r.get("asin") == asin or r.get("title", "").lower() == title.lower() for r in existing
-        )
-        if already:
+        if any(r.matches(asin, title) for r in existing):
             return templates.TemplateResponse(
                 request,
                 "partials/discover_add_btn.html",

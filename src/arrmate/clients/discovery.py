@@ -89,10 +89,10 @@ async def _bazarr_version(client: BazarrClient) -> str | None:
     return version
 
 
-async def _audiobookshelf_version(client: AudioBookshelfClient) -> str | None:
-    status = await client.get_system_status()
-    version: str | None = status.get("serverVersion") or status.get("version")
-    return version
+async def _book_service_version(
+    client: AudioBookshelfClient | LazyLibrarianClient | ListenarrClient,
+) -> str | None:
+    return (await client.get_system_status()).version
 
 
 async def _client_get_version(client: Any) -> str | None:
@@ -199,7 +199,7 @@ SERVICE_REGISTRY: dict[str, ServiceSpec] = {
             api_version="REST",
             media_type="Audiobooks/Podcasts",
             capabilities=_UPLOAD_ONLY,
-            version_fn=_audiobookshelf_version,
+            version_fn=_book_service_version,
         ),
         ServiceSpec(
             name="lazylibrarian",
@@ -210,7 +210,7 @@ SERVICE_REGISTRY: dict[str, ServiceSpec] = {
             api_version="custom",
             media_type="Books/Audiobooks",
             capabilities=_MANAGE_LIBRARY,
-            version_fn=_system_status_version,
+            version_fn=_book_service_version,
         ),
         ServiceSpec(
             name="readmeabook",
@@ -297,7 +297,7 @@ SERVICE_REGISTRY: dict[str, ServiceSpec] = {
             api_version="v1",
             media_type="Audiobooks",
             capabilities=_MANAGE_LIBRARY,
-            version_fn=_system_status_version,
+            version_fn=_book_service_version,
         ),
         ServiceSpec(
             name="gamearr",

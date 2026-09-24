@@ -538,39 +538,25 @@ class Executor:
             if settings.readmeabook_url and settings.readmeabook_api_key:
                 rmab = ReadMeABookClient(settings.readmeabook_url, settings.readmeabook_api_key)
                 try:
-                    results = await rmab.search(intent.title or "")
-                    if not results:
+                    catalogue = await rmab.search(intent.title or "")
+                    if not catalogue:
                         return ExecutionResult(
                             success=False,
                             message=f"Could not find '{intent.title}' in ReadMeABook",
                         )
-                    book = results[0]
-                    title = book.get("title", intent.title or "")
-                    author = book.get("author", "")
-                    asin = book.get("asin", "")
+                    book = catalogue[0]
 
-                    # Check for duplicate requests
                     existing = await rmab.get_requests()
-                    already = any(
-                        r.get("asin") == asin or r.get("title", "").lower() == title.lower()
-                        for r in existing
-                    )
-                    if already:
+                    if any(r.matches(book.asin, book.title) for r in existing):
                         return ExecutionResult(
                             success=False,
-                            message=f"'{title}' has already been requested",
+                            message=f"'{book.title}' has already been requested",
                         )
 
-                    if not asin:
-                        return ExecutionResult(
-                            success=False,
-                            message=f"Could not determine ASIN for '{title}'; be more specific",
-                        )
-
-                    await rmab.create_request(asin=asin, title=title, author=author)
+                    await rmab.create_request(asin=book.asin, title=book.title, author=book.author)
                     return ExecutionResult(
                         success=True,
-                        message=f"Requested '{title}' via ReadMeABook",
+                        message=f"Requested '{book.title}' via ReadMeABook",
                     )
                 finally:
                     await rmab.close()
