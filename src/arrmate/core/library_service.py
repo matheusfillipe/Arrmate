@@ -60,16 +60,16 @@ async def add_first_match(
 
     if media_type == MediaType.MUSIC:
         lidarr = cast(LidarrClient, client)
-        metadata_profiles = await lidarr.get_metadata_profiles()
-        metadata_profile_id = metadata_profiles[0]["id"] if metadata_profiles else 1
-        return await lidarr.add_artist(
+        lidarr_profiles = await lidarr.get_metadata_profiles()
+        added_artist = await lidarr.add_artist(
             foreign_artist_id=item["foreignArtistId"],
             artist_name=item.get("artistName", title),
             quality_profile_id=profile_id,
-            metadata_profile_id=metadata_profile_id,
+            metadata_profile_id=lidarr_profiles[0].id if lidarr_profiles else 1,
             root_folder_path=root_folder,
             monitored=monitored,
         )
+        return added_artist.model_dump(by_alias=True)
 
     if media_type in (MediaType.AUDIOBOOK, MediaType.BOOK):
         readarr = cast(ReadarrClient, client)

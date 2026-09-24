@@ -498,20 +498,21 @@ class Executor:
             )
 
         if intent.media_type == "music":
-            results = await client.search(intent.title or "")
-            if not results:
+            lidarr = cast(LidarrClient, client)
+            artists = await lidarr.lookup_artists(intent.title or "")
+            if not artists:
                 return ExecutionResult(
                     success=False,
                     message=f"Could not find '{intent.title}' to add",
                 )
 
-            artist = results[0]
-            metadata_profiles = await cast(LidarrClient, client).get_metadata_profiles()
-            metadata_profile_id = metadata_profiles[0]["id"] if metadata_profiles else 1
+            artist = artists[0]
+            lidarr_profiles = await lidarr.get_metadata_profiles()
+            metadata_profile_id = lidarr_profiles[0].id if lidarr_profiles else 1
             try:
-                added = await cast(LidarrClient, client).add_artist(
-                    foreign_artist_id=artist["foreignArtistId"],
-                    artist_name=artist.get("artistName", intent.title or ""),
+                added_artist = await lidarr.add_artist(
+                    foreign_artist_id=artist.foreign_artist_id,
+                    artist_name=artist.artist_name,
                     quality_profile_id=profile_id,
                     metadata_profile_id=metadata_profile_id,
                     root_folder_path=root_folder,
@@ -521,16 +522,14 @@ class Executor:
                 if "already" in msg.lower():
                     return ExecutionResult(
                         success=False,
-                        message=(
-                            f"'{artist.get('artistName', intent.title)}' is already in your library"
-                        ),
+                        message=f"'{artist.artist_name}' is already in your library",
                     )
                 raise
 
             return ExecutionResult(
                 success=True,
-                message=f"Added '{artist.get('artistName', intent.title)}' to library",
-                data=added,
+                message=f"Added '{artist.artist_name}' to library",
+                data=added_artist.model_dump(by_alias=True),
             )
 
         if intent.media_type in ("audiobook", "book"):
@@ -584,7 +583,7 @@ class Executor:
                         message=f"Could not find '{intent.title}' to add",
                     )
                 author = results[0]
-                metadata_profiles = await cast(LidarrClient, client).get_metadata_profiles()
+                metadata_profiles = await cast(ReadarrClient, client).get_metadata_profiles()
                 metadata_profile_id = metadata_profiles[0]["id"] if metadata_profiles else 1
                 try:
                     added = await cast(ReadarrClient, client).add_author(

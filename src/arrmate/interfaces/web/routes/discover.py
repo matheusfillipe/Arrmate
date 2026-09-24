@@ -80,11 +80,9 @@ async def discover_results(
             if settings.lidarr_url and settings.lidarr_api_key:
                 try:
                     lidarr = LidarrClient(settings.lidarr_url, settings.lidarr_api_key)
-                    all_artists = await lidarr.get_all_items()
+                    all_artists = await lidarr.get_artists()
                     await lidarr.close()
-                    library_names = {
-                        a.get("artistName", "").lower() for a in all_artists if a.get("artistName")
-                    }
+                    library_names = {a.artist_name.lower() for a in all_artists}
                 except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
                     pass
             for item in items:
