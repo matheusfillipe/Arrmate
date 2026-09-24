@@ -1,11 +1,51 @@
 """SABnzbd download manager client."""
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
+from pydantic import BaseModel, ConfigDict
 
 logger = logging.getLogger(__name__)
+
+
+class _SabRecord(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+
+class QueueSlot(_SabRecord):
+    nzo_id: str
+    filename: str
+    status: str
+    percentage: int = 0
+    size: str | None = None
+    sizeleft: str | None = None
+    timeleft: str | None = None
+    priority: str | None = None
+    cat: str | None = None
+
+
+class Queue(_SabRecord):
+    status: str
+    paused: bool = False
+    kbpersec: float = 0
+    speedlimit_abs: str | None = None
+    slots: list[QueueSlot] = []
+
+
+class QueueFile(_SabRecord):
+    filename: str
+    bytes: float = 0
+    status: str | None = None
+
+
+class _QueueResponse(_SabRecord):
+    queue: Queue
+
+
+class _FilesResponse(_SabRecord):
+    files: list[QueueFile] = []
 
 
 class SABnzbdClient:
@@ -35,16 +75,23 @@ class SABnzbdClient:
             return url
         if url.endswith("/sabnzbd"):
             return f"{url}/api"
-        # Default: bare host:port — SABnzbd Docker (linuxserver) uses /api at root
+        # Default: bare host:port, SABnzbd Docker (linuxserver) uses /api at root
         return f"{url}/api"
 
-    async def _get(self, mode: str, extra: dict[str, Any] | None = None) -> Any:
-        params = {"apikey": self.api_key, "output": "json", "mode": mode}
+    async def _get(self, mode: str, extra: Mapping[str, str | int] | None = None) -> Any:
+        params: dict[str, str | int] = {"apikey": self.api_key, "output": "json", "mode": mode}
         if extra:
             params.update(extra)
         resp = await self.client.get(self._api_url(), params=params)
         resp.raise_for_status()
         return resp.json()
+
+    async def _action(self, mode: str, extra: Mapping[str, str | int] | None = None) -> bool:
+        try:
+            await self._get(mode, extra)
+            return True
+        except (httpx.HTTPError, ValueError):
+            return False
 
     async def test_connection(self) -> bool:
         try:
@@ -53,104 +100,49 @@ class SABnzbdClient:
         except (httpx.HTTPError, ValueError):
             return False
 
-    async def get_status(self) -> dict[str, Any]:
-        """Get server status including speed, disk space, and pause state."""
-        return await self._get("fullstatus")
-
-    async def get_queue(self) -> dict[str, Any]:
-        """Get the download queue."""
-        return await self._get("queue")
+    async def get_queue(self) -> Queue:
+        """Get the download queue with its speed and pause state."""
+        return _QueueResponse.model_validate(await self._get("queue")).queue
 
     async def pause(self) -> bool:
-        try:
-            await self._get("pause")
-            return True
-        except (httpx.HTTPError, ValueError):
-            return False
+        return await self._action("pause")
 
     async def resume(self) -> bool:
-        try:
-            await self._get("resume")
-            return True
-        except (httpx.HTTPError, ValueError):
-            return False
+        return await self._action("resume")
 
     async def set_speed_limit(self, kbps: int) -> bool:
         """Set download speed limit in KB/s (0 = unlimited)."""
-        try:
-            value = f"{kbps}K" if kbps > 0 else "0"
-            await self._get(
-                "config", {"section": "misc", "keyword": "bandwidth_limit", "value": value}
-            )
-            return True
-        except (httpx.HTTPError, ValueError):
-            return False
+        value = f"{kbps}K" if kbps > 0 else "0"
+        return await self._action(
+            "config", {"section": "misc", "keyword": "bandwidth_limit", "value": value}
+        )
 
     async def delete_item(self, nzo_id: str, delete_files: bool = False) -> bool:
-        try:
-            await self._get(
-                "queue", {"name": "delete", "value": nzo_id, "del_files": 1 if delete_files else 0}
-            )
-            return True
-        except (httpx.HTTPError, ValueError):
-            return False
+        return await self._action(
+            "queue", {"name": "delete", "value": nzo_id, "del_files": 1 if delete_files else 0}
+        )
 
     async def set_priority(self, nzo_id: str, priority: int) -> bool:
         """Set item priority: -1=low, 0=normal, 1=high, 2=forced."""
-        try:
-            await self._get("queue", {"name": "priority", "value": nzo_id, "extra": priority})
-            return True
-        except (httpx.HTTPError, ValueError):
-            return False
+        return await self._action("queue", {"name": "priority", "value": nzo_id, "extra": priority})
 
     async def move_item(self, nzo_id: str, new_slot: int) -> bool:
         """Move item to an absolute queue slot position."""
-        try:
-            await self._get("queue", {"name": "move", "value": nzo_id, "extra": new_slot})
-            return True
-        except (httpx.HTTPError, ValueError):
-            return False
+        return await self._action("queue", {"name": "move", "value": nzo_id, "extra": new_slot})
 
     async def pause_item(self, nzo_id: str) -> bool:
         """Pause a single queue item."""
-        try:
-            await self._get("queue", {"name": "pause", "value": nzo_id})
-            return True
-        except (httpx.HTTPError, ValueError):
-            return False
+        return await self._action("queue", {"name": "pause", "value": nzo_id})
 
     async def resume_item(self, nzo_id: str) -> bool:
         """Resume a single paused queue item."""
-        try:
-            await self._get("queue", {"name": "resume", "value": nzo_id})
-            return True
-        except (httpx.HTTPError, ValueError):
-            return False
+        return await self._action("queue", {"name": "resume", "value": nzo_id})
 
     async def add_url(self, url: str, priority: int = 0, category: str = "") -> bool:
         """Add an NZB by URL."""
-        try:
-            await self._get("addurl", {"name": url, "priority": priority, "cat": category})
-            return True
-        except (httpx.HTTPError, ValueError):
-            return False
+        return await self._action("addurl", {"name": url, "priority": priority, "cat": category})
 
-    async def get_item_files(self, nzo_id: str) -> list[dict[str, Any]]:
-        """List the files inside a queue job.
-
-        Args:
-            nzo_id: NZO ID of the job
-
-        Returns:
-            List of file dicts with name and size (bytes) where SAB reports it
-        """
-        data = await self._get("files", {"value": nzo_id})
-        files = data.get("files", []) if isinstance(data, dict) else []
-        return [
-            {
-                "name": f.get("filename", ""),
-                "size": f.get("bytes", 0),
-                "status": f.get("status", ""),
-            }
-            for f in files
-        ]
+    async def get_item_files(self, nzo_id: str) -> list[QueueFile]:
+        """List the files inside a queue job."""
+        data = await self._get("get_files", {"value": nzo_id})
+        return _FilesResponse.model_validate(data).files

@@ -11,13 +11,27 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, TypeAlias, assert_never
 
 import httpx
 from pydantic import BaseModel, JsonValue
 from pydantic_ai import Agent, RunContext
 
 from arrmate.clients.discovery import discover_services
+from arrmate.clients.gamearr import (
+    Game,
+    GameDownload,
+    GameRelease,
+    GameSearchResult,
+    GrabResult,
+    NpsEntry,
+    NpsJob,
+    NpsKind,
+    NpsPlatform,
+    ReleaseProtocol,
+)
+from arrmate.clients.prowlarr import IndexerStats
+from arrmate.clients.qbittorrent import Torrent, TorrentFile
 from arrmate.core.library_service import add_first_match
 
 from .deps import AgentDeps
@@ -48,6 +62,34 @@ def _cached_release(key: str, index: int, search_tool: str) -> dict[str, Any] | 
     if not 0 <= index < len(releases):
         return {"error": "bad-index", "detail": f"pick 0..{len(releases) - 1}"}
     return releases[index]
+
+
+#: Gamearr releases from the last search per game, for the same reason as _RELEASE_CACHE.
+_GAMEARR_RELEASES: dict[int, list[GameRelease]] = {}
+
+TorrentAction = Literal["delete", "recheck", "reannounce"]
+
+
+class ReleasePickError(BaseModel):
+    error: Literal["no-search", "bad-index"]
+    detail: str
+
+
+class GameReleaseChoice(BaseModel):
+    index: int
+    title: str
+    size: int | None
+    seeders: int | None
+    leechers: int | None
+    indexer: str | None
+    protocol: ReleaseProtocol | None
+    score: int | None
+
+
+class TorrentActionResult(BaseModel):
+    action: TorrentAction
+    ok: bool
+    files_deleted: bool | None = None
 
 
 def _unsupported_media_type(media_type: str) -> str:
@@ -432,21 +474,9 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def get_download_queue_all(ctx: RunContext[AgentDeps]) -> str:
         """List torrents in qBittorrent with state, progress, and speed."""
 
-        async def body() -> Any:
+        async def body() -> list[Torrent]:
             async with ctx.deps.qbittorrent() as c:
-                return [
-                    {
-                        "hash": t.get("hash"),
-                        "name": t.get("name"),
-                        "state": t.get("state"),
-                        "progress": t.get("progress"),
-                        "size": t.get("size"),
-                        "dlspeed": t.get("dlspeed"),
-                        "num_seeds": t.get("num_seeds"),
-                        "category": t.get("category"),
-                    }
-                    for t in await c.get_torrents()
-                ]
+                return await c.get_torrents()
 
         return await _safe(body)
 
@@ -456,7 +486,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         .exe/.lnk/.scr/.zipx, or a size that does not match the release, means
         a poisoned swarm."""
 
-        async def body() -> Any:
+        async def body() -> list[TorrentFile]:
             async with ctx.deps.qbittorrent() as c:
                 return await c.get_item_files(torrent_hash)
 
@@ -466,7 +496,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def get_indexer_stats(ctx: RunContext[AgentDeps]) -> str:
         """Get per-indexer grab/query/failure statistics from Prowlarr."""
 
-        async def body() -> Any:
+        async def body() -> IndexerStats:
             async with ctx.deps.prowlarr() as client:
                 return await client.get_indexer_stats()
 
@@ -644,22 +674,29 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
 
     @agent.tool
     async def download_action(
-        ctx: RunContext[AgentDeps], action: str, torrent_hash: str, delete_files: bool = False
+        ctx: RunContext[AgentDeps],
+        action: TorrentAction,
+        torrent_hash: str,
+        delete_files: bool = False,
     ) -> str:
-        """Act on a qBittorrent torrent. action: 'delete' (destructive when
-        delete_files), 'recheck', or 'reannounce'."""
+        """Act on a qBittorrent torrent. 'delete' is destructive when delete_files is set."""
 
-        async def body() -> Any:
+        async def body() -> TorrentActionResult:
             ctx.deps.require_write(f"download_{action}")
             async with ctx.deps.qbittorrent() as c:
-                if action == "delete":
-                    ok = await c.delete_torrent(torrent_hash, delete_files)
-                    return {"deleted": ok, "filesDeleted": delete_files}
-                if action == "recheck":
-                    return {"rechecked": await c.recheck_torrent(torrent_hash)}
-                if action == "reannounce":
-                    return {"reannounced": await c.reannounce_torrent(torrent_hash)}
-            raise ValueError(f"unsupported action: {action}")
+                match action:
+                    case "delete":
+                        ok = await c.delete_torrent(torrent_hash, delete_files)
+                        return TorrentActionResult(
+                            action=action, ok=ok, files_deleted=ok and delete_files
+                        )
+                    case "recheck":
+                        ok = await c.recheck_torrent(torrent_hash)
+                    case "reannounce":
+                        ok = await c.reannounce_torrent(torrent_hash)
+                    case _:
+                        assert_never(action)
+            return TorrentActionResult(action=action, ok=ok)
 
         return await _safe(body)
 
@@ -941,25 +978,10 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         """List games already in the Gamearr library, optionally filtered by
         title or store (e.g. 'steam', 'gog')."""
 
-        async def body() -> Any:
+        async def body() -> list[Game]:
             async with ctx.deps.gamearr() as client:
                 games = await client.get_games(store=store)
-                out = []
-                for g in games:
-                    if title_filter and title_filter.lower() not in (g.get("title") or "").lower():
-                        continue
-                    out.append(
-                        {
-                            "id": g.get("id"),
-                            "title": g.get("title"),
-                            "platform": g.get("platform"),
-                            "store": g.get("store"),
-                            "status": g.get("status"),
-                            "monitored": g.get("monitored"),
-                            "updateAvailable": g.get("updateAvailable"),
-                        }
-                    )
-                return out
+            return [g for g in games if title_filter.lower() in g.title.lower()]
 
         return await _safe(body)
 
@@ -968,18 +990,9 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         """IGDB metadata search for a game title. Use this to find the igdbId
         needed by gamearr_add before adding something new to the library."""
 
-        async def body() -> Any:
+        async def body() -> list[GameSearchResult]:
             async with ctx.deps.gamearr() as client:
-                results = await client.search_games(query)
-                return [
-                    {
-                        "igdbId": r.get("igdbId"),
-                        "title": r.get("title"),
-                        "year": r.get("year") or r.get("releaseYear"),
-                        "existingGameId": r.get("existingGameId"),
-                    }
-                    for r in results
-                ]
+                return await client.search_games(query)
 
         return await _safe(body)
 
@@ -994,7 +1007,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     ) -> str:
         """Add a game to the Gamearr library. igdb_id comes from gamearr_search."""
 
-        async def body() -> Any:
+        async def body() -> Game:
             ctx.deps.require_write("gamearr_add")
             async with ctx.deps.gamearr() as client:
                 return await client.add_game(
@@ -1013,21 +1026,21 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         Can take 30-180 seconds. Pass a result's index to gamearr_grab to
         download it."""
 
-        async def body() -> Any:
+        async def body() -> list[GameReleaseChoice]:
             async with ctx.deps.gamearr() as client:
                 releases = await client.search_releases(game_id)
-            _RELEASE_CACHE[f"gamearr:{game_id}"] = releases
+            _GAMEARR_RELEASES[game_id] = releases
             return [
-                {
-                    "index": i,
-                    "title": r.get("title"),
-                    "size": r.get("size"),
-                    "seeders": r.get("seeders"),
-                    "leechers": r.get("leechers"),
-                    "indexer": r.get("indexer"),
-                    "protocol": r.get("protocol"),
-                    "score": r.get("score"),
-                }
+                GameReleaseChoice(
+                    index=i,
+                    title=r.title,
+                    size=r.size,
+                    seeders=r.seeders,
+                    leechers=r.leechers,
+                    indexer=r.indexer,
+                    protocol=r.protocol,
+                    score=r.score,
+                )
                 for i, r in enumerate(releases)
             ]
 
@@ -1037,27 +1050,16 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def gamearr_nps_search(
         ctx: RunContext[AgentDeps],
         query: str,
-        platform: str = "PSV",
-        kind: str = "GAMES",
+        platform: NpsPlatform = "PSV",
+        kind: NpsKind = "GAMES",
     ) -> str:
-        """Search NoPayStation for PlayStation downloads. platform is one of PSV,
-        PSP, PS3, PSX, PSM and kind one of GAMES, DLCS, UPDATES, DEMOS. Rows are
-        keyed by title id, so passing a title id searches for that exact title.
-        A Vita result needs its zRIF, which travels with the download."""
+        """Search NoPayStation for PlayStation downloads. Rows are keyed by title
+        id, so passing a title id searches for that exact title. A Vita result
+        needs its zRIF, which travels with the download."""
 
-        async def body() -> Any:
+        async def body() -> list[NpsEntry]:
             async with ctx.deps.gamearr() as client:
-                results = await client.nps_search(query, platform, kind)
-            return [
-                {
-                    "titleId": r.get("titleId"),
-                    "name": r.get("name"),
-                    "region": r.get("region"),
-                    "size": r.get("size"),
-                    "kind": r.get("kind"),
-                }
-                for r in results
-            ]
+                return await client.nps_search(query, platform, kind)
 
         return await _safe(body)
 
@@ -1065,14 +1067,14 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def gamearr_nps_download(
         ctx: RunContext[AgentDeps],
         title_id: str,
-        platform: str = "PSV",
-        kind: str = "GAMES",
+        platform: NpsPlatform = "PSV",
+        kind: NpsKind = "GAMES",
     ) -> str:
         """Download one NoPayStation title by title id, writing the PKG and its
         zRIF key side by side. This downloads only: nothing is installed into an
         emulator. Use gamearr_nps_search first to get the title id."""
 
-        async def body() -> Any:
+        async def body() -> NpsJob:
             ctx.deps.require_write("gamearr_nps_download")
             async with ctx.deps.gamearr() as client:
                 return await client.nps_download(title_id, platform, kind)
@@ -1083,7 +1085,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def gamearr_nps_downloads(ctx: RunContext[AgentDeps]) -> str:
         """Progress of NoPayStation downloads started since gamearr last restarted."""
 
-        async def body() -> Any:
+        async def body() -> list[NpsJob]:
             async with ctx.deps.gamearr() as client:
                 return await client.nps_downloads()
 
@@ -1096,13 +1098,17 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         Pass the index of the chosen result.
         """
 
-        async def body() -> Any:
+        async def body() -> GrabResult | ReleasePickError:
             ctx.deps.require_write("gamearr_grab")
-            release = _cached_release(f"gamearr:{game_id}", index, "gamearr_releases")
-            if "error" in release:
-                return release
+            releases = _GAMEARR_RELEASES.get(game_id)
+            if releases is None:
+                return ReleasePickError(
+                    error="no-search", detail="run gamearr_releases for this first"
+                )
+            if not 0 <= index < len(releases):
+                return ReleasePickError(error="bad-index", detail=f"pick 0..{len(releases) - 1}")
             async with ctx.deps.gamearr() as client:
-                return await client.grab_release(game_id, release)
+                return await client.grab_release(game_id, releases[index])
 
         return await _safe(body)
 
@@ -1110,19 +1116,8 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def gamearr_queue(ctx: RunContext[AgentDeps]) -> str:
         """Get Gamearr's active download queue (progress, speed, ETA)."""
 
-        async def body() -> Any:
+        async def body() -> list[GameDownload]:
             async with ctx.deps.gamearr() as client:
-                downloads = await client.get_downloads()
-                return [
-                    {
-                        "hash": d.get("hash"),
-                        "name": d.get("name"),
-                        "status": d.get("status"),
-                        "progress": d.get("progress"),
-                        "downSpeed": d.get("downSpeed"),
-                        "eta": d.get("eta"),
-                    }
-                    for d in downloads
-                ]
+                return await client.get_downloads()
 
         return await _safe(body)

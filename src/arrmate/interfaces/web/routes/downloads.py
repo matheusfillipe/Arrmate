@@ -1,9 +1,13 @@
 """Web routes: downloads."""
 
-from typing import Any
+from dataclasses import dataclass
+from typing import ClassVar, Literal
 
+from pydantic import TypeAdapter
+
+from arrmate.clients import nzbget, qbittorrent, sabnzbd, transmission
 from arrmate.clients.nzbget import NZBgetClient
-from arrmate.clients.qbittorrent import QBittorrentClient
+from arrmate.clients.qbittorrent import QBittorrentClient, QueueMove
 from arrmate.clients.sabnzbd import SABnzbdClient
 from arrmate.clients.transmission import TransmissionClient
 
@@ -22,6 +26,51 @@ from ._shared import (  # noqa: F401
     templates,
 )
 
+ManagerKind = Literal["sabnzbd", "nzbget", "qbittorrent", "transmission"]
+_QUEUE_MOVE: TypeAdapter[QueueMove] = TypeAdapter(QueueMove)
+
+
+@dataclass(frozen=True)
+class PanelError:
+    name: str
+    type: ManagerKind
+    error: str
+
+
+@dataclass(frozen=True)
+class SabnzbdPanel:
+    status: sabnzbd.Queue
+    queue: list[sabnzbd.QueueSlot]
+    name: ClassVar[str] = "SABnzbd"
+    type: ClassVar[ManagerKind] = "sabnzbd"
+
+
+@dataclass(frozen=True)
+class NzbgetPanel:
+    status: nzbget.Status
+    queue: list[nzbget.Group]
+    name: ClassVar[str] = "NZBget"
+    type: ClassVar[ManagerKind] = "nzbget"
+
+
+@dataclass(frozen=True)
+class QbittorrentPanel:
+    status: qbittorrent.TransferInfo
+    queue: list[qbittorrent.Torrent]
+    name: ClassVar[str] = "qBittorrent"
+    type: ClassVar[ManagerKind] = "qbittorrent"
+
+
+@dataclass(frozen=True)
+class TransmissionPanel:
+    status: transmission.Session
+    queue: list[transmission.Torrent]
+    name: ClassVar[str] = "Transmission"
+    type: ClassVar[ManagerKind] = "transmission"
+
+
+DownloadPanel = PanelError | SabnzbdPanel | NzbgetPanel | QbittorrentPanel | TransmissionPanel
+
 
 @router.get("/downloads", response_class=HTMLResponse, dependencies=[Depends(require_power_user)])
 async def downloads_page(request: Request):
@@ -39,23 +88,15 @@ async def downloads_page(request: Request):
 async def downloads_status(request: Request):
     """HTMX partial: live download queue from all configured managers."""
 
-    managers: list[dict[str, Any]] = []
+    managers: list[DownloadPanel] = []
 
     if settings.sabnzbd_url and settings.sabnzbd_api_key:
         sab_client = SABnzbdClient(str(settings.sabnzbd_url), str(settings.sabnzbd_api_key))
         try:
-            status = await sab_client.get_status()
             queue = await sab_client.get_queue()
-            managers.append(
-                {
-                    "name": "SABnzbd",
-                    "type": "sabnzbd",
-                    "status": status,
-                    "queue": queue,
-                }
-            )
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
-            managers.append({"name": "SABnzbd", "type": "sabnzbd", "error": str(e)})
+            managers.append(SabnzbdPanel(status=queue, queue=queue.slots))
+        except (httpx.HTTPError, ValueError) as e:
+            managers.append(PanelError(name="SABnzbd", type="sabnzbd", error=str(e)))
         finally:
             await sab_client.close()
 
@@ -64,11 +105,13 @@ async def downloads_status(request: Request):
             str(settings.nzbget_url), settings.nzbget_username, settings.nzbget_password or ""
         )
         try:
-            status = await nzb_client.get_status()
-            queue = await nzb_client.get_queue()
-            managers.append({"name": "NZBget", "type": "nzbget", "status": status, "queue": queue})
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
-            managers.append({"name": "NZBget", "type": "nzbget", "error": str(e)})
+            managers.append(
+                NzbgetPanel(
+                    status=await nzb_client.get_status(), queue=await nzb_client.get_queue()
+                )
+            )
+        except (httpx.HTTPError, ValueError) as e:
+            managers.append(PanelError(name="NZBget", type="nzbget", error=str(e)))
         finally:
             await nzb_client.close()
 
@@ -79,18 +122,14 @@ async def downloads_status(request: Request):
             settings.qbittorrent_password or "",
         )
         try:
-            info = await qb_client.get_transfer_info()
-            torrents = await qb_client.get_torrents()
             managers.append(
-                {
-                    "name": "qBittorrent",
-                    "type": "qbittorrent",
-                    "status": info,
-                    "queue": torrents,
-                }
+                QbittorrentPanel(
+                    status=await qb_client.get_transfer_info(),
+                    queue=await qb_client.get_torrents(),
+                )
             )
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
-            managers.append({"name": "qBittorrent", "type": "qbittorrent", "error": str(e)})
+        except (httpx.HTTPError, ValueError) as e:
+            managers.append(PanelError(name="qBittorrent", type="qbittorrent", error=str(e)))
         finally:
             await qb_client.close()
 
@@ -101,18 +140,13 @@ async def downloads_status(request: Request):
             settings.transmission_password or "",
         )
         try:
-            session = await tr_client.get_session()
-            tr_torrents = await tr_client.get_torrents()
             managers.append(
-                {
-                    "name": "Transmission",
-                    "type": "transmission",
-                    "status": session,
-                    "queue": tr_torrents,
-                }
+                TransmissionPanel(
+                    status=await tr_client.get_session(), queue=await tr_client.get_torrents()
+                )
             )
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
-            managers.append({"name": "Transmission", "type": "transmission", "error": str(e)})
+        except (httpx.HTTPError, ValueError) as e:
+            managers.append(PanelError(name="Transmission", type="transmission", error=str(e)))
         finally:
             await tr_client.close()
 
@@ -128,7 +162,7 @@ async def downloads_status(request: Request):
 )
 async def set_download_speed(
     request: Request,
-    manager: str = Form(...),
+    manager: ManagerKind = Form(...),
     kbps: int = Form(...),
 ):
     """Set download speed limit for a download manager."""
@@ -181,7 +215,7 @@ async def set_download_speed(
 )
 async def set_download_priority(
     request: Request,
-    manager: str = Form(...),
+    manager: ManagerKind = Form(...),
     item_id: str = Form(...),
     priority: int = Form(...),
 ):
@@ -231,7 +265,7 @@ async def set_download_priority(
 )
 async def move_download_item(
     request: Request,
-    manager: str = Form(...),
+    manager: ManagerKind = Form(...),
     item_id: str = Form(...),
     action: str = Form(...),
 ):
@@ -258,7 +292,7 @@ async def move_download_item(
                 settings.qbittorrent_username or "",
                 settings.qbittorrent_password or "",
             )
-            ok = await qb_client.set_priority(item_id, action)
+            ok = await qb_client.set_priority(item_id, _QUEUE_MOVE.validate_python(action))
             await qb_client.close()
         return templates.TemplateResponse(
             request,
@@ -282,7 +316,7 @@ async def move_download_item(
 )
 async def pause_download_item(
     request: Request,
-    manager: str = Form(...),
+    manager: ManagerKind = Form(...),
     item_id: str = Form(...),
 ):
     """Pause an individual queue item (SABnzbd / NZBget)."""
@@ -325,7 +359,7 @@ async def pause_download_item(
 )
 async def resume_download_item(
     request: Request,
-    manager: str = Form(...),
+    manager: ManagerKind = Form(...),
     item_id: str = Form(...),
 ):
     """Resume an individual paused queue item (SABnzbd / NZBget)."""
@@ -366,7 +400,7 @@ async def resume_download_item(
 )
 async def add_download(
     request: Request,
-    manager: str = Form(...),
+    manager: ManagerKind = Form(...),
     url: str = Form(...),
     priority: int = Form(default=0),
     category: str = Form(default=""),

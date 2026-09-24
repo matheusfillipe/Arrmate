@@ -84,9 +84,11 @@ async def _system_status_version(client: Any) -> str | None:
 
 
 async def _bazarr_version(client: BazarrClient) -> str | None:
-    status = await client.get_system_status()
-    version: str | None = status.get("data", {}).get("bazarr_version")
-    return version
+    return (await client.get_system_status()).bazarr_version
+
+
+async def _prowlarr_version(client: ProwlarrClient) -> str | None:
+    return (await client.get_system_status()).version
 
 
 async def _audiobookshelf_version(client: AudioBookshelfClient) -> str | None:
@@ -243,7 +245,7 @@ SERVICE_REGISTRY: dict[str, ServiceSpec] = {
             api_version="v1",
             media_type="Indexer Aggregator",
             capabilities=_READ_ONLY,
-            version_fn=_system_status_version,
+            version_fn=_prowlarr_version,
         ),
         ServiceSpec(
             name="cleanuparr",

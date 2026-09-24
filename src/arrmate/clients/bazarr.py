@@ -19,6 +19,10 @@ class _BazarrRecord(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
 
+class SystemStatus(_BazarrRecord):
+    bazarr_version: str
+
+
 class Subtitle(_BazarrRecord):
     code2: str
     hi: bool = False
@@ -128,12 +132,8 @@ class BazarrClient(BaseCompanionClient):
     async def _get_data(self, endpoint: str, params: dict[str, int | str] | None = None) -> Any:
         return (await self._get(endpoint, params=params))["data"]
 
-    async def get_missing_items(self, service_type: str) -> list[dict[str, Any]]:
-        if service_type.lower() == "sonarr":
-            return await self._get_data("api/episodes/wanted")
-        if service_type.lower() == "radarr":
-            return await self._get_data("api/movies/wanted")
-        raise ValueError(f"Unsupported service type: {service_type}")
+    async def get_system_status(self) -> SystemStatus:
+        return SystemStatus.model_validate(await self._get_data("api/system/status"))
 
     async def get_series(self) -> list[Series]:
         return _SERIES.validate_python(await self._get_data("api/series"))

@@ -105,7 +105,7 @@ files = ["src/arrmate"]
 [[tool.mypy.overrides]]
 # Service clients sit on dynamically-shaped JSON; each method documents the
 # expected shape in its signature and docstring.
-module = ["arrmate.clients.audiobookshelf", "arrmate.clients.bazarr", "arrmate.clients.cleanuparr", "arrmate.clients.jellyfin", "arrmate.clients.jellyseerr", "arrmate.clients.lazylibrarian", "arrmate.clients.lastfm", "arrmate.clients.lidarr", "arrmate.clients.nzbget", "arrmate.clients.openlibrary", "arrmate.clients.plex", "arrmate.clients.plex_tv", "arrmate.clients.prowlarr", "arrmate.clients.qbittorrent", "arrmate.clients.radarr", "arrmate.clients.readarr", "arrmate.clients.readmeabook", "arrmate.clients.sabnzbd", "arrmate.clients.sonarr", "arrmate.clients.tmdb", "arrmate.clients.transcoder", "arrmate.clients.transmission"]
+module = ["arrmate.clients.audiobookshelf", "arrmate.clients.bazarr", "arrmate.clients.jellyfin", "arrmate.clients.jellyseerr", "arrmate.clients.lazylibrarian", "arrmate.clients.lastfm", "arrmate.clients.lidarr", "arrmate.clients.openlibrary", "arrmate.clients.plex", "arrmate.clients.plex_tv", "arrmate.clients.radarr", "arrmate.clients.readarr", "arrmate.clients.readmeabook", "arrmate.clients.sonarr", "arrmate.clients.tmdb"]
 disable_error_code = ["no-any-return"]
 
 [[tool.mypy.overrides]]

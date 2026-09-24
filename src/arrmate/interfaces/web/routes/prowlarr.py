@@ -1,9 +1,11 @@
 """Web routes: prowlarr."""
 
 from arrmate.clients.nzbget import NZBgetClient
+from arrmate.clients.prowlarr import Indexer, Release
 from arrmate.clients.qbittorrent import QBittorrentClient
 from arrmate.clients.sabnzbd import SABnzbdClient
 from arrmate.clients.transmission import TransmissionClient
+from arrmate.interfaces.web.routes.downloads import ManagerKind
 
 from ._shared import (  # noqa: F401
     Depends,
@@ -28,7 +30,7 @@ async def prowlarr_page(request: Request):
     """Prowlarr indexer search page."""
     client = _prowlarr_client()
     configured = client is not None
-    indexers = []
+    indexers: list[Indexer] = []
     if client:
         try:
             indexers = await client.get_indexers()
@@ -55,7 +57,7 @@ async def prowlarr_search(
 ):
     """HTMX partial: Prowlarr indexer search results."""
     client = _prowlarr_client()
-    results = []
+    results: list[Release] = []
     error = None
 
     if not client:
@@ -91,7 +93,7 @@ async def prowlarr_search(
 async def prowlarr_send(
     request: Request,
     url: str = Form(...),
-    manager: str = Form(...),
+    manager: ManagerKind = Form(...),
     title: str = Form(default=""),
 ):
     """Send a Prowlarr search result URL to a configured download manager."""

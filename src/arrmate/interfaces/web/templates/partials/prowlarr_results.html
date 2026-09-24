@@ -39,13 +39,13 @@
             </thead>
             <tbody class="divide-y divide-gray-800">
             {% for item in results %}
-            {% set dl_url = item.get("downloadUrl") or item.get("magnetUrl") or item.get("guid") or "" %}
-            {% set protocol = item.get("protocol", "torrent") %}
-            {% set size = item.get("size", 0) | int %}
-            {% set seeders = item.get("seeders") %}
-            {% set peers = item.get("peers") %}
-            {% set grabs = item.get("grabs") %}
-            {% set publish_date = item.get("publishDate", "") %}
+            {% set dl_url = item.link %}
+            {% set protocol = item.protocol %}
+            {% set size = item.size %}
+            {% set seeders = item.seeders %}
+            {% set peers = item.leechers %}
+            {% set grabs = item.grabs %}
+            {% set publish_date = item.publish_date or "" %}
             <tr class="hover:bg-gray-800/50">
                 <td class="py-2 px-2 max-w-0 w-full">
                     <div class="flex items-center gap-2">
@@ -54,13 +54,13 @@
                               title="{{ protocol }}">
                             {% if protocol == "usenet" %}📰{% else %}🌊{% endif %}
                         </span>
-                        <div class="truncate text-gray-200" title="{{ item.get('title', '') }}">
-                            {{ item.get("title", "—") }}
+                        <div class="truncate text-gray-200" title="{{ item.title }}">
+                            {{ item.title }}
                         </div>
                     </div>
                 </td>
                 <td class="py-2 px-2 text-xs text-gray-400 whitespace-nowrap">
-                    {{ item.get("indexer", "—") }}
+                    {{ item.indexer }}
                 </td>
                 <td class="py-2 px-2 text-right text-xs text-gray-400 whitespace-nowrap">
                     {% if size > 1073741824 %}{{ "%.1f"|format(size/1073741824) }} GB
@@ -90,7 +90,7 @@
                           hx-swap="beforeend"
                           class="flex items-center justify-end gap-1">
                         <input type="hidden" name="url" value="{{ dl_url }}">
-                        <input type="hidden" name="title" value="{{ item.get('title', '') | truncate(60) }}">
+                        <input type="hidden" name="title" value="{{ item.title | truncate(60) }}">
                         <select name="manager"
                                 class="bg-gray-700 text-xs text-gray-300 rounded px-1.5 py-1 border-0 cursor-pointer">
                             {% if settings.sabnzbd_url %}<option value="sabnzbd">SABnzbd</option>{% endif %}

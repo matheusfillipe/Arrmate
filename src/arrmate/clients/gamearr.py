@@ -5,11 +5,131 @@ Auth: ``X-Api-Key`` header, base ``/api/v1``. Every response is wrapped in
 """
 
 import logging
-from typing import Any, cast
+from collections.abc import Mapping
+from typing import Any, Literal
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 logger = logging.getLogger(__name__)
+
+GameStatus = Literal["wanted", "downloading", "downloaded"]
+NpsPlatform = Literal["PSV", "PSP", "PS3", "PSX", "PSM"]
+NpsKind = Literal["GAMES", "DLCS", "UPDATES", "DEMOS"]
+ReleaseProtocol = Literal["torrent", "usenet", "direct"]
+
+
+class _GamearrRecord(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
+class SystemStatus(_GamearrRecord):
+    status: str
+    version: str | None = None
+
+
+class Game(_GamearrRecord):
+    id: int
+    igdb_id: int = Field(alias="igdbId")
+    title: str
+    year: int | None = None
+    platform: str | None = None
+    store: str | None = None
+    status: GameStatus
+    monitored: bool
+    library_id: int | None = Field(default=None, alias="libraryId")
+    folder_path: str | None = Field(default=None, alias="folderPath")
+    installed_version: str | None = Field(default=None, alias="installedVersion")
+    latest_version: str | None = Field(default=None, alias="latestVersion")
+    update_available: bool = Field(default=False, alias="updateAvailable")
+
+
+class GameSearchResult(_GamearrRecord):
+    igdb_id: int = Field(alias="igdbId")
+    title: str
+    year: int | None = None
+    platforms: list[str] = []
+    developer: str | None = None
+    publisher: str | None = None
+    existing_game_id: int | None = Field(default=None, alias="existingGameId")
+    steam_app_id: int | None = Field(default=None, alias="steamAppId")
+
+
+class GameRelease(_GamearrRecord):
+    """One indexer or catalogue release; grab_release sends it back as gamearr sent it."""
+
+    guid: str | None = None
+    title: str
+    indexer: str | None = None
+    size: int | None = None
+    seeders: int | None = None
+    leechers: int | None = None
+    download_url: str | None = Field(default=None, alias="downloadUrl")
+    magnet_url: str | None = Field(default=None, alias="magnetUrl")
+    info_url: str | None = Field(default=None, alias="infoUrl")
+    published_at: str | None = Field(default=None, alias="publishedAt")
+    categories: list[int] | None = None
+    protocol: ReleaseProtocol | None = None
+    score: int | None = None
+
+
+class GrabResult(_GamearrRecord):
+    release_id: int | None = Field(default=None, alias="releaseId")
+    torrent_hash: str | None = Field(default=None, alias="torrentHash")
+
+
+class GameDownload(_GamearrRecord):
+    hash: str
+    name: str
+    size: int | None = None
+    progress: float
+    download_speed: int | None = Field(default=None, alias="downloadSpeed")
+    eta: int | None = None
+    state: str
+    category: str | None = None
+    game_id: int | None = Field(default=None, alias="gameId")
+    client: str | None = None
+
+
+class Library(_GamearrRecord):
+    id: int
+    name: str
+    path: str
+    platform: str | None = None
+    monitored: bool | None = None
+    priority: int | None = None
+
+
+class NpsEntry(_GamearrRecord):
+    title_id: str = Field(alias="titleId")
+    name: str
+    region: str | None = None
+    size: int | None = None
+    platform: NpsPlatform
+    kind: NpsKind
+
+
+class NpsJob(_GamearrRecord):
+    id: str
+    title_id: str = Field(alias="titleId")
+    name: str
+    platform: NpsPlatform
+    kind: NpsKind
+    size: int | None = None
+    received: int = 0
+    state: Literal["downloading", "done", "failed"]
+    error: str | None = None
+    path: str | None = None
+    zrif_path: str | None = Field(default=None, alias="zrifPath")
+
+
+_GAMES = TypeAdapter(list[Game])
+_SEARCH_RESULTS = TypeAdapter(list[GameSearchResult])
+_RELEASES = TypeAdapter(list[GameRelease])
+_DOWNLOADS = TypeAdapter(list[GameDownload])
+_LIBRARIES = TypeAdapter(list[Library])
+_NPS_ENTRIES = TypeAdapter(list[NpsEntry])
+_NPS_JOBS = TypeAdapter(list[NpsJob])
 
 
 class GamearrClient:
@@ -36,7 +156,11 @@ class GamearrClient:
             self._client = None
 
     async def _request(
-        self, method: str, path: str, params: dict[str, Any] | None = None, json: Any = None
+        self,
+        method: str,
+        path: str,
+        params: Mapping[str, str | int] | None = None,
+        json: Mapping[str, object] | None = None,
     ) -> Any:
         resp = await self.client.request(
             method, f"{self.base_url}/api/v1{path}", params=params, json=json
@@ -47,37 +171,41 @@ class GamearrClient:
             raise ValueError(envelope.get("error") or "gamearr request failed")
         return envelope.get("data")
 
-    async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    async def _get(self, path: str, params: Mapping[str, str | int] | None = None) -> Any:
         return await self._request("GET", path, params=params)
 
-    async def _post(self, path: str, json: Any = None) -> Any:
+    async def _post(self, path: str, json: Mapping[str, object]) -> Any:
         return await self._request("POST", path, json=json)
 
     async def test_connection(self) -> bool:
         try:
-            await self._get("/system/status")
+            await self.get_system_status()
             return True
         except (httpx.HTTPError, ValueError):
             return False
 
-    async def get_games(self, limit: int = 0, offset: int = 0, store: str = "") -> list[Any]:
+    async def get_system_status(self) -> SystemStatus:
+        return SystemStatus.model_validate(await self._get("/system/status"))
+
+    async def get_games(self, limit: int = 0, offset: int = 0, store: str = "") -> list[Game]:
         """List games in the library, optionally paginated and filtered by store."""
-        params: dict[str, Any] = {}
+        params: dict[str, str | int] = {}
         if limit:
             params["limit"] = limit
         if offset:
             params["offset"] = offset
         if store:
             params["store"] = store
-        return cast(list[Any], await self._get("/games", params=params))
+        return _GAMES.validate_python(await self._get("/games", params=params))
 
-    async def get_game(self, game_id: int) -> dict[str, Any]:
-        """Get full details for one library game."""
-        return cast(dict[str, Any], await self._get(f"/games/{game_id}"))
+    async def get_game(self, game_id: int) -> Game:
+        return Game.model_validate(await self._get(f"/games/{game_id}"))
 
-    async def search_games(self, query: str) -> list[Any]:
+    async def search_games(self, query: str) -> list[GameSearchResult]:
         """IGDB metadata search, resolves a title to an igdbId for add_game."""
-        return cast(list[Any], await self._get("/search/games", params={"q": query}))
+        return _SEARCH_RESULTS.validate_python(
+            await self._get("/search/games", params={"q": query})
+        )
 
     async def add_game(
         self,
@@ -85,11 +213,11 @@ class GamearrClient:
         monitored: bool = True,
         store: str = "",
         library_id: int = 0,
-        status: str = "",
+        status: GameStatus | None = None,
         platform: str = "",
-    ) -> dict[str, Any]:
+    ) -> Game:
         """Add a game to the library from an IGDB search result."""
-        body: dict[str, Any] = {"igdbId": igdb_id, "monitored": monitored}
+        body: dict[str, object] = {"igdbId": igdb_id, "monitored": monitored}
         if store:
             body["store"] = store
         if library_id:
@@ -98,57 +226,52 @@ class GamearrClient:
             body["status"] = status
         if platform:
             body["platform"] = platform
-        return cast(dict[str, Any], await self._post("/games", json=body))
+        return Game.model_validate(await self._post("/games", json=body))
 
     async def nps_search(
-        self, query: str, platform: str = "PSV", kind: str = "GAMES", limit: int = 25
-    ) -> list[Any]:
+        self, query: str, platform: NpsPlatform = "PSV", kind: NpsKind = "GAMES", limit: int = 25
+    ) -> list[NpsEntry]:
         """Search the NoPayStation catalogue, which is keyed by title id rather than name."""
-        return cast(
-            list[Any],
-            await self._get(
-                "/nps/search",
-                params={"q": query, "platform": platform, "kind": kind, "limit": limit},
-            ),
+        data = await self._get(
+            "/nps/search", params={"q": query, "platform": platform, "kind": kind, "limit": limit}
         )
+        return _NPS_ENTRIES.validate_python(data)
 
-    async def nps_title(self, title_id: str, platform: str = "PSV") -> list[Any]:
+    async def nps_title(self, title_id: str, platform: NpsPlatform = "PSV") -> list[NpsEntry]:
         """Every NoPayStation row for one title id: the game plus any update and DLC."""
-        return cast(
-            list[Any], await self._get(f"/nps/title/{title_id}", params={"platform": platform})
-        )
+        data = await self._get(f"/nps/title/{title_id}", params={"platform": platform})
+        return _NPS_ENTRIES.validate_python(data)
 
     async def nps_download(
-        self, title_id: str, platform: str = "PSV", kind: str = "GAMES"
-    ) -> dict[str, Any]:
+        self, title_id: str, platform: NpsPlatform = "PSV", kind: NpsKind = "GAMES"
+    ) -> NpsJob:
         """Download one PKG and its zRIF key. Downloads only; nothing is installed."""
-        return cast(
-            dict[str, Any],
-            await self._post(
-                "/nps/download", json={"titleId": title_id, "platform": platform, "kind": kind}
-            ),
+        data = await self._post(
+            "/nps/download", json={"titleId": title_id, "platform": platform, "kind": kind}
         )
+        return NpsJob.model_validate(data)
 
-    async def nps_downloads(self) -> list[Any]:
+    async def nps_downloads(self) -> list[NpsJob]:
         """Progress for NoPayStation downloads requested since the server started."""
-        return cast(list[Any], await self._get("/nps/downloads"))
+        return _NPS_JOBS.validate_python(await self._get("/nps/downloads"))
 
-    async def search_releases(self, game_id: int) -> list[Any]:
+    async def search_releases(self, game_id: int) -> list[GameRelease]:
         """Prowlarr indexer search for candidate releases of a library game."""
-        return cast(list[Any], await self._get(f"/search/releases/{game_id}"))
+        return _RELEASES.validate_python(await self._get(f"/search/releases/{game_id}"))
 
-    async def grab_release(self, game_id: int, release: dict[str, Any]) -> dict[str, Any]:
+    async def grab_release(self, game_id: int, release: GameRelease) -> GrabResult:
         """Push one specific release (from search_releases) to the download client."""
-        return cast(
-            dict[str, Any],
-            await self._post("/search/grab", json={"gameId": game_id, "release": release}),
-        )
+        body = {
+            "gameId": game_id,
+            "release": release.model_dump(mode="json", by_alias=True, exclude_none=True),
+        }
+        return GrabResult.model_validate(await self._post("/search/grab", json=body))
 
-    async def get_downloads(self, include_completed: bool = False) -> list[Any]:
+    async def get_downloads(self, include_completed: bool = False) -> list[GameDownload]:
         """Get the active download queue."""
         params = {"includeCompleted": "true"} if include_completed else None
-        return cast(list[Any], await self._get("/downloads", params=params))
+        return _DOWNLOADS.validate_python(await self._get("/downloads", params=params))
 
-    async def get_libraries(self) -> list[Any]:
+    async def get_libraries(self) -> list[Library]:
         """List configured game libraries (name, path, platform, priority)."""
-        return cast(list[Any], await self._get("/libraries"))
+        return _LIBRARIES.validate_python(await self._get("/libraries"))

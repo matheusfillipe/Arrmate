@@ -8,11 +8,14 @@ consistent instead of depending on the model improvising a tool sequence.
 
 import logging
 import re
-from typing import Any
+from typing import Any, Literal
 
 import httpx
+from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 
+from arrmate.clients.cleanuparr import Event
+from arrmate.clients.qbittorrent import TorrentState
 from arrmate.config.settings import settings
 
 from .deps import AgentDeps
@@ -83,29 +86,53 @@ def _rank_releases(results: list[dict], title: str) -> list[dict]:
     return sorted(keep, key=lambda r: r.get("seeders") or 0, reverse=True)
 
 
-def _looks_poisoned(files: list[dict]) -> dict | None:
-    """Heuristic poisoned-swarm check on a downloader file list.
+class PoisonedSwarm(BaseModel):
+    reason: Literal["suspicious file extension", "single non-video file"]
+    files: list[str]
 
-    Returns a finding dict when the file list looks like malware, else None.
-    """
-    if not files:
+
+class MalwareCheck(BaseModel):
+    verdict: Literal["poisoned-swarm", "clean", "no-live-torrent"]
+    live_torrents_checked: int
+    torrent: str | None = None
+    hash: str | None = None
+    finding: PoisonedSwarm | None = None
+
+
+class CleanuparrCrossCheck(BaseModel):
+    matched_strikes: int = 0
+    sample: list[Event] = []
+    error: str | None = None
+
+
+AuditFlag = Literal["unmanaged", "zero-seeds", "poisoned"]
+
+
+class AuditedTorrent(BaseModel):
+    hash: str
+    name: str
+    state: TorrentState
+    size: int
+    flags: list[AuditFlag] = []
+    malware: PoisonedSwarm | None = None
+
+
+class DownloadAudit(BaseModel):
+    total_torrents: int
+    flagged: int
+    items: list[AuditedTorrent]
+    note: str = "unmanaged = no arr queue entry owns it; zero-seeds = stalled with no peers"
+
+
+def _looks_poisoned(file_names: list[str]) -> PoisonedSwarm | None:
+    """Heuristic poisoned-swarm check on the names in a downloader file list."""
+    if not file_names:
         return None
-    suspicious = [
-        f for f in files if str(f.get("name", "")).lower().endswith(_SUSPICIOUS_EXTENSIONS)
-    ]
+    suspicious = [n for n in file_names if n.lower().endswith(_SUSPICIOUS_EXTENSIONS)]
     if suspicious:
-        return {
-            "verdict": "poisoned-swarm",
-            "reason": "suspicious file extension",
-            "files": [f.get("name") for f in suspicious],
-        }
-    videos = [f for f in files if str(f.get("name", "")).lower().endswith(_VIDEO_EXTENSIONS)]
-    if not videos and len(files) == 1:
-        return {
-            "verdict": "poisoned-swarm",
-            "reason": "single non-video file",
-            "files": [files[0].get("name")],
-        }
+        return PoisonedSwarm(reason="suspicious file extension", files=suspicious)
+    if len(file_names) == 1 and not file_names[0].lower().endswith(_VIDEO_EXTENSIONS):
+        return PoisonedSwarm(reason="single non-video file", files=file_names)
     return None
 
 
@@ -282,48 +309,50 @@ def register_playbook_tools(agent: Agent[AgentDeps, str]) -> None:
             }
 
             # 3. Cleanuparr cross-check
+            download_hashes = {str(d).lower() for d in download_ids}
             if external_strikes:
                 async with ctx.deps.cleanuparr() as cc:
                     try:
                         events = await cc.get_events(page_size=100)
-                        strikes = [e for e in events if any(str(d) in str(e) for d in download_ids)]
-                        finding["cleanuparr"] = (
-                            {
-                                "matchedStrikes": len(strikes),
-                                "sample": strikes[:5],
-                            }
-                            if strikes
-                            else {"matchedStrikes": 0}
+                        strikes = [
+                            e
+                            for e in events
+                            if e.item_hash and e.item_hash.lower() in download_hashes
+                        ]
+                        finding["cleanuparr"] = CleanuparrCrossCheck(
+                            matched_strikes=len(strikes), sample=strikes[:5]
                         )
-                    except (httpx.HTTPError, KeyError, ValueError) as e:
-                        finding["cleanuparr"] = {"error": str(e)[:150]}
+                    except (httpx.HTTPError, ValueError) as e:
+                        finding["cleanuparr"] = CleanuparrCrossCheck(error=str(e)[:150])
 
             # 4. Downloader file-list check on any live torrent
+            malware: MalwareCheck | None = None
             if settings.qbittorrent_url:
                 async with ctx.deps.qbittorrent() as q:
                     torrents = await q.get_torrents()
                     live = [
                         t
                         for t in torrents
-                        if t.get("hash") in download_ids
-                        or any(str(d) in (t.get("name") or "") for d in download_ids)
+                        if t.hash.lower() in download_hashes
+                        or any(d in t.name.lower() for d in download_hashes)
                     ]
+                    malware = MalwareCheck(
+                        verdict="clean" if live else "no-live-torrent",
+                        live_torrents_checked=len(live),
+                    )
                     for t in live[:3]:
-                        files = await q.get_item_files(t["hash"])
-                        poisoned = _looks_poisoned(files)
+                        files = await q.get_item_files(t.hash)
+                        poisoned = _looks_poisoned([f.name for f in files])
                         if poisoned:
-                            finding["malwareCheck"] = {
-                                "torrent": t.get("name"),
-                                "hash": t.get("hash"),
-                                **poisoned,
-                            }
+                            malware = MalwareCheck(
+                                verdict="poisoned-swarm",
+                                live_torrents_checked=len(live),
+                                torrent=t.name,
+                                hash=t.hash,
+                                finding=poisoned,
+                            )
                             break
-                    else:
-                        finding["malwareCheck"] = (
-                            {"liveTorrentsChecked": len(live), "verdict": "clean"}
-                            if live
-                            else {"liveTorrentsChecked": 0}
-                        )
+                finding["malwareCheck"] = malware
 
             # 5. Interactive search, bucketed by encode family
             if media_type == "movie":
@@ -360,7 +389,7 @@ def register_playbook_tools(agent: Agent[AgentDeps, str]) -> None:
             }
 
             # 6. Recommendation
-            if finding.get("malwareCheck", {}).get("verdict") == "poisoned-swarm":
+            if malware is not None and malware.verdict == "poisoned-swarm":
                 finding["recommendation"] = (
                     "Delete the live torrent (download_action delete with delete_files), "
                     "blocklist it, then push a release from a DIFFERENT encode family — "
@@ -398,7 +427,7 @@ def register_playbook_tools(agent: Agent[AgentDeps, str]) -> None:
         I don't know why'. Read-only.
         """
 
-        async def body() -> dict[str, Any]:
+        async def body() -> DownloadAudit:
             if not settings.qbittorrent_url:
                 raise ValueError("qBittorrent is not configured")
 
@@ -426,43 +455,26 @@ def register_playbook_tools(agent: Agent[AgentDeps, str]) -> None:
             async with ctx.deps.qbittorrent() as q:
                 torrents = await q.get_torrents()
 
-            findings: list[dict] = []
-            for t in torrents:
-                h = (t.get("hash") or "").lower()
-                state = t.get("state") or ""
-                item: dict[str, Any] = {
-                    "hash": h,
-                    "name": t.get("name"),
-                    "state": state,
-                    "size": t.get("size"),
-                    "flags": [],
-                }
-                if h not in managed_hashes and not any(
-                    qt and qt in (t.get("name") or "") for qt in queue_titles
-                ):
-                    item["flags"].append("unmanaged")
-                if state in ("stalledDL", "metaDL") and (t.get("num_seeds") or 0) == 0:
-                    item["flags"].append("zero-seeds")
-                findings.append(item)
+            findings = [
+                AuditedTorrent(hash=t.hash.lower(), name=t.name, state=t.state, size=t.size)
+                for t in torrents
+            ]
+            for item, t in zip(findings, torrents, strict=True):
+                if item.hash not in managed_hashes and not any(qt in t.name for qt in queue_titles):
+                    item.flags.append("unmanaged")
+                if t.state in ("stalledDL", "metaDL") and t.num_seeds == 0:
+                    item.flags.append("zero-seeds")
 
             for item in findings[:10]:
-                if item["flags"]:
+                if item.flags:
                     async with ctx.deps.qbittorrent() as q:
-                        files = await q.get_item_files(item["hash"])
-                    poisoned = _looks_poisoned(files)
-                    if poisoned:
-                        item["flags"].append("poisoned")
-                        item["malware"] = poisoned
+                        files = await q.get_item_files(item.hash)
+                    item.malware = _looks_poisoned([f.name for f in files])
+                    if item.malware:
+                        item.flags.append("poisoned")
 
-            flagged = [f for f in findings if f["flags"]]
-            return {
-                "totalTorrents": len(findings),
-                "flagged": len(flagged),
-                "items": flagged,
-                "note": (
-                    "unmanaged = no arr queue entry owns it; zero-seeds = stalled with no peers"
-                ),
-            }
+            flagged = [f for f in findings if f.flags]
+            return DownloadAudit(total_torrents=len(findings), flagged=len(flagged), items=flagged)
 
         try:
             return _wrap(await body())
