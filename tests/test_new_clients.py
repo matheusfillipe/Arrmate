@@ -5,7 +5,7 @@ import pytest
 
 from arrmate.clients.cleanuparr import CleanuparrClient
 from arrmate.clients.jellyfin import JellyfinClient
-from arrmate.clients.jellyseerr import JellyseerrClient
+from arrmate.clients.jellyseerr import JellyseerrClient, RequestStatus
 from arrmate.clients.lidarr import LidarrClient
 
 
@@ -59,10 +59,14 @@ async def test_jellyfin_items(httpx_mock):
                 "SearchTerm": "dune",
             },
         ),
-        json={"Items": [{"Id": "1", "Name": "Dune", "Type": "Movie"}]},
+        json={
+            "Items": [{"Id": "1", "Name": "Dune", "Type": "Movie", "UserData": {"Played": True}}],
+            "TotalRecordCount": 1,
+        },
     )
-    data = await c.get_items(search_term="dune")
-    assert data["Items"][0]["Name"] == "Dune"
+    page = await c.get_items(search_term="dune")
+    assert page.items[0].name == "Dune"
+    assert page.items[0].user_data and page.items[0].user_data.played is True
     await c.close()
 
 
@@ -82,10 +86,27 @@ async def test_jellyseerr_requests(httpx_mock):
             "http://js:5055/api/v1/request",
             params={"take": "50", "sort": "added", "filter": "pending"},
         ),
-        json={"results": [{"id": 3, "media": {"title": "Silo"}}]},
+        json={
+            "pageInfo": {"pages": 1, "pageSize": 50, "results": 1, "page": 1},
+            "results": [
+                {
+                    "id": 3,
+                    "status": 1,
+                    "type": "tv",
+                    "is4k": False,
+                    "createdAt": "2026-02-19T19:37:16.000Z",
+                    "media": {"id": 9, "mediaType": "tv", "tmdbId": 125988, "status": 2},
+                    "requestedBy": {"id": 1, "displayName": "mattf"},
+                }
+            ],
+        },
     )
-    data = await c.get_requests(status="pending")
-    assert data["results"][0]["id"] == 3
+    page = await c.get_requests(status="pending")
+    request = page.results[0]
+    assert request.id == 3
+    assert request.status is RequestStatus.PENDING
+    assert request.media.tmdb_id == 125988
+    assert request.model_dump(mode="json")["status"] == "pending"
     await c.close()
 
 
@@ -93,9 +114,19 @@ async def test_jellyseerr_requests(httpx_mock):
 async def test_jellyseerr_approve(httpx_mock):
     c = JellyseerrClient("http://js:5055", "key")
     httpx_mock.add_response(
-        method="POST", url="http://js:5055/api/v1/request/3/approve", json={"success": True}
+        method="POST",
+        url="http://js:5055/api/v1/request/3/approve",
+        json={
+            "id": 3,
+            "status": 2,
+            "type": "movie",
+            "is4k": False,
+            "createdAt": "2026-02-19T19:37:16.000Z",
+            "media": {"id": 9, "mediaType": "movie", "tmdbId": 438631, "status": 3},
+        },
     )
-    await c.approve_request(3)
+    approved = await c.approve_request(3)
+    assert approved.status is RequestStatus.APPROVED
     await c.close()
 
 
@@ -103,14 +134,23 @@ async def test_jellyseerr_approve(httpx_mock):
 async def test_jellyseerr_search(httpx_mock):
     c = JellyseerrClient("http://js:5055", "key")
     httpx_mock.add_response(
-        url=httpx.URL(
-            "http://js:5055/api/v1/search",
-            params={"query": "dune", "page": "1"},
-        ),
-        json={"results": [{"id": 429, "name": "Dune", "mediaType": "movie"}]},
+        json={
+            "page": 1,
+            "totalPages": 1,
+            "totalResults": 2,
+            "results": [
+                {"id": 438631, "title": "Dune", "mediaType": "movie", "releaseDate": "2021-09-15"},
+                {"id": 90228, "name": "Dune: Prophecy", "mediaType": "tv"},
+            ],
+        },
     )
-    data = await c.search_tmdb("dune")
-    assert data["results"][0]["mediaType"] == "movie"
+    page = await c.search_tmdb("dune prophecy")
+    request = httpx_mock.get_request()
+    assert request and request.url.raw_path == b"/api/v1/search?query=dune%20prophecy&page=1"
+    assert [(r.media_type, r.title or r.name) for r in page.results] == [
+        ("movie", "Dune"),
+        ("tv", "Dune: Prophecy"),
+    ]
     await c.close()
 
 

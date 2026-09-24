@@ -11,11 +11,25 @@ import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
 
 import httpx
+from pydantic import BaseModel
+
+from arrmate.clients.plex import PlexMetadata
 
 logger = logging.getLogger(__name__)
+
+
+class CachedHistoryEntry(BaseModel):
+    rating_key: str | None = None
+    title: str
+    grandparent_title: str | None = None
+    type: str
+    thumb: str | None = None
+    grandparent_thumb: str | None = None
+    viewed_at: int
+    account_id: int | None = None
+
 
 # Time-to-live in seconds before the cache is considered stale
 CACHE_TTL = 15 * 60  # 15 minutes
@@ -101,7 +115,7 @@ def get_cache_size() -> int:
         return 0
 
 
-def populate_cache(items: list[dict[str, Any]]) -> int:
+def populate_cache(items: list[PlexMetadata]) -> int:
     """Replace cache with a fresh list of Plex history items.
 
     Args:
@@ -122,14 +136,14 @@ def populate_cache(items: list[dict[str, Any]]) -> int:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (
-                        item.get("ratingKey"),
-                        item.get("title") or "",
-                        item.get("grandparentTitle"),
-                        item.get("type") or "",
-                        item.get("thumb"),
-                        item.get("grandparentThumb"),
-                        item.get("viewedAt") or 0,
-                        item.get("accountID"),
+                        item.rating_key,
+                        item.title or "",
+                        item.grandparent_title,
+                        item.type or "",
+                        item.thumb,
+                        item.grandparent_thumb,
+                        item.viewed_at or 0,
+                        item.account_id,
                         now,
                     )
                     for item in items
@@ -146,13 +160,13 @@ def populate_cache(items: list[dict[str, Any]]) -> int:
         return 0
 
 
-def get_cached_history() -> list[dict[str, Any]]:
-    """Return all cached history rows as plain dicts."""
+def get_cached_history() -> list[CachedHistoryEntry]:
+    """Return all cached history rows, newest first."""
     try:
         _ensure_init()
         with _get_conn() as conn:
             rows = conn.execute("SELECT * FROM plex_history ORDER BY viewed_at DESC").fetchall()
-            return [dict(row) for row in rows]
+            return [CachedHistoryEntry.model_validate(dict(row)) for row in rows]
     except sqlite3.Error as e:
         logger.warning("Failed to read Plex cache: %s", e)
         return []

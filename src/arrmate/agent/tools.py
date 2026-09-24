@@ -18,6 +18,8 @@ from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 
 from arrmate.clients.discovery import discover_services
+from arrmate.clients.jellyfin import JellyfinItem, JellyfinItemType
+from arrmate.clients.jellyseerr import JellyseerrRequest, JellyseerrSearchResult, RequestFilter
 from arrmate.core.library_service import add_first_match
 
 from .deps import AgentDeps
@@ -638,26 +640,19 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
 
     @agent.tool
     async def jellyfin_library(
-        ctx: RunContext[AgentDeps], search_term: str = "", item_type: str = "", limit: int = 30
+        ctx: RunContext[AgentDeps],
+        search_term: str = "",
+        item_type: JellyfinItemType | None = None,
+        limit: int = 30,
     ) -> str:
-        """Search the Jellyfin library. item_type: 'Movie', 'Series', 'Episode',
-        or empty for everything."""
+        """Search the Jellyfin library. Leave item_type empty for everything."""
 
-        async def body() -> Any:
+        async def body() -> list[JellyfinItem]:
             async with ctx.deps.jellyfin() as client:
-                data = await client.get_items(
+                page = await client.get_items(
                     item_type=item_type, search_term=search_term, limit=limit
                 )
-                return [
-                    {
-                        "id": i.get("Id"),
-                        "name": i.get("Name"),
-                        "type": i.get("Type"),
-                        "year": i.get("ProductionYear"),
-                        "played": (i.get("UserData") or {}).get("Played"),
-                    }
-                    for i in data.get("Items", [])
-                ]
+                return page.items
 
         return await _safe(body)
 
@@ -665,16 +660,13 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def jellyfin_continue_watching(ctx: RunContext[AgentDeps]) -> str:
         """List what the primary Jellyfin user started and never finished."""
 
-        async def body() -> Any:
+        async def body() -> list[JellyfinItem]:
             async with ctx.deps.jellyfin() as client:
                 users = await client.get_users()
                 if not users:
                     raise ValueError("no Jellyfin users found")
-                data = await client.get_continue_watching(users[0]["Id"])
-                return [
-                    {"id": i.get("Id"), "name": i.get("Name"), "type": i.get("Type")}
-                    for i in data.get("Items", [])
-                ]
+                page = await client.get_continue_watching(users[0].id)
+                return page.items
 
         return await _safe(body)
 
@@ -682,32 +674,25 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def jellyfin_scan(ctx: RunContext[AgentDeps]) -> str:
         """Trigger a Jellyfin library scan for new files (after an import)."""
 
-        async def body() -> Any:
+        async def body() -> str:
             ctx.deps.require_write("jellyfin_scan")
             async with ctx.deps.jellyfin() as client:
                 await client.trigger_library_scan()
-                return {"scan": "triggered"}
+                return "scan triggered"
 
         return await _safe(body)
 
     @agent.tool
-    async def jellyseerr_requests(ctx: RunContext[AgentDeps], status: str = "") -> str:
-        """List Jellyseerr requests. status: 'pending', 'approved', 'declined',
-        'available', or empty for all."""
+    async def jellyseerr_requests(
+        ctx: RunContext[AgentDeps], status: RequestFilter | None = None
+    ) -> str:
+        """List Jellyseerr requests, newest first. Leave status empty for all. A request
+        names its title only by media.tmdb_id and media.media_type."""
 
-        async def body() -> Any:
+        async def body() -> list[JellyseerrRequest]:
             async with ctx.deps.jellyseerr() as client:
-                data = await client.get_requests(status=status)
-                return [
-                    {
-                        "id": r.get("id"),
-                        "title": (r.get("media") or {}).get("title"),
-                        "status": r.get("status"),
-                        "requestedBy": (r.get("requestedBy") or {}).get("displayName"),
-                        "createdAt": r.get("createdAt"),
-                    }
-                    for r in data.get("results", [])
-                ]
+                page = await client.get_requests(status=status)
+                return page.results
 
         return await _safe(body)
 
@@ -715,14 +700,12 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def jellyseerr_decide(ctx: RunContext[AgentDeps], request_id: int, approve: bool) -> str:
         """Approve or decline a Jellyseerr request (power_user/admin)."""
 
-        async def body() -> Any:
+        async def body() -> JellyseerrRequest:
             ctx.deps.require_write("jellyseerr_decide")
             async with ctx.deps.jellyseerr() as client:
                 if approve:
-                    await client.approve_request(request_id)
-                else:
-                    await client.decline_request(request_id)
-                return {"requestId": request_id, "approved": approve}
+                    return await client.approve_request(request_id)
+                return await client.decline_request(request_id)
 
         return await _safe(body)
 
@@ -731,19 +714,10 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         """TMDB-backed title search via Jellyseerr — resolves a title to a
         tmdbId for add_media without a separate TMDB key."""
 
-        async def body() -> Any:
+        async def body() -> list[JellyseerrSearchResult]:
             async with ctx.deps.jellyseerr() as client:
-                data = await client.search_tmdb(query)
-                return [
-                    {
-                        "tmdbId": r.get("id"),
-                        "name": r.get("name"),
-                        "year": r.get("year"),
-                        "mediaType": r.get("mediaType"),
-                        "overview": (r.get("overview") or "")[:200],
-                    }
-                    for r in data.get("results", [])
-                ]
+                page = await client.search_tmdb(query)
+                return [r for r in page.results if r.media_type != "person"]
 
         return await _safe(body)
 

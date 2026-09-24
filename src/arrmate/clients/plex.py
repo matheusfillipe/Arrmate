@@ -6,11 +6,138 @@ This client provides read-heavy operations (list, search, refresh) with
 limited write operations (delete to trash, scan, mark watched/unwatched).
 """
 
-from typing import Any
+from typing import Literal
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
-from .base_external import BaseExternalService
+from .base_external import BaseExternalService, QueryParams
+
+PlexLibraryType = Literal["movie", "show", "season", "episode", "artist", "album", "track"]
+
+
+class _PlexRecord(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
+
+
+class PlexLibrary(_PlexRecord):
+    key: str
+    title: str
+    type: str
+
+
+class PlexAccount(_PlexRecord):
+    id: int
+    name: str | None = None
+
+    @property
+    def display_name(self) -> str:
+        """Plex leaves the server owner's account (id 1) unnamed."""
+        if self.name:
+            return self.name
+        return "Main User" if self.id == 1 else f"User {self.id}"
+
+
+class PlexButlerTask(_PlexRecord):
+    name: str
+    title: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+    running: bool | None = None
+
+
+class PlexSessionUser(_PlexRecord):
+    title: str | None = None
+    thumb: str | None = None
+
+
+class PlexPlayer(_PlexRecord):
+    title: str | None = None
+    platform: str | None = None
+    state: str | None = None
+
+
+class PlexSession(_PlexRecord):
+    id: str | None = None
+    bandwidth: int | None = None
+    location: str | None = None
+
+
+class PlexTranscodeSession(_PlexRecord):
+    video_decision: str | None = None
+    audio_decision: str | None = None
+    video_codec: str | None = None
+    audio_codec: str | None = None
+
+
+class PlexMedia(_PlexRecord):
+    video_codec: str | None = None
+    audio_codec: str | None = None
+    width: int | None = None
+    height: int | None = None
+
+
+class PlexMetadata(_PlexRecord):
+    """One library item, history entry, session, or playlist; Plex shares the shape."""
+
+    rating_key: str | None = None
+    type: str | None = None
+    title: str | None = None
+    parent_title: str | None = None
+    grandparent_title: str | None = None
+    parent_index: int | None = None
+    index: int | None = None
+    year: int | None = None
+    summary: str | None = None
+    thumb: str | None = None
+    grandparent_thumb: str | None = None
+    composite: str | None = None
+    duration: int | None = None
+    view_offset: int | None = None
+    added_at: int | None = None
+    viewed_at: int | None = None
+    account_id: int | None = Field(default=None, alias="accountID")
+    leaf_count: int | None = None
+    playlist_type: str | None = None
+    session_key: str | None = None
+    user: PlexSessionUser | None = Field(default=None, alias="User")
+    player: PlexPlayer | None = Field(default=None, alias="Player")
+    session: PlexSession | None = Field(default=None, alias="Session")
+    transcode_session: PlexTranscodeSession | None = Field(default=None, alias="TranscodeSession")
+    media: list[PlexMedia] = Field(default=[], alias="Media")
+
+    @property
+    def episode_code(self) -> str:
+        return f"S{self.parent_index or 0:02d}E{self.index or 0:02d}"
+
+    @property
+    def progress_pct(self) -> int:
+        return int((self.view_offset or 0) / self.duration * 100) if self.duration else 0
+
+    @property
+    def any_thumb(self) -> str | None:
+        return self.thumb or self.grandparent_thumb
+
+
+class PlexHub(_PlexRecord):
+    type: str | None = None
+    title: str | None = None
+    metadata: list[PlexMetadata] = Field(default=[], alias="Metadata")
+
+
+class _MediaContainer(_PlexRecord):
+    machine_identifier: str | None = None
+    version: str | None = None
+    metadata: list[PlexMetadata] = Field(default=[], alias="Metadata")
+    directory: list[PlexLibrary] = Field(default=[], alias="Directory")
+    hub: list[PlexHub] = Field(default=[], alias="Hub")
+    account: list[PlexAccount] = Field(default=[], alias="Account")
+    butler_task: list[PlexButlerTask] = Field(default=[], alias="ButlerTask")
+
+
+class _PlexResponse(_PlexRecord):
+    media_container: _MediaContainer = Field(alias="MediaContainer")
 
 
 class PlexClient(BaseExternalService):
@@ -35,6 +162,11 @@ class PlexClient(BaseExternalService):
             )
         return self._client
 
+    async def _container(self, endpoint: str, params: QueryParams | None = None) -> _MediaContainer:
+        return _PlexResponse.model_validate(
+            await self._get(endpoint, params=params)
+        ).media_container
+
     async def test_connection(self) -> bool:
         """Test connection to Plex by fetching server identity.
 
@@ -42,26 +174,9 @@ class PlexClient(BaseExternalService):
             True if connection is successful, False otherwise
         """
         try:
-            data = await self._get("/identity")
-            return bool(data)
+            return bool(await self.get_machine_identifier())
         except (httpx.HTTPError, ValueError):
             return False
-
-    async def get_stats(self) -> dict[str, Any]:
-        """Get library statistics (library count and section info).
-
-        Returns:
-            Dictionary with library stats
-        """
-        data = await self._get("/library/sections")
-        sections = data.get("MediaContainer", {}).get("Directory", [])
-        return {
-            "library_count": len(sections),
-            "libraries": [
-                {"key": s.get("key"), "title": s.get("title"), "type": s.get("type")}
-                for s in sections
-            ],
-        }
 
     async def get_machine_identifier(self) -> str | None:
         """Get the server's unique machineIdentifier (needed for sharing via plex.tv).
@@ -70,8 +185,7 @@ class PlexClient(BaseExternalService):
             machineIdentifier string, or None on failure.
         """
         try:
-            data = await self._get("/identity")
-            return data.get("MediaContainer", {}).get("machineIdentifier")
+            return (await self._container("/identity")).machine_identifier
         except (httpx.HTTPError, ValueError):
             return None
 
@@ -82,64 +196,30 @@ class PlexClient(BaseExternalService):
             Version string or None
         """
         try:
-            data = await self._get("/identity")
-            return data.get("MediaContainer", {}).get("version")
+            return (await self._container("/identity")).version
         except (httpx.HTTPError, ValueError):
             return None
 
-    async def get_libraries(self) -> list[dict[str, Any]]:
-        """Get all library sections.
-
-        Returns:
-            List of library section dictionaries
-        """
-        data = await self._get("/library/sections")
-        return data.get("MediaContainer", {}).get("Directory", [])
+    async def get_libraries(self) -> list[PlexLibrary]:
+        """Get all library sections."""
+        return (await self._container("/library/sections")).directory
 
     async def get_library_items(
-        self, section_id: str, libtype: str | None = None
-    ) -> list[dict[str, Any]]:
-        """Get all items in a library section.
+        self, section_id: str, libtype: PlexLibraryType | None = None
+    ) -> list[PlexMetadata]:
+        """Get all items in a library section, optionally of one item type."""
+        params: QueryParams = {"type": libtype} if libtype else {}
+        return (await self._container(f"/library/sections/{section_id}/all", params)).metadata
 
-        Args:
-            section_id: Library section key
-            libtype: Filter by item type (e.g. 'movie', 'show', 'episode')
+    async def search(self, query: str, limit: int = 25) -> list[PlexHub]:
+        """Search across all libraries; results come grouped into hubs by type."""
+        params: QueryParams = {"query": query, "limit": limit}
+        return (await self._container("/hubs/search/", params)).hub
 
-        Returns:
-            List of media item dictionaries
-        """
-        params: dict[str, Any] = {}
-        if libtype:
-            params["type"] = libtype
-        data = await self._get(f"/library/sections/{section_id}/all", params=params)
-        return data.get("MediaContainer", {}).get("Metadata", [])
-
-    async def search(self, query: str, limit: int = 25) -> list[dict[str, Any]]:
-        """Search across all libraries.
-
-        Args:
-            query: Search query string
-            limit: Maximum number of results to return
-
-        Returns:
-            List of search result hub dictionaries
-        """
-        params = {"query": query, "limit": limit}
-        data = await self._get("/hubs/search/", params=params)
-        return data.get("MediaContainer", {}).get("Hub", [])
-
-    async def get_item(self, rating_key: str) -> dict[str, Any]:
-        """Get details for a specific media item.
-
-        Args:
-            rating_key: Plex ratingKey identifier
-
-        Returns:
-            Media item metadata dictionary
-        """
-        data = await self._get(f"/library/metadata/{rating_key}")
-        items = data.get("MediaContainer", {}).get("Metadata", [])
-        return items[0] if items else {}
+    async def get_item(self, rating_key: str) -> PlexMetadata | None:
+        """Get details for a specific media item."""
+        items = (await self._container(f"/library/metadata/{rating_key}")).metadata
+        return items[0] if items else None
 
     async def refresh_metadata(self, rating_key: str) -> bool:
         """Refresh metadata for a specific item.
@@ -218,24 +298,14 @@ class PlexClient(BaseExternalService):
         except (httpx.HTTPError, ValueError):
             return False
 
-    async def get_sessions(self) -> list[dict[str, Any]]:
-        """Get all active streaming sessions.
+    async def get_sessions(self) -> list[PlexMetadata]:
+        """Get all active streaming sessions."""
+        return (await self._container("/status/sessions")).metadata
 
-        Returns:
-            List of active session dictionaries
-        """
-        data = await self._get("/status/sessions")
-        return data.get("MediaContainer", {}).get("Metadata", [])
-
-    async def get_accounts(self) -> list[dict[str, Any]]:
-        """Get list of server accounts/users.
-
-        Returns:
-            List of account dicts with id, name, thumb fields
-        """
+    async def get_accounts(self) -> list[PlexAccount]:
+        """Get the server's accounts; empty when Plex refuses the list."""
         try:
-            data = await self._get("/accounts")
-            return data.get("MediaContainer", {}).get("Account", [])
+            return (await self._container("/accounts")).account
         except (httpx.HTTPError, ValueError):
             return []
 
@@ -244,66 +314,40 @@ class PlexClient(BaseExternalService):
         account_id: int | None = None,
         limit: int = 50,
         min_date: int | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[PlexMetadata]:
         """Get playback history, optionally filtered by user account and date.
 
         Args:
             account_id: Filter by Plex account ID (from get_accounts). None = all users.
             limit: Maximum number of history items to return.
             min_date: Unix timestamp — only return items viewed after this time.
-
-        Returns:
-            List of history item dicts with viewedAt, title, type, user info
         """
-        params: dict = {"X-Plex-Container-Size": limit, "sort": "viewedAt:desc"}
+        params: QueryParams = {"X-Plex-Container-Size": limit, "sort": "viewedAt:desc"}
         if account_id:
             params["accountID"] = account_id
         if min_date:
             params["minDate"] = min_date
-        data = await self._get("/status/sessions/history/all", params=params)
-        return data.get("MediaContainer", {}).get("Metadata", [])
+        return (await self._container("/status/sessions/history/all", params)).metadata
 
-    async def get_continue_watching(self) -> list[dict[str, Any]]:
-        """Get items currently in progress (continue watching hub).
-
-        Returns:
-            List of in-progress media items with viewOffset
-        """
+    async def get_continue_watching(self) -> list[PlexMetadata]:
+        """Get items currently in progress (continue watching hub)."""
         try:
-            # /hubs/home/continueWatching returns Metadata directly (not Hub-wrapped)
-            data = await self._get("/hubs/home/continueWatching")
-            container = data.get("MediaContainer", {})
-            items = container.get("Metadata", [])
+            items = (await self._container("/hubs/home/continueWatching")).metadata
             if items:
                 return items
-            # Fallback: /library/onDeck filtered to items with a viewOffset
-            data2 = await self._get("/library/onDeck")
-            all_deck = data2.get("MediaContainer", {}).get("Metadata", [])
-            return [i for i in all_deck if i.get("viewOffset", 0) > 0]
+            on_deck = await self.get_on_deck()
+            return [i for i in on_deck if (i.view_offset or 0) > 0]
         except (httpx.HTTPError, ValueError):
             return []
 
-    async def get_on_deck(self) -> list[dict[str, Any]]:
-        """Get on-deck items (next episodes to watch for in-progress shows).
+    async def get_on_deck(self) -> list[PlexMetadata]:
+        """Get on-deck items (next episodes to watch for in-progress shows)."""
+        return (await self._container("/library/onDeck")).metadata
 
-        Returns:
-            List of on-deck media items
-        """
-        data = await self._get("/library/onDeck")
-        return data.get("MediaContainer", {}).get("Metadata", [])
-
-    async def get_recently_added(self, limit: int = 25) -> list[dict[str, Any]]:
-        """Get recently added items across all libraries.
-
-        Args:
-            limit: Maximum number of items to return.
-
-        Returns:
-            List of recently added media items
-        """
-        params: dict = {"X-Plex-Container-Size": limit}
-        data = await self._get("/library/recentlyAdded", params=params)
-        return data.get("MediaContainer", {}).get("Metadata", [])
+    async def get_recently_added(self, limit: int = 25) -> list[PlexMetadata]:
+        """Get recently added items across all libraries."""
+        params: QueryParams = {"X-Plex-Container-Size": limit}
+        return (await self._container("/library/recentlyAdded", params)).metadata
 
     async def terminate_session(
         self, session_id: str, reason: str = "Terminated by Arrmate"
@@ -348,15 +392,10 @@ class PlexClient(BaseExternalService):
         except (httpx.HTTPError, ValueError):
             return False
 
-    async def get_butler_tasks(self) -> list[dict[str, Any]]:
-        """Get available Butler maintenance tasks and their status.
-
-        Returns:
-            List of ButlerTask dicts with name, description, scheduleRandomized
-        """
+    async def get_butler_tasks(self) -> list[PlexButlerTask]:
+        """Get available Butler maintenance tasks and their status."""
         try:
-            data = await self._get("/butler")
-            return data.get("MediaContainer", {}).get("ButlerTask", [])
+            return (await self._container("/butler")).butler_task
         except (httpx.HTTPError, ValueError):
             return []
 
@@ -411,29 +450,16 @@ class PlexClient(BaseExternalService):
         except (httpx.HTTPError, ValueError):
             return False
 
-    async def get_playlists(self) -> list[dict[str, Any]]:
-        """Get all playlists on this server.
-
-        Returns:
-            List of playlist dicts with ratingKey, title, playlistType, duration, leafCount
-        """
+    async def get_playlists(self) -> list[PlexMetadata]:
+        """Get all playlists on this server."""
         try:
-            data = await self._get("/playlists/all")
-            return data.get("MediaContainer", {}).get("Metadata", [])
+            return (await self._container("/playlists/all")).metadata
         except (httpx.HTTPError, ValueError):
             return []
 
-    async def get_playlist_items(self, playlist_id: str) -> list[dict[str, Any]]:
-        """Get items in a playlist.
-
-        Args:
-            playlist_id: Playlist ratingKey
-
-        Returns:
-            List of media item dicts
-        """
-        data = await self._get(f"/playlists/{playlist_id}/items")
-        return data.get("MediaContainer", {}).get("Metadata", [])
+    async def get_playlist_items(self, playlist_id: str) -> list[PlexMetadata]:
+        """Get items in a playlist, addressed by the playlist's ratingKey."""
+        return (await self._container(f"/playlists/{playlist_id}/items")).metadata
 
     async def mark_watched(self, rating_key: str) -> bool:
         """Mark a media item as watched.

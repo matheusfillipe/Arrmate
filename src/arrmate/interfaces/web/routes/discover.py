@@ -88,7 +88,7 @@ async def discover_results(
                 except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
                     pass
             for item in items:
-                item["in_library"] = item.get("display_title", "").lower() in library_names
+                item.in_library = item.display_title.lower() in library_names
 
         # ── Books (Open Library) ──────────────────────────────────────────────
         elif category in _BOOK_CATEGORIES:
@@ -193,14 +193,6 @@ async def discover_results(
                     else:
                         items = await tmdb.get_trending_movies()
 
-                    for item in items:
-                        item["poster"] = tmdb.poster_url(item.get("poster_path"), "w342")
-                        raw_date = item.get("release_date") or item.get("first_air_date") or ""
-                        item["year"] = raw_date[:4] if raw_date else ""
-                        item["display_title"] = item.get("title") or item.get("name") or "Unknown"
-                        item["rating"] = round(item.get("vote_average", 0), 1)
-                        item["media_type"] = media_type
-
                     # Cross-reference library
                     library_tmdb_ids: set[int] = set()
                     library_titles: set[str] = set()
@@ -224,9 +216,9 @@ async def discover_results(
                         except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
                             pass
                     for item in items:
-                        by_id = item.get("id") in library_tmdb_ids
-                        by_title = item.get("display_title", "").lower() in library_titles
-                        item["in_library"] = by_id or by_title
+                        by_id = item.id in library_tmdb_ids
+                        by_title = item.display_title.lower() in library_titles
+                        item.in_library = by_id or by_title
                 finally:
                     await tmdb.close()
 
@@ -290,7 +282,7 @@ async def discover_add(
                 raise ValueError("TMDB API key not configured")
             ext = await tmdb.get_external_ids(tmdb_id, "tv")
             await tmdb.close()
-            tvdb_id = ext.get("tvdb_id")
+            tvdb_id = ext.tvdb_id
             if not tvdb_id:
                 raise ValueError(
                     f"Could not find TVDB ID for '{title}' — it may not be in TVDB yet"

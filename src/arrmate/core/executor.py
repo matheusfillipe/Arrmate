@@ -764,9 +764,9 @@ class Executor:
             hubs = await client.search(intent.title, limit=5)
             rating_key = None
             for hub in hubs:
-                for item in hub.get("Metadata", []):
-                    if intent.title.lower() in item.get("title", "").lower():
-                        rating_key = item.get("ratingKey")
+                for item in hub.metadata:
+                    if intent.title.lower() in (item.title or "").lower():
+                        rating_key = item.rating_key
                         break
                 if rating_key:
                     break

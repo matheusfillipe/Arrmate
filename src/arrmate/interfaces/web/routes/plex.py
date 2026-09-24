@@ -1,15 +1,29 @@
 """Web routes: plex."""
 
+import time
+from typing import Literal, NamedTuple
+
+from pydantic import BaseModel
+
 from arrmate.cache import plex_cache
+from arrmate.clients.plex import (
+    PlexAccount,
+    PlexMedia,
+    PlexMetadata,
+    PlexPlayer,
+    PlexSession,
+    PlexSessionUser,
+    PlexTranscodeSession,
+)
 
 from ._shared import (  # noqa: F401
-    BUTLER_TASKS,
     Depends,
     Form,
     HTMLResponse,
     PlexClient,
     Query,
     Request,
+    Response,
     _base_ctx,
     _plex_client,
     _plex_client_for_user,
@@ -28,6 +42,197 @@ from ._shared import (  # noqa: F401
 )
 
 
+class ButlerTaskInfo(NamedTuple):
+    name: str
+    label: str
+    desc: str
+
+
+BUTLER_TASKS = [
+    ButlerTaskInfo("CleanOldBundles", "Clean Old Bundles", "Remove unused bundle data"),
+    ButlerTaskInfo("CleanOldCacheFiles", "Clean Cache Files", "Delete stale cached files"),
+    ButlerTaskInfo("BackupDatabase", "Backup Database", "Back up the Plex database"),
+    ButlerTaskInfo("DeepMediaAnalysis", "Deep Media Analysis", "Re-analyse loudness & bitrate"),
+    ButlerTaskInfo("RefreshLocalMedia", "Refresh Local Media", "Scan for local metadata/artwork"),
+    ButlerTaskInfo("SearchForSubtitles", "Search for Subtitles", "Find missing subtitle files"),
+    ButlerTaskInfo("GenerateAutoTags", "Generate Auto Tags", "Auto-tag music files"),
+    ButlerTaskInfo("UpgradeMediaAnalysis", "Upgrade Media Analysis", "Update media analysis data"),
+    ButlerTaskInfo(
+        "GenerateChapterImageThumbnails", "Chapter Thumbnails", "Generate chapter image thumbnails"
+    ),
+    ButlerTaskInfo(
+        "ScanAndAnalyzeFiles", "Scan & Analyze Files", "Scan all files and run media analysis"
+    ),
+    ButlerTaskInfo(
+        "GenerateIntroVideoMarkers", "Detect Intros", "Detect intro sequences across all libraries"
+    ),
+    ButlerTaskInfo(
+        "GenerateEndCreditsMarkers", "Detect Credits", "Detect end-credit sequences (PlexPass)"
+    ),
+    ButlerTaskInfo(
+        "GenerateMediaIndexFiles",
+        "Generate Index Files",
+        "Generate media index files for faster seeking",
+    ),
+    ButlerTaskInfo(
+        "RecheckPendingIntroVideoMarkers",
+        "Recheck Intro Markers",
+        "Re-check pending intro detection tasks",
+    ),
+]
+
+
+class AccountOption(BaseModel):
+    id: int
+    title: str
+
+
+class HomeUserOption(BaseModel):
+    id: int
+    title: str
+    thumb: str | None = None
+
+
+class HistoryRow(BaseModel):
+    title: str
+    subtitle: str
+    type: str
+    viewed_at: int
+    thumb: str | None = None
+    rating_key: str | None = None
+    user: str
+
+
+class MediaCard(BaseModel):
+    title: str
+    subtitle: str
+    type: str
+    thumb: str | None = None
+    rating_key: str | None = None
+    pct: int | None = None
+    summary: str | None = None
+
+
+class TitleGroup(BaseModel):
+    title: str
+    kind: Literal["tv", "movie"]
+    thumb: str | None = None
+    count: int = 0
+    last_watched: int = 0
+    account_ids: set[int] = set()
+
+    @property
+    def user_count(self) -> int:
+        return len(self.account_ids)
+
+
+class ButlerRow(BaseModel):
+    name: str
+    label: str
+    desc: str
+    running: bool
+    enabled: bool
+
+
+class PlaylistRow(BaseModel):
+    id: str | None = None
+    title: str
+    playlist_type: str
+    item_count: int
+    duration: str
+    thumb: str | None = None
+    summary: str
+
+
+class SessionRow(BaseModel):
+    title: str
+    subtitle: str
+    type: str
+    pct: int
+    user: str
+    user_thumb: str
+    player: str
+    platform: str
+    state: str
+    location: str
+    bandwidth: str
+    video_decision: str
+    audio_decision: str
+    src_video: str
+    src_audio: str
+    src_res: str
+    dst_video: str
+    dst_audio: str
+    session_id: str
+    thumb: str | None = None
+
+
+class ShareLibrary(BaseModel):
+    key: int
+    title: str
+    type: str
+
+
+class ShareFriend(BaseModel):
+    id: int
+    username: str
+    email: str
+    thumb: str
+    all_libraries: bool
+    section_titles: list[str]
+
+
+class NowPlayingRow(BaseModel):
+    title: str
+    user: str
+    player: str
+    state: str
+    pct: int
+    type: str
+    session_key: str
+    session_id: str
+
+
+def _thumb(item: PlexMetadata) -> str | None:
+    path = item.any_thumb
+    return _plex_thumb_url(path) if path else None
+
+
+def _year_label(item: PlexMetadata) -> str:
+    return str(item.year) if item.year else ""
+
+
+def _episode_card(item: PlexMetadata) -> MediaCard:
+    """Card for an in-progress, on-deck or recently added item."""
+    match item.type:
+        case "episode":
+            title = item.grandparent_title or item.title or "Unknown"
+            subtitle = f"{item.episode_code} - {item.title or ''}"
+        case "season":
+            title = item.parent_title or item.title or "Unknown"
+            subtitle = item.title or ""
+        case _:
+            title = item.title or "Unknown"
+            subtitle = _year_label(item)
+    return MediaCard(
+        title=title,
+        subtitle=subtitle,
+        type=item.type or "",
+        thumb=_thumb(item),
+        rating_key=item.rating_key,
+    )
+
+
+def _title_kind(plex_type: str) -> Literal["tv", "movie"]:
+    return "tv" if plex_type in ("episode", "season") else "movie"
+
+
+def _match_account_id(accounts: list[PlexAccount], username: str) -> int:
+    """Plex account id whose name matches an Arrmate username; 0 when none does."""
+    target = username.lower()
+    return next((a.id for a in accounts if a.display_name.lower() == target), 0)
+
+
 @router.get("/plex", response_class=HTMLResponse)
 async def plex_page(request: Request):
     """Plex hub page."""
@@ -35,55 +240,36 @@ async def plex_page(request: Request):
     configured = plex is not None
     accounts = []
     home_users = []
+    raw_accounts = []
     if plex:
         try:
-            raw_accounts = await plex.get_accounts()
-            # Normalize: Plex returns `name` on /accounts but `title` on User objects in history
-            accounts = [
-                {
-                    "id": a.get("id"),
-                    "title": (
-                        a.get("title")
-                        or a.get("name")
-                        or ("Main User" if a.get("id") == 1 else f"User {a.get('id', '')}")
-                    ),
-                }
-                for a in raw_accounts
-                if a.get("id") not in (None, 0)  # exclude system account 0
-            ]
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
+            raw_accounts = [a for a in await plex.get_accounts() if a.id != 0]
+            accounts = [AccountOption(id=a.id, title=a.display_name) for a in raw_accounts]
+        except (httpx.HTTPError, ValueError):
             pass
         finally:
             await plex.close()
-    # Load home users from plex.tv for the user switcher (managed users only)
     tv = _plex_tv_client()
     if tv:
         try:
-            raw_users = await tv.get_home_users()
             home_users = [
-                {
-                    "id": u.get("id"),
-                    "title": u.get("title") or u.get("name") or f"User {u.get('id', '')}",
-                    "thumb": u.get("thumb"),
-                }
-                for u in raw_users
-                if u.get("id") is not None and not u.get("admin", False)
+                HomeUserOption(
+                    id=u.id, title=u.title or u.username or f"User {u.id}", thumb=u.thumb
+                )
+                for u in await tv.get_home_users()
+                if not u.admin
             ]
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
+        except (httpx.HTTPError, ValueError):
             pass
         finally:
             await tv.close()
 
-    # For regular users: find their Plex accountID so we can lock history to them.
-    # Match by username — the username stored in our DB matches the Plex account name.
     current_user = get_current_user(request)
     viewer_account_id: int | None = None
     if current_user and current_user.get("role") == "user":
-        username_lower = (current_user.get("username") or "").lower()
-        for acct in accounts:
-            if (acct.get("title") or "").lower() == username_lower:
-                viewer_account_id = int(acct.get("id") or 0)
-                break
+        viewer_account_id = (
+            _match_account_id(raw_accounts, current_user.get("username") or "") or None
+        )
 
     return templates.TemplateResponse(
         request,
@@ -102,14 +288,11 @@ async def plex_page(request: Request):
 @router.get("/plex/thumb", response_class=HTMLResponse)
 async def plex_thumb(path: str = Query(...)):
     """Proxy a Plex thumbnail image (keeps token server-side)."""
-    import httpx as _httpx
-    from fastapi.responses import Response as _Response
-
     if not settings.plex_url or not settings.plex_token:
-        return _Response(status_code=404)
+        return Response(status_code=404)
     url = f"{settings.plex_url.rstrip('/')}{path}"
     try:
-        async with _httpx.AsyncClient(timeout=10) as hx:
+        async with httpx.AsyncClient(timeout=10) as hx:
             resp = await hx.get(
                 url,
                 headers={
@@ -119,10 +302,10 @@ async def plex_thumb(path: str = Query(...)):
             )
             if resp.status_code == 200:
                 ct = resp.headers.get("content-type", "image/jpeg")
-                return _Response(content=resp.content, media_type=ct)
-    except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
+                return Response(content=resp.content, media_type=ct)
+    except httpx.HTTPError:
         pass
-    return _Response(status_code=404)
+    return Response(status_code=404)
 
 
 @router.get("/plex/history", response_class=HTMLResponse)
@@ -132,44 +315,24 @@ async def plex_history(
     days: int = Query(default=7, ge=0),  # 0 = all time
 ):
     """HTMX partial: watch history."""
-    import time as _time
-
-    cutoff = int(_time.time()) - (days * 86400) if days > 0 else 0
+    cutoff = int(time.time()) - (days * 86400) if days > 0 else 0
     # Fetch more items when a short window is selected so we don't miss entries
     fetch_limit = 500 if days > 0 else 200
 
-    # Regular users can only see their own history — enforce server-side.
     current_user = get_current_user(request)
-    if current_user and current_user.get("role") == "user":
-        account_id = 0  # will be overridden below after accounts are fetched
-
     items = []
     error = None
     plex = _plex_client()
     if plex:
         try:
-            # Build account_id → display name map so history rows show real usernames.
-            # Account ID 1 is always the server owner; Plex may return it with no title.
-            raw_accounts = await plex.get_accounts()
-            account_name_map: dict[int, str] = {}
-            for acct in raw_accounts:
-                acct_id = acct.get("id", 0)
-                acct_name = acct.get("title") or acct.get("name") or ""
-                if acct_id == 1 and not acct_name:
-                    acct_name = "Main User"
-                if acct_name:
-                    account_name_map[acct_id] = acct_name
-            # Ensure account 1 always has a label
-            account_name_map.setdefault(1, "Main User")
+            accounts = await plex.get_accounts()
+            account_names = {a.id: a.display_name for a in accounts}
+            account_names.setdefault(1, "Main User")
 
-            # For regular users, lock history to their own Plex account.
+            # Regular users can only see their own history, so we enforce it server-side.
             if current_user and current_user.get("role") == "user":
-                username_lower = (current_user.get("username") or "").lower()
-                for acct_id, acct_name in account_name_map.items():
-                    if acct_name.lower() == username_lower:
-                        account_id = acct_id
-                        break
-                # If no match found, use a sentinel that will return no results
+                account_id = _match_account_id(accounts, current_user.get("username") or "")
+                # A user with no matching account gets a sentinel that matches no history.
                 if account_id == 0:
                     account_id = -1
 
@@ -179,41 +342,32 @@ async def plex_history(
                 min_date=cutoff if cutoff else None,
             )
             for item in raw:
-                viewed_at = item.get("viewedAt", 0)
-                # Skip items with no timestamp
-                if viewed_at == 0:
+                viewed_at = item.viewed_at or 0
+                if viewed_at == 0 or (cutoff and viewed_at < cutoff):
                     continue
-                # Secondary client-side guard (server already filters but be safe)
-                if cutoff and viewed_at < cutoff:
-                    continue
-                media_type = item.get("type", "")
-                if media_type == "episode":
-                    show = item.get("grandparentTitle") or item.get("title") or ""
-                    ep_title = item.get("title", "")
+                if item.type == "episode":
+                    show = item.grandparent_title or item.title or ""
+                    ep_title = item.title or ""
                     title = f"{show} — {ep_title}" if show else ep_title
-                    subtitle = f"S{item.get('parentIndex', 0):02d}E{item.get('index', 0):02d}"
+                    subtitle = item.episode_code
                 else:
-                    title = item.get("title") or ""
-                    subtitle = str(item.get("year", "")) if item.get("year") else ""
-                # Skip entries with no usable title (e.g. media removed from library)
+                    title = item.title or ""
+                    subtitle = _year_label(item)
+                # Media removed from the library leaves history entries with no title.
                 if not title:
                     continue
-                thumb = _plex_thumb_url(item.get("thumb", "")) if item.get("thumb") else None
-                # History items expose accountID as a plain int field, not a nested dict.
-                item_account_id = item.get("accountID") or 0
-                user_name = account_name_map.get(item_account_id, "")
                 items.append(
-                    {
-                        "title": title,
-                        "subtitle": subtitle,
-                        "type": media_type,
-                        "viewed_at": viewed_at,
-                        "thumb": thumb,
-                        "rating_key": item.get("ratingKey"),
-                        "user": user_name,
-                    }
+                    HistoryRow(
+                        title=title,
+                        subtitle=subtitle,
+                        type=item.type or "",
+                        viewed_at=viewed_at,
+                        thumb=_plex_thumb_url(item.thumb) if item.thumb else None,
+                        rating_key=item.rating_key,
+                        user=account_names.get(item.account_id or 0, ""),
+                    )
                 )
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
+        except (httpx.HTTPError, ValueError) as e:
             error = str(e)
         finally:
             await plex.close()
@@ -233,17 +387,12 @@ async def _plex_account_id_for_username(username: str) -> int:
         return 0
     try:
         accounts = await plex.get_accounts()
-    except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
+    except (httpx.HTTPError, ValueError):
         logger.warning("failed to list Plex accounts for account match", exc_info=True)
         return 0
     finally:
         await plex.close()
-    target = (username or "").lower()
-    for acct in accounts:
-        name = acct.get("title") or acct.get("name") or ""
-        if name and name.lower() == target:
-            return int(acct.get("id", 0))
-    return 0
+    return _match_account_id(accounts, username)
 
 
 async def _plex_client_scoped(
@@ -269,34 +418,11 @@ async def plex_continue_watching(
     plex, error = await _plex_client_scoped(request, user_id)
     if plex:
         try:
-            raw = await plex.get_continue_watching()
-            for item in raw:
-                duration = item.get("duration", 0)
-                offset = item.get("viewOffset", 0)
-                pct = int(offset / duration * 100) if duration else 0
-                media_type = item.get("type", "")
-                if media_type == "episode":
-                    title = item.get("grandparentTitle", item.get("title", "Unknown"))
-                    subtitle = (
-                        f"S{item.get('parentIndex', 0):02d}E{item.get('index', 0):02d} - "
-                        f"{item.get('title', '')}"
-                    )
-                else:
-                    title = item.get("title", "Unknown")
-                    subtitle = str(item.get("year", "")) if item.get("year") else ""
-                thumb = item.get("thumb") or item.get("grandparentThumb")
-                items.append(
-                    {
-                        "title": title,
-                        "subtitle": subtitle,
-                        "type": media_type,
-                        "pct": pct,
-                        "thumb": _plex_thumb_url(thumb) if thumb else None,
-                        "rating_key": item.get("ratingKey"),
-                        "year": item.get("year"),
-                    }
-                )
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
+            items = [
+                _episode_card(item).model_copy(update={"pct": item.progress_pct})
+                for item in await plex.get_continue_watching()
+            ]
+        except (httpx.HTTPError, ValueError) as e:
             error = str(e)
         finally:
             await plex.close()
@@ -319,31 +445,11 @@ async def plex_on_deck(
     plex, error = await _plex_client_scoped(request, user_id)
     if plex:
         try:
-            raw = await plex.get_on_deck()
-            for item in raw:
-                media_type = item.get("type", "")
-                if media_type == "episode":
-                    title = item.get("grandparentTitle", item.get("title", "Unknown"))
-                    subtitle = (
-                        f"S{item.get('parentIndex', 0):02d}E{item.get('index', 0):02d} - "
-                        f"{item.get('title', '')}"
-                    )
-                else:
-                    title = item.get("title", "Unknown")
-                    subtitle = ""
-                thumb = item.get("thumb") or item.get("grandparentThumb")
-                items.append(
-                    {
-                        "title": title,
-                        "subtitle": subtitle,
-                        "type": media_type,
-                        "thumb": _plex_thumb_url(thumb) if thumb else None,
-                        "rating_key": item.get("ratingKey"),
-                        "year": item.get("year"),
-                        "summary": item.get("summary", "")[:120],
-                    }
-                )
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
+            items = [
+                _episode_card(item).model_copy(update={"summary": (item.summary or "")[:120]})
+                for item in await plex.get_on_deck()
+            ]
+        except (httpx.HTTPError, ValueError) as e:
             error = str(e)
         finally:
             await plex.close()
@@ -367,34 +473,8 @@ async def plex_recently_added(
     plex = _plex_client()
     if plex:
         try:
-            raw = await plex.get_recently_added(limit=limit)
-            for item in raw:
-                media_type = item.get("type", "")
-                if media_type == "episode":
-                    title = item.get("grandparentTitle", item.get("title", "Unknown"))
-                    subtitle = (
-                        f"S{item.get('parentIndex', 0):02d}E{item.get('index', 0):02d} - "
-                        f"{item.get('title', '')}"
-                    )
-                elif media_type == "season":
-                    title = item.get("parentTitle", item.get("title", "Unknown"))
-                    subtitle = item.get("title", "")
-                else:
-                    title = item.get("title", "Unknown")
-                    subtitle = str(item.get("year", "")) if item.get("year") else ""
-                thumb = item.get("thumb") or item.get("grandparentThumb")
-                items.append(
-                    {
-                        "title": title,
-                        "subtitle": subtitle,
-                        "type": media_type,
-                        "thumb": _plex_thumb_url(thumb) if thumb else None,
-                        "rating_key": item.get("ratingKey"),
-                        "year": item.get("year"),
-                        "added_at": item.get("addedAt", 0),
-                    }
-                )
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
+            items = [_episode_card(item) for item in await plex.get_recently_added(limit=limit)]
+        except (httpx.HTTPError, ValueError) as e:
             error = str(e)
         finally:
             await plex.close()
@@ -417,16 +497,13 @@ async def plex_by_title(
     """HTMX partial: watch history grouped and sorted by title (served from local cache)."""
 
     error = None
-    last_synced = None
 
-    # Seed the cache on first load (if empty or stale)
     if plex_cache.is_stale():
         plex = _plex_client()
         if plex:
             try:
-                raw = await plex.get_history(limit=5000)
-                plex_cache.populate_cache(raw)
-            except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
+                plex_cache.populate_cache(await plex.get_history(limit=5000))
+            except (httpx.HTTPError, ValueError) as e:
                 error = str(e)
             finally:
                 await plex.close()
@@ -436,27 +513,23 @@ async def plex_by_title(
     last_synced = plex_cache.get_last_synced()
     cached = plex_cache.get_cached_history()
 
-    groups: dict = {}
-    for item in cached:
-        media_type_str = item.get("type", "")
-        kind = "tv" if media_type_str in ("episode", "season") else "movie"
+    groups: dict[str, TitleGroup] = {}
+    for entry in cached:
+        kind = _title_kind(entry.type)
 
-        if bt_media_type == "tv" and kind != "tv":
-            continue
-        if bt_media_type == "movie" and kind != "movie":
+        if bt_media_type in ("tv", "movie") and kind != bt_media_type:
             continue
 
         if kind == "tv":
-            group_title = item.get("grandparent_title") or item.get("title") or ""
-            thumb = item.get("grandparent_thumb") or item.get("thumb")
+            group_title = entry.grandparent_title or entry.title
+            thumb = entry.grandparent_thumb or entry.thumb
         else:
-            group_title = item.get("title") or ""
-            thumb = item.get("thumb")
+            group_title = entry.title
+            thumb = entry.thumb
 
         if not group_title:
             continue
 
-        # Letter filter
         sort_title = group_title
         for prefix in ("The ", "A ", "An "):
             if sort_title.startswith(prefix):
@@ -472,28 +545,20 @@ async def plex_by_title(
         if bt_search and bt_search.lower() not in group_title.lower():
             continue
 
-        if group_title not in groups:
-            groups[group_title] = {
-                "title": group_title,
-                "kind": kind,
-                "thumb": _plex_thumb_url(thumb) if thumb else None,
-                "count": 0,
-                "last_watched": 0,
-                "unique_accounts": set(),
-            }
-        groups[group_title]["count"] += 1
-        viewed_at = item.get("viewed_at") or 0
-        if viewed_at > groups[group_title]["last_watched"]:
-            groups[group_title]["last_watched"] = viewed_at
-        acct = item.get("account_id")
-        if acct:
-            groups[group_title]["unique_accounts"].add(acct)
+        group = groups.setdefault(
+            group_title,
+            TitleGroup(
+                title=group_title,
+                kind=kind,
+                thumb=_plex_thumb_url(thumb) if thumb else None,
+            ),
+        )
+        group.count += 1
+        group.last_watched = max(group.last_watched, entry.viewed_at)
+        if entry.account_id:
+            group.account_ids.add(entry.account_id)
 
-    # Convert sets to counts for template
-    for g in groups.values():
-        g["user_count"] = len(g.pop("unique_accounts"))
-
-    sorted_groups = sorted(groups.values(), key=lambda g: g["title"].lower())
+    sorted_groups = sorted(groups.values(), key=lambda g: g.title.lower())
     return templates.TemplateResponse(
         request,
         "partials/plex_bytitle.html",
@@ -521,8 +586,7 @@ async def plex_bytitle_sync(request: Request):
             {"type": "error", "message": "Plex is not configured"},
         )
     try:
-        raw = await plex.get_history(limit=5000)
-        count = plex_cache.populate_cache(raw)
+        count = plex_cache.populate_cache(await plex.get_history(limit=5000))
         return templates.TemplateResponse(
             request,
             "components/toast.html",
@@ -532,7 +596,7 @@ async def plex_bytitle_sync(request: Request):
             },
             headers={"HX-Trigger": "plexBytitleSynced"},
         )
-    except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
+    except (httpx.HTTPError, ValueError) as e:
         return templates.TemplateResponse(
             request,
             "components/toast.html",
@@ -550,20 +614,19 @@ async def plex_butler(request: Request):
     plex = _plex_client()
     if plex:
         try:
-            api_tasks = await plex.get_butler_tasks()
-            api_map = {t.get("name"): t for t in api_tasks}
+            api_tasks = {t.name: t for t in await plex.get_butler_tasks()}
             for bt in BUTLER_TASKS:
-                api = api_map.get(bt["name"], {})
+                api = api_tasks.get(bt.name)
                 tasks.append(
-                    {
-                        "name": bt["name"],
-                        "label": bt["label"],
-                        "desc": bt["desc"],
-                        "running": api.get("running", False),
-                        "enabled": api.get("enabled", True),
-                    }
+                    ButlerRow(
+                        name=bt.name,
+                        label=bt.label,
+                        desc=bt.desc,
+                        running=bool(api and api.running),
+                        enabled=api is None or api.enabled is not False,
+                    )
                 )
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
+        except (httpx.HTTPError, ValueError) as e:
             error = str(e)
         finally:
             await plex.close()
@@ -592,7 +655,7 @@ async def run_plex_butler_task(request: Request, task_name: str):
         )
     try:
         ok = await plex.run_butler_task(task_name)
-        label = next((t["label"] for t in BUTLER_TASKS if t["name"] == task_name), task_name)
+        label = next((t.label for t in BUTLER_TASKS if t.name == task_name), task_name)
         msg_type = "success" if ok else "error"
         msg = f"Started: {label}" if ok else f"Failed to start: {label}"
         return templates.TemplateResponse(
@@ -765,6 +828,14 @@ async def plex_mark_unwatched(request: Request, rating_key: str):
         await plex.close()
 
 
+def _duration_label(duration_ms: int) -> str:
+    hours = duration_ms // 3_600_000
+    minutes = (duration_ms % 3_600_000) // 60_000
+    if not duration_ms:
+        return ""
+    return f"{hours}h {minutes}m" if hours else f"{minutes}m"
+
+
 @router.get("/plex/playlists", response_class=HTMLResponse)
 async def plex_playlists(request: Request):
     """HTMX partial: playlist list."""
@@ -773,29 +844,20 @@ async def plex_playlists(request: Request):
     plex = _plex_client()
     if plex:
         try:
-            raw = await plex.get_playlists()
-            for pl in raw:
-                duration_ms = pl.get("duration", 0) or 0
-                duration_h = duration_ms // 3_600_000
-                duration_m = (duration_ms % 3_600_000) // 60_000
-                duration_str = (
-                    (f"{duration_h}h {duration_m}m" if duration_h else f"{duration_m}m")
-                    if duration_ms
-                    else ""
-                )
-                thumb_path = pl.get("thumb") or pl.get("composite")
+            for pl in await plex.get_playlists():
+                thumb_path = pl.thumb or pl.composite
                 playlists.append(
-                    {
-                        "id": pl.get("ratingKey"),
-                        "title": pl.get("title", "Untitled"),
-                        "playlist_type": pl.get("playlistType", "video"),
-                        "item_count": pl.get("leafCount", 0),
-                        "duration": duration_str,
-                        "thumb": _plex_thumb_url(thumb_path) if thumb_path else None,
-                        "summary": pl.get("summary", ""),
-                    }
+                    PlaylistRow(
+                        id=pl.rating_key,
+                        title=pl.title or "Untitled",
+                        playlist_type=pl.playlist_type or "video",
+                        item_count=pl.leaf_count or 0,
+                        duration=_duration_label(pl.duration or 0),
+                        thumb=_plex_thumb_url(thumb_path) if thumb_path else None,
+                        summary=pl.summary or "",
+                    )
                 )
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
+        except (httpx.HTTPError, ValueError) as e:
             error = str(e)
         finally:
             await plex.close()
@@ -808,6 +870,50 @@ async def plex_playlists(request: Request):
     )
 
 
+def _bandwidth_label(kbps: int) -> str:
+    if kbps >= 1000:
+        return f"{kbps // 1000} Mbps"
+    return f"{kbps} Kbps" if kbps else ""
+
+
+def _session_row(s: PlexMetadata) -> SessionRow:
+    if s.type == "episode":
+        title = s.grandparent_title or ""
+        subtitle = f"{s.episode_code} — {s.title or ''}"
+    else:
+        title = s.title or "Unknown"
+        subtitle = _year_label(s)
+    user = s.user or PlexSessionUser()
+    player = s.player or PlexPlayer()
+    session = s.session or PlexSession()
+    transcode = s.transcode_session or PlexTranscodeSession()
+    source = s.media[0] if s.media else PlexMedia()
+    src_video = source.video_codec or ""
+    src_audio = source.audio_codec or ""
+    return SessionRow(
+        title=title,
+        subtitle=subtitle,
+        type=s.type or "",
+        pct=s.progress_pct,
+        user=user.title or "",
+        user_thumb=user.thumb or "",
+        player=player.title or "",
+        platform=player.platform or "",
+        state=player.state or "playing",
+        location=session.location or "",
+        bandwidth=_bandwidth_label(session.bandwidth or 0),
+        video_decision=transcode.video_decision or "directplay",
+        audio_decision=transcode.audio_decision or "directplay",
+        src_video=src_video,
+        src_audio=src_audio,
+        src_res=f"{source.width}x{source.height or ''}" if source.width else "",
+        dst_video=transcode.video_codec or src_video,
+        dst_audio=transcode.audio_codec or src_audio,
+        session_id=session.id or "",
+        thumb=_thumb(s),
+    )
+
+
 @router.get("/plex/sessions", response_class=HTMLResponse)
 async def plex_sessions_panel(request: Request):
     """HTMX partial: active streaming sessions with transcode/bandwidth detail."""
@@ -816,67 +922,8 @@ async def plex_sessions_panel(request: Request):
     plex = _plex_client()
     if plex:
         try:
-            raw = await plex.get_sessions()
-            for s in raw:
-                media_type = s.get("type", "")
-                if media_type == "episode":
-                    title = s.get("grandparentTitle", "")
-                    subtitle = (
-                        f"S{s.get('parentIndex', 0):02d}E{s.get('index', 0):02d}"
-                        f" — {s.get('title', '')}"
-                    )
-                else:
-                    title = s.get("title", "Unknown")
-                    subtitle = str(s.get("year", "")) if s.get("year") else ""
-                duration = s.get("duration", 0)
-                offset = s.get("viewOffset", 0)
-                pct = int(offset / duration * 100) if duration else 0
-                # Transcode info
-                tc = s.get("TranscodeSession") or {}
-                video_decision = tc.get("videoDecision", "directplay")
-                audio_decision = tc.get("audioDecision", "directplay")
-                # Source codec
-                media_list = s.get("Media") or [{}]
-                src = media_list[0] if media_list else {}
-                src_video = src.get("videoCodec", "")
-                src_audio = src.get("audioCodec", "")
-                src_res = (
-                    f"{src.get('width', '')}x{src.get('height', '')}" if src.get("width") else ""
-                )
-                # Bandwidth
-                bandwidth = s.get("Session", {}).get("bandwidth", 0) or 0
-                bw_str = (
-                    f"{bandwidth // 1000} Mbps"
-                    if bandwidth >= 1000
-                    else (f"{bandwidth} Kbps" if bandwidth else "")
-                )
-                sessions.append(
-                    {
-                        "title": title,
-                        "subtitle": subtitle,
-                        "type": media_type,
-                        "pct": pct,
-                        "user": s.get("User", {}).get("title", ""),
-                        "user_thumb": s.get("User", {}).get("thumb", ""),
-                        "player": s.get("Player", {}).get("title", ""),
-                        "platform": s.get("Player", {}).get("platform", ""),
-                        "state": s.get("Player", {}).get("state", "playing"),
-                        "location": s.get("Session", {}).get("location", ""),
-                        "bandwidth": bw_str,
-                        "video_decision": video_decision,
-                        "audio_decision": audio_decision,
-                        "src_video": src_video,
-                        "src_audio": src_audio,
-                        "src_res": src_res,
-                        "dst_video": tc.get("videoCodec", src_video),
-                        "dst_audio": tc.get("audioCodec", src_audio),
-                        "session_id": s.get("Session", {}).get("id", ""),
-                        "thumb": _plex_thumb_url(s.get("thumb") or s.get("grandparentThumb", ""))
-                        if (s.get("thumb") or s.get("grandparentThumb"))
-                        else None,
-                    }
-                )
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
+            sessions = [_session_row(s) for s in await plex.get_sessions()]
+        except (httpx.HTTPError, ValueError) as e:
             error = str(e)
         finally:
             await plex.close()
@@ -899,8 +946,8 @@ async def plex_share_panel(request: Request):
     plex = _plex_client()
     plex_tv = _plex_tv_client()
 
-    libraries: list = []
-    friends: list = []
+    libraries = []
+    friends = []
     machine_id: str | None = None
     error: str | None = None
 
@@ -908,51 +955,36 @@ async def plex_share_panel(request: Request):
         error = "Plex is not configured (PLEX_URL and PLEX_TOKEN required)"
     else:
         try:
-            machine_id, raw_libs, raw_friends = await asyncio.gather(
+            machine_id_result, libs_result, friends_result = await asyncio.gather(
                 plex.get_machine_identifier(),
                 plex.get_libraries(),
                 plex_tv.get_friends(),
                 return_exceptions=True,
             )
-            if isinstance(machine_id, Exception):
-                machine_id = None
-            if isinstance(raw_libs, Exception):
-                raw_libs = []
-            if isinstance(raw_friends, Exception):
-                raw_friends = []
+            machine_id = None if isinstance(machine_id_result, BaseException) else machine_id_result
+            if not isinstance(libs_result, BaseException):
+                libraries = [
+                    ShareLibrary(key=int(lib.key), title=lib.title, type=lib.type)
+                    for lib in libs_result
+                ]
+            if isinstance(friends_result, BaseException):
                 error = "Could not load friends list from plex.tv"
-
-            # Build clean library list (key as int for matching)
-            for lib in raw_libs or []:
-                libraries.append(
-                    {
-                        "key": int(lib.get("key", 0)),
-                        "title": lib.get("title", ""),
-                        "type": lib.get("type", ""),
-                    }
-                )
-
-            # Filter friends to those who have access to THIS server
-            for f in raw_friends or []:
-                servers = f.get("servers") or []
-                on_this_server = any(s.get("machineIdentifier") == machine_id for s in servers)
-                if on_this_server:
-                    server_info: dict = next(
-                        (s for s in servers if s.get("machineIdentifier") == machine_id),
-                        {},
-                    )
-                    shared_sections = server_info.get("sections") or []
+            else:
+                for friend in friends_result:
+                    share = friend.share_on(machine_id)
+                    if share is None:
+                        continue
                     friends.append(
-                        {
-                            "id": f.get("id"),
-                            "username": f.get("title") or f.get("username") or "Unknown",
-                            "email": f.get("email", ""),
-                            "thumb": f.get("thumb", ""),
-                            "all_libraries": server_info.get("allLibraries", False),
-                            "section_titles": [s.get("title", "") for s in shared_sections],
-                        }
+                        ShareFriend(
+                            id=friend.id,
+                            username=friend.title or friend.username or "Unknown",
+                            email=friend.email or "",
+                            thumb=friend.thumb or "",
+                            all_libraries=share.all_libraries,
+                            section_titles=[s.title or "" for s in share.sections],
+                        )
                     )
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
+        except ValueError as e:
             error = str(e)
         finally:
             await plex.close()
@@ -1022,7 +1054,7 @@ async def plex_share_invite(request: Request):
         )
         resp.headers["HX-Trigger"] = "plexShareUpdated"
         return resp
-    except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error) as e:
+    except httpx.HTTPError as e:
         msg = str(e)
         if "400" in msg:
             msg = "Could not send invite; user may already have access or email is unknown"
@@ -1068,45 +1100,37 @@ async def plex_share_remove(request: Request, friend_id: int):
         await plex_tv.close()
 
 
+def _now_playing_row(s: PlexMetadata) -> NowPlayingRow:
+    if s.type == "episode":
+        title = f"{s.grandparent_title or ''} {s.episode_code}"
+    else:
+        title = s.title or "Unknown"
+    player = s.player or PlexPlayer()
+    return NowPlayingRow(
+        title=title,
+        user=(s.user or PlexSessionUser()).title or "",
+        player=player.title or "",
+        state=player.state or "playing",
+        pct=s.progress_pct,
+        type=s.type or "",
+        session_key=s.session_key or "",
+        # Session.id is the UUID that DELETE /status/sessions/terminate needs.
+        session_id=(s.session or PlexSession()).id or "",
+    )
+
+
 @router.get("/plex/nowplaying", response_class=HTMLResponse)
 async def plex_now_playing(request: Request):
     """HTMX partial: current Plex sessions for the navbar strip."""
     sessions = []
-    if settings.plex_url and settings.plex_token:
-        client = PlexClient(settings.plex_url, settings.plex_token)
+    plex = _plex_client()
+    if plex:
         try:
-            raw = await client.get_sessions()
-            for s in raw:
-                media_type = s.get("type", "")
-                if media_type == "episode":
-                    title = (
-                        f"{s.get('grandparentTitle', '')} "
-                        f"S{s.get('parentIndex', 0):02d}E{s.get('index', 0):02d}"
-                    )
-                elif media_type == "movie":
-                    title = s.get("title", "Unknown")
-                else:
-                    title = s.get("title", "Unknown")
-                duration = s.get("duration", 0)
-                offset = s.get("viewOffset", 0)
-                pct = int(offset / duration * 100) if duration else 0
-                sessions.append(
-                    {
-                        "title": title,
-                        "user": s.get("User", {}).get("title", ""),
-                        "player": s.get("Player", {}).get("title", ""),
-                        "state": s.get("Player", {}).get("state", "playing"),
-                        "pct": pct,
-                        "type": media_type,
-                        "session_key": s.get("sessionKey", ""),
-                        # Session.id is the UUID required by DELETE /status/sessions/terminate
-                        "session_id": s.get("Session", {}).get("id", ""),
-                    }
-                )
-        except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
+            sessions = [_now_playing_row(s) for s in await plex.get_sessions()]
+        except (httpx.HTTPError, ValueError):
             pass
         finally:
-            await client.close()
+            await plex.close()
     return templates.TemplateResponse(
         request,
         "partials/plex_nowplaying.html",

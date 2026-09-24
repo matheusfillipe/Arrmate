@@ -11,6 +11,9 @@ from typing import Any
 
 import httpx
 
+QueryParams = dict[str, str | int]
+JsonBody = dict[str, object]
+
 
 class BaseExternalService(ABC):
     """Abstract base class for external service clients.
@@ -48,7 +51,7 @@ class BaseExternalService(ABC):
             await self._client.aclose()
             self._client = None
 
-    async def _get(self, endpoint: str, params: dict[str, Any] | None = None) -> Any:
+    async def _get(self, endpoint: str, params: QueryParams | None = None) -> Any:
         """Make a GET request.
 
         Args:
@@ -72,7 +75,7 @@ class BaseExternalService(ABC):
         response.raise_for_status()
         return response.json()
 
-    async def _post(self, endpoint: str, data: dict[str, Any] | None = None) -> Any:
+    async def _post(self, endpoint: str, data: JsonBody | None = None) -> Any:
         """Make a POST request.
 
         Args:
@@ -87,7 +90,7 @@ class BaseExternalService(ABC):
         response.raise_for_status()
         return response.json()
 
-    async def _put(self, endpoint: str, data: dict[str, Any] | None = None) -> Any:
+    async def _put(self, endpoint: str, data: JsonBody | None = None) -> Any:
         """Make a PUT request.
 
         Args:
@@ -122,12 +125,4 @@ class BaseExternalService(ABC):
 
         Returns:
             True if connection is successful, False otherwise
-        """
-
-    @abstractmethod
-    async def get_stats(self) -> dict[str, Any]:
-        """Get statistics or dashboard metrics.
-
-        Returns:
-            Dictionary of statistics/metrics
         """
