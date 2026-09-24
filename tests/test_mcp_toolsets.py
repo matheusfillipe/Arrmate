@@ -29,8 +29,22 @@ async def test_read_call_allowed_for_plain_user():
 
     result = await process(ctx, call_tool, "list_games", {"platform": "ps4"})
 
-    assert result == "ok"
+    assert result == '<<<TOOL_DATA\n"ok"\nTOOL_DATA>>>'
     assert calls[0][0] == "list_games"
+
+
+@pytest.mark.asyncio
+async def test_oversized_result_is_compacted():
+    async def call_tool(name, args):
+        return {"planned": [{"path": f"/disc/file{i}"} for i in range(16000)]}
+
+    process = _build_processor(_server())
+    ctx = _Ctx(AgentDeps(user_id="1", username="matheus", role=ROLE_USER))
+
+    result = await process(ctx, call_tool, "install_rom", {"sources": ["/disc"]})
+
+    assert len(result) < 20_000
+    assert "15800 of 16000 items omitted" in result
 
 
 @pytest.mark.asyncio
@@ -53,7 +67,7 @@ async def test_apply_call_allowed_for_admin():
     process = _build_processor(_server())
     ctx = _Ctx(AgentDeps(user_id="1", username="matheus", role=ROLE_ADMIN))
 
-    assert await process(ctx, call_tool, "cleanup_sources", {"apply": True}) == "deleted"
+    assert "deleted" in await process(ctx, call_tool, "cleanup_sources", {"apply": True})
 
 
 @pytest.mark.asyncio

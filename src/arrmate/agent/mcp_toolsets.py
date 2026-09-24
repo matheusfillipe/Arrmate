@@ -3,8 +3,9 @@
 Arrmate ships the tools every install needs; anything specific to one deployment
 belongs in an MCP server that deployment runs itself. Each configured server is
 wrapped so the same guarantees the built-in tools give still hold: a mutating call
-is refused unless the caller's role allows writes, and every call is recorded before
-its effects are known.
+is refused unless the caller's role allows writes, every call is recorded before
+its effects are known, and the result is compacted and marked as data before the
+model reads it.
 
 The write gate lives here rather than in the server because it depends on who is
 asking, which is Arrmate's knowledge, not the server's.
@@ -22,6 +23,7 @@ from pydantic_ai.toolsets import AbstractToolset
 from arrmate.config.settings import MCPServerConfig, settings
 
 from .deps import AgentDeps
+from .tools import _wrap
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +109,9 @@ def _build_processor(server: MCPServerConfig) -> ProcessToolCallback:
             request_id,
             time.monotonic() - started,
         )
-        return result
+        # A server answers at whatever size its data happens to be, so one result can
+        # outgrow the model's whole window unless we compact it like our own tools.
+        return _wrap(result)
 
     return process_tool_call
 

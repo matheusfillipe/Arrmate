@@ -149,6 +149,21 @@ def _persist_run_outcome(thread_id: str, final_text: str, history_json: str) -> 
     store.save_history(thread_id, history_json)
 
 
+def _persist_failed_run(thread_id: str, streamed_text: str, failure: str) -> None:
+    """Keep what a failed run already said, and why it stopped, as its assistant turn.
+
+    The history is checkpointed between tool batches, but the rendered turn is written only
+    when a run ends cleanly, so without this a reload shows the user's messages and nothing
+    the agent said in between.
+    """
+    try:
+        store.add_message(
+            thread_id, "assistant", f"{streamed_text}\n\n**Run failed:** {failure}".strip()
+        )
+    except sqlite3.Error as e:
+        logger.warning("could not save the failed turn on thread %s: %s", thread_id, e)
+
+
 def _page_context(user: dict, threads: list, thread: dict | None, messages: list) -> dict:
     """Context shared by both chat page renders (navbar requires both keys)."""
     unread = user_db.get_unread_count(user["user_id"])
@@ -586,25 +601,17 @@ async def chat_stream(request: Request) -> StreamingResponse | JSONResponse:
             yield "event: done\ndata: {}\n\n"
         except UsageLimitExceeded:
             logger.warning("chat run hit the tool-call ceiling on thread %s", thread_id)
-            yield (
-                "event: error\ndata: "
-                + json.dumps(
-                    {
-                        "message": (
-                            f"Gave up after {MAX_TOOL_CALLS_PER_RUN} tool calls without "
-                            "reaching an answer. Try asking something narrower."
-                        )
-                    }
-                )
-                + "\n\n"
+            failure = (
+                f"Gave up after {MAX_TOOL_CALLS_PER_RUN} tool calls without "
+                "reaching an answer. Try asking something narrower."
             )
+            _persist_failed_run(thread_id, accumulated_text, failure)
+            yield "event: error\ndata: " + json.dumps({"message": failure}) + "\n\n"
         except Exception as e:
             logger.exception("chat stream failed for thread %s", thread_id)
-            yield (
-                "event: error\ndata: "
-                + json.dumps({"message": f"{type(e).__name__}: {e}"[:300]})
-                + "\n\n"
-            )
+            failure = f"{type(e).__name__}: {e}"[:300]
+            _persist_failed_run(thread_id, accumulated_text, failure)
+            yield "event: error\ndata: " + json.dumps({"message": failure}) + "\n\n"
 
     session = RunSession(thread_id)
     _sessions[thread_id] = session
