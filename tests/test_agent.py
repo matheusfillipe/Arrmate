@@ -24,6 +24,7 @@ from pydantic_ai.messages import (
 from arrmate.agent import chat, compaction
 from arrmate.agent.chat import _text_chunk
 from arrmate.agent.deps import AgentDeps
+from arrmate.agent.models import RUN_DEADLINE_SECONDS
 from arrmate.agent.tools import (
     _MAX_LIST_ITEMS,
     _RELEASE_CACHE,
@@ -31,6 +32,7 @@ from arrmate.agent.tools import (
     _compact,
     _wrap,
 )
+from arrmate.auth.models import UserRole
 
 
 class TestHistoryCheckpoint:
@@ -120,18 +122,18 @@ class TestCompact:
 
 class TestDeps:
     def test_user_cannot_write(self):
-        deps = AgentDeps(user_id="u", username="u", role="user")
+        deps = AgentDeps(user_id="u", username="u", role=UserRole.USER)
         assert deps.can_write is False
         with pytest.raises(PermissionError):
             deps.require_write("add_media")
 
     def test_power_user_can_write(self):
-        deps = AgentDeps(user_id="u", username="u", role="power_user")
+        deps = AgentDeps(user_id="u", username="u", role=UserRole.POWER_USER)
         assert deps.can_write is True
         deps.require_write("add_media")
 
     def test_admin_can_write(self):
-        deps = AgentDeps(user_id="u", username="u", role="admin")
+        deps = AgentDeps(user_id="u", username="u", role=UserRole.ADMIN)
         assert deps.can_write is True
         deps.require_write("remove_media")
 
@@ -144,15 +146,15 @@ class TestStore:
     def test_thread_lifecycle(self):
         s = self.store
         tid = s.create_thread("u1")
-        assert s.get_thread(tid, "u1")["title"] == "New chat"
+        assert s.get_thread(tid, "u1").title == "New chat"
         assert s.get_thread(tid, "other") is None
 
         s.add_message(tid, "user", "fix x-men s02e07")
         s.auto_title(tid, "fix x-men s02e07\nsecond line")
-        assert s.get_thread(tid, "u1")["title"] == "fix x-men s02e07"
+        assert s.get_thread(tid, "u1").title == "fix x-men s02e07"
 
         msgs = s.list_messages(tid)
-        assert msgs[0]["role"] == "user"
+        assert msgs[0].role == "user"
 
         assert s.delete_thread(tid, "u1") is True
         assert s.list_threads("u1") == []
@@ -234,11 +236,10 @@ class TestStoredMessageShape:
 
         messages = tmp_chat_db.list_messages(thread_id)
 
-        assert [(m["role"], m["text"]) for m in messages] == [
+        assert [(m.role, m.text) for m in messages] == [
             ("user", "hello"),
             ("assistant", "hi back"),
         ]
-        assert all(m["cards"] == [] for m in messages)
 
 
 class TestHeartbeat:
@@ -301,13 +302,9 @@ class TestDeadline:
         assert chat._deadline_expired(started_at=0.0, now=100.0) is False
 
     def test_expired_at_the_boundary(self):
-        from arrmate.agent.models import RUN_DEADLINE_SECONDS
-
         assert chat._deadline_expired(started_at=0.0, now=RUN_DEADLINE_SECONDS) is True
 
     def test_expired_well_past(self):
-        from arrmate.agent.models import RUN_DEADLINE_SECONDS
-
         assert chat._deadline_expired(started_at=0.0, now=RUN_DEADLINE_SECONDS + 1) is True
 
 
@@ -436,7 +433,7 @@ class TestPersistCancelledRun:
             tid, "checking the queue now", cancelled.all_messages_json().decode()
         )
 
-        assert [m["text"] for m in self.store.list_messages(tid)] == ["checking the queue now"]
+        assert [m.text for m in self.store.list_messages(tid)] == ["checking the queue now"]
         history = self.store.load_history(tid)
         assert [type(m) for m in history] == [ModelRequest, ModelResponse]
 

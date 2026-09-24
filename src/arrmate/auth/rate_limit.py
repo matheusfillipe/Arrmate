@@ -7,10 +7,17 @@ Not persisted across restarts, which is acceptable for brute-force throttling.
 import asyncio
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 
 from fastapi import Request
 
 from arrmate.config.settings import settings
+
+
+@dataclass
+class _Window:
+    count: int
+    started: float
 
 
 class RateLimiter:
@@ -24,8 +31,7 @@ class RateLimiter:
     def __init__(self, max_calls: int = 10, window_seconds: int = 60) -> None:
         self.max_calls = max_calls
         self.window_seconds = window_seconds
-        # key → [count, window_start_time]
-        self._counters: dict = defaultdict(lambda: [0, 0.0])
+        self._counters: defaultdict[str, _Window] = defaultdict(lambda: _Window(0, 0.0))
         self._lock = asyncio.Lock()
 
     async def check(self, key: str) -> tuple[bool, int]:
@@ -38,15 +44,14 @@ class RateLimiter:
         """
         now = time.monotonic()
         async with self._lock:
-            count, window_start = self._counters[key]
-            if now - window_start >= self.window_seconds:
-                # New window
-                self._counters[key] = [1, now]
+            window = self._counters[key]
+            if now - window.started >= self.window_seconds:
+                self._counters[key] = _Window(1, now)
                 return True, 0
-            if count < self.max_calls:
-                self._counters[key][0] += 1
+            if window.count < self.max_calls:
+                window.count += 1
                 return True, 0
-            retry_after = int(self.window_seconds - (now - window_start)) + 1
+            retry_after = int(self.window_seconds - (now - window.started)) + 1
             return False, retry_after
 
     def _get_client_ip(self, request: Request) -> str:

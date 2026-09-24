@@ -2,8 +2,9 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
+from arrmate.auth.models import WRITE_ROLES, UserRole
 from arrmate.clients.bazarr import BazarrClient
 from arrmate.clients.cleanuparr import CleanuparrClient
 from arrmate.clients.gamearr import GamearrClient
@@ -19,12 +20,6 @@ from arrmate.clients.sonarr import SonarrClient
 from arrmate.config import instances
 from arrmate.config.settings import settings
 
-ROLE_USER = "user"
-ROLE_POWER_USER = "power_user"
-ROLE_ADMIN = "admin"
-
-_WRITE_ROLES = {ROLE_POWER_USER, ROLE_ADMIN}
-
 
 @dataclass
 class AgentDeps:
@@ -37,13 +32,12 @@ class AgentDeps:
 
     user_id: str
     username: str
-    role: str = ROLE_USER
+    role: UserRole = UserRole.USER
     thread_id: str | None = None
-    available_services: list[str] = field(default_factory=list)
 
     @property
     def can_write(self) -> bool:
-        return self.role in _WRITE_ROLES
+        return self.role in WRITE_ROLES
 
     def require_write(self, action: str = "write") -> None:
         """Raise PermissionError unless the role may perform writes.
@@ -59,7 +53,7 @@ class AgentDeps:
         inst = instances.get_instance(instance_id, "sonarr")
         if not inst:
             raise ValueError("Sonarr is not configured")
-        client = SonarrClient(inst["url"], inst["api_key"])
+        client = SonarrClient(inst.url, inst.api_key or "")
         try:
             yield client
         finally:
@@ -70,7 +64,7 @@ class AgentDeps:
         inst = instances.get_instance(instance_id, "radarr")
         if not inst:
             raise ValueError("Radarr is not configured")
-        client = RadarrClient(inst["url"], inst["api_key"])
+        client = RadarrClient(inst.url, inst.api_key or "")
         try:
             yield client
         finally:

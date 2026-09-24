@@ -116,17 +116,13 @@
                             {% if req.details %}
                             <p class="text-gray-300 text-sm mb-1">{{ req.details }}</p>
                             {% endif %}
-                            {% if req.get('requester_name') %}
                             <p class="text-xs text-gray-500">
-                                by {{ req.requester_name }} · {{ req.created_at[:10] if req.created_at else '' }}
+                                by {{ user_names.get(req.requested_by, 'Unknown') }} · {{ req.created_at[:10] if req.created_at else '' }}
                             </p>
-                            {% else %}
-                            <p class="text-xs text-gray-500">{{ req.created_at[:10] if req.created_at else '' }}</p>
-                            {% endif %}
                             {% if req.resolver_notes %}
                             <p class="text-xs text-gray-400 mt-1 italic">
                                 Note: {{ req.resolver_notes }}
-                                {% if req.get('resolver_name') %} — {{ req.resolver_name }}{% endif %}
+                                {% if req.resolved_by and user_names.get(req.resolved_by) %} — {{ user_names.get(req.resolved_by) }}{% endif %}
                             </p>
                             {% endif %}
                         </div>

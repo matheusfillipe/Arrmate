@@ -174,7 +174,7 @@
                             <p class="text-gray-300 text-sm mb-1">{{ req.details }}</p>
                             {% endif %}
                             <p class="text-xs text-gray-500">
-                                by {{ req.requester_name }} · {{ req.created_at[:10] if req.created_at else '' }}
+                                by {{ user_names.get(req.requested_by, 'Unknown') }} · {{ req.created_at[:10] if req.created_at else '' }}
                             </p>
                         </div>
                         <div class="flex gap-2 flex-shrink-0" x-data="{ showNotes: false }">

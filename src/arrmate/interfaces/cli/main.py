@@ -59,7 +59,8 @@ async def _execute_command(command: str, dry_run: bool) -> None:
         if intent.episodes:
             console.print(f"  Episodes: [cyan]{intent.episodes}[/cyan]")
         if intent.criteria:
-            console.print(f"  Criteria: [cyan]{intent.criteria}[/cyan]")
+            criteria = intent.criteria.model_dump(exclude_none=True)
+            console.print(f"  Criteria: [cyan]{criteria}[/cyan]")
         console.print()
 
         if dry_run:

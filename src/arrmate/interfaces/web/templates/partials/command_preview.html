@@ -60,11 +60,12 @@
         </div>
 
         <!-- Criteria -->
-        {% if intent.criteria %}
+        {% set criteria = intent.criteria.model_dump(exclude_none=True) if intent.criteria else {} %}
+        {% if criteria %}
         <div class="p-3 bg-green-900/20 rounded-lg border border-green-800/30 sm:col-span-2">
             <div class="text-xs font-medium text-gray-400 mb-1">Criteria</div>
             <div class="text-sm font-semibold text-green-400">
-                {{ intent.criteria }}
+                {{ criteria }}
             </div>
         </div>
         {% endif %}

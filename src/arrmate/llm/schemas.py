@@ -1,12 +1,20 @@
 """Tool/function calling schemas for LLM providers."""
 
-from typing import Any
+from pydantic import BaseModel, JsonValue
 
-# Tool schema for parsing media commands
-PARSE_MEDIA_COMMAND_SCHEMA = {
-    "name": "parse_media_command",
-    "description": "Extract structured intent from a natural language media management command",
-    "parameters": {
+
+class ToolSchema(BaseModel):
+    """A function the model may call; `parameters` is a JSON Schema document."""
+
+    name: str
+    description: str
+    parameters: dict[str, JsonValue]
+
+
+PARSE_MEDIA_COMMAND_SCHEMA = ToolSchema(
+    name="parse_media_command",
+    description="Extract structured intent from a natural language media management command",
+    parameters={
         "type": "object",
         "properties": {
             "action": {
@@ -171,10 +179,10 @@ PARSE_MEDIA_COMMAND_SCHEMA = {
         },
         "required": ["action", "media_type"],
     },
-}
+)
 
 
-def get_tool_schemas() -> list[dict[str, Any]]:
+def get_tool_schemas() -> list[ToolSchema]:
     """Get all available tool schemas for LLM function calling."""
     return [PARSE_MEDIA_COMMAND_SCHEMA]
 

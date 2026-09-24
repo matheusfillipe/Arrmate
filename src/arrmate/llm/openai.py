@@ -1,11 +1,22 @@
 """OpenAI LLM provider implementation."""
 
-import json
-from typing import Any, cast
+from openai import AsyncOpenAI, OpenAIError
+from openai.types.chat import ChatCompletionFunctionToolParam
+from openai.types.shared_params import FunctionDefinition
 
-from openai import AsyncOpenAI
+from arrmate.core.models import Intent
 
 from .base import BaseLLMProvider, ConversationalReply
+from .schemas import ToolSchema
+
+
+def _openai_tool(tool: ToolSchema) -> ChatCompletionFunctionToolParam:
+    return ChatCompletionFunctionToolParam(
+        type="function",
+        function=FunctionDefinition(
+            name=tool.name, description=tool.description, parameters=dict(tool.parameters)
+        ),
+    )
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -32,32 +43,17 @@ class OpenAIProvider(BaseLLMProvider):
         return True
 
     async def parse_command(
-        self, user_input: str, tools: list[dict[str, Any]], system_prompt: str
-    ) -> dict[str, Any]:
-        """Parse command using OpenAI with function calling.
-
-        Args:
-            user_input: User's natural language command
-            tools: Tool schemas for function calling
-            system_prompt: System prompt
-
-        Returns:
-            Parsed parameters from function call
-
-        Raises:
-            ValueError: If parsing fails
-        """
+        self, user_input: str, tools: list[ToolSchema], system_prompt: str
+    ) -> Intent:
+        """Parse command using OpenAI with function calling."""
         try:
-            # OpenAI function calling format
-            openai_tools = [{"type": "function", "function": tool} for tool in tools]
-
             response = await self.client.chat.completions.create(
                 model=self.model or "gpt-4-turbo-preview",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_input},
                 ],
-                tools=cast("list[Any]", openai_tools),
+                tools=[_openai_tool(tool) for tool in tools],
                 tool_choice="auto",
             )
 
@@ -68,21 +64,12 @@ class OpenAIProvider(BaseLLMProvider):
                     raise ConversationalReply(message.content)
                 raise ValueError("LLM did not use the parse_media_command function")
 
-            # Get the first tool call
             tool_call = message.tool_calls[0]
             if not hasattr(tool_call, "function"):
                 raise ValueError("LLM returned a custom tool call; function call required")
-            function_args = json.loads(tool_call.function.arguments)
+            return Intent.model_validate_json(tool_call.function.arguments)
 
-            if not function_args:
-                raise ValueError("No arguments returned from function call")
-
-            args: dict[str, Any] = function_args
-            return args
-
-        except ConversationalReply:
-            raise
-        except Exception as e:
+        except (OpenAIError, ValueError) as e:
             raise ValueError(f"Failed to parse command with OpenAI: {e!s}") from e
 
     async def close(self) -> None:

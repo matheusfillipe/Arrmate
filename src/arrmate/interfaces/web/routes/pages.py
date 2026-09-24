@@ -119,7 +119,9 @@ async def setup_wizard_save(request: Request, next_step: str = Form(default="don
     try:
         form = await request.form()
         # Exclude the next_step control field; save everything else
-        service_data = {k: v for k, v in form.multi_items() if k != "next_step"}
+        service_data = {
+            k: v for k, v in form.multi_items() if k != "next_step" and isinstance(v, str)
+        }
         if service_data:
             save_service_config(service_data)
             reset_parser()

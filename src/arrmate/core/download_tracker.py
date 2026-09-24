@@ -18,6 +18,7 @@ import logging
 import httpx
 
 from arrmate.auth import user_db
+from arrmate.auth.models import MediaRequest
 from arrmate.auth.notifications import send_discord, send_slack
 from arrmate.clients.radarr import RadarrClient
 from arrmate.clients.sonarr import SonarrClient
@@ -44,10 +45,9 @@ async def _poll_once() -> None:
     if not requests:
         return
 
-    # Build a quick lookup: lowercased title → list of request dicts
-    by_title: dict[str, list[dict]] = {}
+    by_title: dict[str, list[MediaRequest]] = {}
     for req in requests:
-        key = req["title"].lower().strip()
+        key = req.title.lower().strip()
         by_title.setdefault(key, []).append(req)
 
     if settings.sonarr_url and settings.sonarr_api_key:
@@ -57,7 +57,9 @@ async def _poll_once() -> None:
         await _check_service("radarr", by_title, settings)
 
 
-async def _check_service(service: str, by_title: dict, settings_obj: Settings) -> None:
+async def _check_service(
+    service: str, by_title: dict[str, list[MediaRequest]], settings_obj: Settings
+) -> None:
     """Check one service's queue and history, firing notifications as needed."""
     try:
         if service == "sonarr":
@@ -83,7 +85,7 @@ async def _check_service(service: str, by_title: dict, settings_obj: Settings) -
         if not title:
             continue
         for req in by_title.get(title.lower().strip(), []):
-            if not req.get("notified_queued"):
+            if not req.notified_queued:
                 await _fire_queued_notification(req, title, settings_obj)
 
     # ── History check (imported) ───────────────────────────────────────────
@@ -94,10 +96,10 @@ async def _check_service(service: str, by_title: dict, settings_obj: Settings) -
         if not title:
             continue
         for req in by_title.get(title.lower().strip(), []):
-            if not req.get("notified_imported"):
+            if not req.notified_imported:
                 await _fire_imported_notification(req, title, settings_obj)
                 # Mark in-memory so we don't double-notify in the same poll
-                req["notified_imported"] = True
+                req.notified_imported = True
 
 
 def _extract_title(record: dict, service: str) -> str:
@@ -107,16 +109,16 @@ def _extract_title(record: dict, service: str) -> str:
     return (record.get("movie") or {}).get("title") or ""
 
 
-async def _fire_queued_notification(req: dict, title: str, settings_obj: Settings) -> None:
+async def _fire_queued_notification(req: MediaRequest, title: str, settings_obj: Settings) -> None:
     """Send 'download started' notification and mark request as queued."""
 
-    if not user_db.mark_request_queued(req["id"]):
+    if not user_db.mark_request_queued(req.id):
         return  # Another process already marked it
 
     message = f"⬇️ '{title}' has started downloading."
     notif_title = "Download Started"
 
-    user_db.create_notification(req["requested_by"], message, type="info", request_id=req["id"])
+    user_db.create_notification(req.requested_by, message, type="info", request_id=req.id)
 
     slack_url = getattr(settings_obj, "slack_webhook_url", None)
     discord_url = getattr(settings_obj, "discord_webhook_url", None)
@@ -125,19 +127,21 @@ async def _fire_queued_notification(req: dict, title: str, settings_obj: Setting
     if discord_url:
         await send_discord(discord_url, message, title=notif_title)
 
-    logger.info("Queued notification sent for request %s (%s)", req["id"], title)
+    logger.info("Queued notification sent for request %s (%s)", req.id, title)
 
 
-async def _fire_imported_notification(req: dict, title: str, settings_obj: Settings) -> None:
+async def _fire_imported_notification(
+    req: MediaRequest, title: str, settings_obj: Settings
+) -> None:
     """Send 'ready in library' notification and close the request."""
 
-    if not user_db.mark_request_imported(req["id"]):
+    if not user_db.mark_request_imported(req.id):
         return  # Another process already marked it
 
     message = f"🎉 '{title}' is now available in your library!"
     notif_title = "Media Ready"
 
-    user_db.create_notification(req["requested_by"], message, type="success", request_id=req["id"])
+    user_db.create_notification(req.requested_by, message, type="success", request_id=req.id)
 
     slack_url = getattr(settings_obj, "slack_webhook_url", None)
     discord_url = getattr(settings_obj, "discord_webhook_url", None)
@@ -146,4 +150,4 @@ async def _fire_imported_notification(req: dict, title: str, settings_obj: Setti
     if discord_url:
         await send_discord(discord_url, message, title=notif_title, color=0x22C55E)
 
-    logger.info("Imported notification sent for request %s (%s)", req["id"], title)
+    logger.info("Imported notification sent for request %s (%s)", req.id, title)

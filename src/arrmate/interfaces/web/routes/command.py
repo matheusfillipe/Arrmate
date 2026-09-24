@@ -1,5 +1,10 @@
 """Web routes: command."""
 
+import traceback
+
+from arrmate.auth.models import UserRole
+from arrmate.core.models import ExecutionResult
+
 from ._shared import (  # noqa: F401
     DESTRUCTIVE_ACTIONS,
     USER_BLOCKED_ACTIONS,
@@ -79,7 +84,7 @@ async def execute_command(
     'user' role cannot execute REMOVE or DELETE actions.
     """
     current_user = get_current_user(request)
-    user_role = current_user.get("role", "user") if current_user else "user"
+    user_role = current_user.role if current_user else UserRole.USER
 
     # Outer guard: catches template-rendering failures so HTMX always gets a 200 with
     # visible HTML instead of a silent 500 that leaves the result area blank.
@@ -95,17 +100,17 @@ async def execute_command(
 
             # Role gate runs before enrichment so it never depends on
             # service availability.
-            if user_role == "user" and intent.action in USER_BLOCKED_ACTIONS:
+            if user_role == UserRole.USER and intent.action in USER_BLOCKED_ACTIONS:
                 return templates.TemplateResponse(
                     request,
                     "partials/execution_result.html",
                     {
-                        "result": {
-                            "success": False,
-                            "message": "You don't have permission to remove or delete media. "
+                        "result": ExecutionResult(
+                            success=False,
+                            message="You don't have permission to remove or delete media. "
                             "Submit a request instead.",
-                            "errors": ["Insufficient permissions for this action"],
-                        },
+                            errors=["Insufficient permissions for this action"],
+                        ),
                         "show_toast": True,
                         "toast_type": "error",
                         "toast_message": "Permission denied: cannot remove media",
@@ -123,11 +128,9 @@ async def execute_command(
                     request,
                     "partials/execution_result.html",
                     {
-                        "result": {
-                            "success": False,
-                            "message": "Validation failed",
-                            "errors": errors,
-                        },
+                        "result": ExecutionResult(
+                            success=False, message="Validation failed", errors=errors
+                        ),
                         "show_toast": True,
                         "toast_type": "error",
                         "toast_message": "Validation failed: " + "; ".join(errors),
@@ -199,11 +202,7 @@ async def execute_command(
                 request,
                 "partials/execution_result.html",
                 {
-                    "result": {
-                        "success": False,
-                        "message": friendly,
-                        "errors": [raw],
-                    },
+                    "result": ExecutionResult(success=False, message=friendly, errors=[raw]),
                     "original_command": command,
                     "show_toast": True,
                     "toast_type": "error",
@@ -212,8 +211,6 @@ async def execute_command(
             )
 
     except (httpx.HTTPError, KeyError, ValueError, sqlite3.Error):
-        import traceback
-
         tb = traceback.format_exc()
         logger.exception("Fatal error rendering execute_command response for %r", command)
         safe_tb = tb.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

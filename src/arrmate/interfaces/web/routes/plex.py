@@ -1,5 +1,6 @@
 """Web routes: plex."""
 
+from arrmate.auth.models import UserRole
 from arrmate.cache import plex_cache
 
 from ._shared import (  # noqa: F401
@@ -78,8 +79,8 @@ async def plex_page(request: Request):
     # Match by username — the username stored in our DB matches the Plex account name.
     current_user = get_current_user(request)
     viewer_account_id: int | None = None
-    if current_user and current_user.get("role") == "user":
-        username_lower = (current_user.get("username") or "").lower()
+    if current_user and current_user.role == UserRole.USER:
+        username_lower = current_user.username.lower()
         for acct in accounts:
             if (acct.get("title") or "").lower() == username_lower:
                 viewer_account_id = int(acct.get("id") or 0)
@@ -140,7 +141,7 @@ async def plex_history(
 
     # Regular users can only see their own history — enforce server-side.
     current_user = get_current_user(request)
-    if current_user and current_user.get("role") == "user":
+    if current_user and current_user.role == UserRole.USER:
         account_id = 0  # will be overridden below after accounts are fetched
 
     items = []
@@ -163,8 +164,8 @@ async def plex_history(
             account_name_map.setdefault(1, "Main User")
 
             # For regular users, lock history to their own Plex account.
-            if current_user and current_user.get("role") == "user":
-                username_lower = (current_user.get("username") or "").lower()
+            if current_user and current_user.role == UserRole.USER:
+                username_lower = current_user.username.lower()
                 for acct_id, acct_name in account_name_map.items():
                     if acct_name.lower() == username_lower:
                         account_id = acct_id
@@ -251,8 +252,8 @@ async def _plex_client_scoped(
 ) -> tuple[PlexClient | None, str | None]:
     """Plex client for a household view; user role is locked to their own account."""
     current_user = get_current_user(request)
-    if current_user and current_user.get("role") == "user":
-        matched = await _plex_account_id_for_username(current_user.get("username") or "")
+    if current_user and current_user.role == UserRole.USER:
+        matched = await _plex_account_id_for_username(current_user.username)
         if matched == 0:
             return None, "No Plex account matches your username."
         return await _plex_client_for_user(matched), None

@@ -1,5 +1,8 @@
 """Web routes: settings_web."""
 
+from arrmate.auth.models import LEGACY_USER_ID, SessionUser, UserRole
+from arrmate.auth.notifications import send_discord, send_slack
+
 from ._shared import (  # noqa: F401
     Depends,
     Form,
@@ -21,6 +24,10 @@ from ._shared import (  # noqa: F401
     sqlite3,
     templates,
 )
+
+
+def _legacy_admin(username: str) -> SessionUser:
+    return SessionUser(user_id=LEGACY_USER_ID, username=username, role=UserRole.ADMIN)
 
 
 @router.get("/settings", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
@@ -64,7 +71,7 @@ async def auth_set(
     auth_manager.set_credentials(username.strip(), password)
 
     # Set session cookie so the user stays logged in
-    token = create_session_token("legacy", username.strip(), "admin", auth_manager.get_secret_key())
+    token = create_session_token(_legacy_admin(username.strip()), auth_manager.get_secret_key())
     response = templates.TemplateResponse(
         request,
         "partials/auth_settings.html",
@@ -83,7 +90,7 @@ async def auth_enable(request: Request):
 
     username = auth_manager.get_username()
     if username:
-        token = create_session_token("legacy", username, "admin", auth_manager.get_secret_key())
+        token = create_session_token(_legacy_admin(username), auth_manager.get_secret_key())
         response = templates.TemplateResponse(
             request,
             "partials/auth_settings.html",
@@ -132,15 +139,13 @@ async def auth_delete(request: Request):
 )
 async def save_plex_sso_settings(request: Request):
     """Save Plex SSO configuration from the Auth settings panel."""
-    from arrmate.config.service_config import save_service_config
-
     form = await request.form()
     save_service_config(
         {
-            "plex_sso_enabled": form.get("plex_sso_enabled", ""),
+            "plex_sso_enabled": str(form.get("plex_sso_enabled", "")),
             "plex_sso_default_role": str(form.get("plex_sso_default_role", "user")),
-            "plex_sso_require_approval": form.get("plex_sso_require_approval", ""),
-            "plex_sso_verify_plex_friends": form.get("plex_sso_verify_plex_friends", ""),
+            "plex_sso_require_approval": str(form.get("plex_sso_require_approval", "")),
+            "plex_sso_verify_plex_friends": str(form.get("plex_sso_verify_plex_friends", "")),
         }
     )
     return templates.TemplateResponse(
@@ -161,7 +166,9 @@ async def save_services(request: Request):
     """Save service URLs and API keys to persistent config."""
     try:
         form = await request.form()
-        save_service_config(dict(form.multi_items()))
+        save_service_config(
+            {key: value for key, value in form.multi_items() if isinstance(value, str)}
+        )
         reset_parser()
         return templates.TemplateResponse(
             request,
@@ -184,15 +191,13 @@ async def save_services(request: Request):
 )
 async def test_slack_webhook(request: Request):
     """Send a test Slack notification."""
-    from arrmate.auth.notifications import send_slack
-
     if not settings.slack_webhook_url:
         return templates.TemplateResponse(
             request,
             "components/toast.html",
             {"type": "error", "message": "No Slack webhook configured"},
         )
-    ok = send_slack(settings.slack_webhook_url, "Arrmate test notification", title="Test")
+    ok = await send_slack(settings.slack_webhook_url, "Arrmate test notification", title="Test")
     return templates.TemplateResponse(
         request,
         "components/toast.html",
@@ -210,15 +215,13 @@ async def test_slack_webhook(request: Request):
 )
 async def test_discord_webhook(request: Request):
     """Send a test Discord notification."""
-    from arrmate.auth.notifications import send_discord
-
     if not settings.discord_webhook_url:
         return templates.TemplateResponse(
             request,
             "components/toast.html",
             {"type": "error", "message": "No Discord webhook configured"},
         )
-    ok = send_discord(settings.discord_webhook_url, "Arrmate test notification", title="Test")
+    ok = await send_discord(settings.discord_webhook_url, "Arrmate test notification", title="Test")
     return templates.TemplateResponse(
         request,
         "components/toast.html",

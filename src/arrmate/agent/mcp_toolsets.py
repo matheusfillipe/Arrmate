@@ -14,16 +14,18 @@ asking, which is Arrmate's knowledge, not the server's.
 import logging
 import time
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
-from pydantic_ai.mcp import CallToolFunc, MCPToolset, ProcessToolCallback
+from pydantic_ai.mcp import CallToolFunc, MCPToolset, ProcessToolCallback, ToolResult
+from pydantic_ai.messages import BinaryContent
 from pydantic_ai.tools import RunContext
 from pydantic_ai.toolsets import AbstractToolset
 
 from arrmate.config.settings import MCPServerConfig, settings
 
 from .deps import AgentDeps
-from .tools import _wrap
+from .tools import ToolError, ToolPayload, _wrap
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +35,21 @@ logger = logging.getLogger(__name__)
 APPLY_ARG = "apply"
 
 
-def _is_mutating(args: dict[str, Any]) -> bool:
+def _is_mutating(args: Mapping[str, object]) -> bool:
     return bool(args.get(APPLY_ARG))
 
 
+def _as_payload(result: ToolResult) -> ToolPayload:
+    """Binary parts cannot ride inside the JSON data block, so we name them instead."""
+    if isinstance(result, BinaryContent):
+        return f"<{result.media_type} content omitted>"
+    if isinstance(result, str | dict):
+        return result
+    return [_as_payload(item) for item in result]
+
+
 def _audit_refusal(
-    server: MCPServerConfig, name: str, request_id: str, args: dict[str, Any]
+    server: MCPServerConfig, name: str, request_id: str, args: Mapping[str, object]
 ) -> None:
     logger.warning(
         "mcp refusal server=%s tool=%s request_id=%s args=%s",
@@ -74,7 +85,7 @@ def _build_processor(server: MCPServerConfig) -> ProcessToolCallback:
                     ctx.deps.role,
                 )
                 _audit_refusal(server, name, request_id, args)
-                return {"error": "permission-denied", "detail": str(e)}
+                return ToolError(error="permission-denied", detail=str(e))
 
         if server.inject_request_id:
             args = {**args, "request_id": request_id}
@@ -111,7 +122,7 @@ def _build_processor(server: MCPServerConfig) -> ProcessToolCallback:
         )
         # A server answers at whatever size its data happens to be, so one result can
         # outgrow the model's whole window unless we compact it like our own tools.
-        return _wrap(result)
+        return _wrap(_as_payload(result))
 
     return process_tool_call
 

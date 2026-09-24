@@ -11,6 +11,7 @@ import logging
 
 from pydantic_ai.messages import (
     ModelMessage,
+    ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
     ToolCallPart,
@@ -89,8 +90,6 @@ def settle_tool_calls(messages: list[ModelMessage]) -> int:
 
 def estimate_tokens(messages: list[ModelMessage]) -> int:
     try:
-        from pydantic_ai.messages import ModelMessagesTypeAdapter
-
         return len(ModelMessagesTypeAdapter.dump_json(messages)) // _BYTES_PER_TOKEN
     except (TypeError, ValueError):
         return 0
