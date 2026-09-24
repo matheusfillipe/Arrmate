@@ -4,11 +4,141 @@ AudioBookshelf is a self-hosted audiobook and podcast server with
 a modern web UI, mobile apps, and robust playback tracking.
 """
 
-from typing import Any
+from typing import Literal
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 from .base import BaseMediaClient
+
+LibraryMediaType = Literal["book", "podcast"]
+
+
+class _AbsRecord(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
+class ServerStatus(_AbsRecord):
+    version: str | None = Field(default=None, alias="serverVersion")
+    is_init: bool | None = Field(default=None, alias="isInit")
+    language: str | None = None
+
+
+class Library(_AbsRecord):
+    id: str
+    name: str
+    media_type: LibraryMediaType = Field(alias="mediaType")
+
+
+class ItemMetadata(_AbsRecord):
+    title: str | None = None
+    subtitle: str | None = None
+    author_name: str | None = Field(default=None, alias="authorName")
+    narrator_name: str | None = Field(default=None, alias="narratorName")
+    series_name: str | None = Field(default=None, alias="seriesName")
+    published_year: str | None = Field(default=None, alias="publishedYear")
+    asin: str | None = None
+    isbn: str | None = None
+
+
+class ItemMedia(_AbsRecord):
+    metadata: ItemMetadata = ItemMetadata()
+    duration: float | None = None
+    num_tracks: int | None = Field(default=None, alias="numTracks")
+
+
+class LibraryItem(_AbsRecord):
+    id: str
+    library_id: str | None = Field(default=None, alias="libraryId")
+    media_type: LibraryMediaType | None = Field(default=None, alias="mediaType")
+    path: str | None = None
+    size: int | None = None
+    media: ItemMedia = ItemMedia()
+
+
+class LibraryItemsPage(_AbsRecord):
+    results: list[LibraryItem] = []
+    total: int = 0
+    limit: int | None = None
+    page: int | None = None
+
+
+class _BookMatch(_AbsRecord):
+    library_item: LibraryItem = Field(alias="libraryItem")
+
+
+class _SearchResults(_AbsRecord):
+    book: list[_BookMatch] = []
+
+
+class MediaProgress(_AbsRecord):
+    id: str
+    library_item_id: str = Field(alias="libraryItemId")
+    progress: float | None = None
+    current_time: float | None = Field(default=None, alias="currentTime")
+    duration: float | None = None
+    is_finished: bool | None = Field(default=None, alias="isFinished")
+
+
+class ListeningSession(_AbsRecord):
+    id: str
+    library_item_id: str | None = Field(default=None, alias="libraryItemId")
+    display_title: str | None = Field(default=None, alias="displayTitle")
+    display_author: str | None = Field(default=None, alias="displayAuthor")
+    time_listening: float | None = Field(default=None, alias="timeListening")
+    started_at: int | None = Field(default=None, alias="startedAt")
+    updated_at: int | None = Field(default=None, alias="updatedAt")
+
+
+class ListeningSessionsPage(_AbsRecord):
+    sessions: list[ListeningSession] = []
+    total: int = 0
+
+
+class Series(_AbsRecord):
+    id: str
+    name: str
+    books: list[LibraryItem] = []
+
+
+class Collection(_AbsRecord):
+    id: str
+    name: str
+    library_id: str | None = Field(default=None, alias="libraryId")
+    books: list[LibraryItem] = []
+
+
+class _CreateCollection(_AbsRecord):
+    library_id: str = Field(serialization_alias="libraryId")
+    name: str
+    books: list[str]
+
+
+class _ProgressUpdate(_AbsRecord):
+    current_time: float = Field(serialization_alias="currentTime")
+    is_finished: bool = Field(serialization_alias="isFinished")
+    duration: float | None = None
+
+
+class MatchResult(_AbsRecord):
+    updated: bool | None = None
+    warning: str | None = None
+
+
+class _Libraries(_AbsRecord):
+    libraries: list[Library] = []
+
+
+class _MediaProgressList(_AbsRecord):
+    media_progress: list[MediaProgress] = Field(default=[], alias="mediaProgress")
+
+
+class _SeriesPage(_AbsRecord):
+    results: list[Series] = []
+
+
+class _Collections(_AbsRecord):
+    collections: list[Collection] = []
 
 
 class AudioBookshelfClient(BaseMediaClient):
@@ -17,16 +147,6 @@ class AudioBookshelfClient(BaseMediaClient):
     AudioBookshelf is a purpose-built audiobook server with advanced
     playback features, progress tracking, and multi-user support.
     """
-
-    def __init__(self, base_url: str, api_key: str, timeout: int = 30) -> None:
-        """Initialize the AudioBookshelf client.
-
-        Args:
-            base_url: Base URL of AudioBookshelf
-            api_key: API token/key for authentication
-            timeout: Request timeout in seconds
-        """
-        super().__init__(base_url, api_key, timeout)
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -38,47 +158,34 @@ class AudioBookshelfClient(BaseMediaClient):
             )
         return self._client
 
-    async def test_connection(self) -> bool:
-        """Test connection to AudioBookshelf.
+    async def _send(self, method: str, endpoint: str, body: _AbsRecord | None = None) -> None:
+        """Send a write whose reply is a bare status, which the JSON helpers cannot parse."""
+        response = await self.client.request(
+            method,
+            f"{self.base_url}/{endpoint}",
+            json=body.model_dump(by_alias=True, exclude_none=True) if body else None,
+        )
+        response.raise_for_status()
 
-        Returns:
-            True if connection successful
-        """
+    async def test_connection(self) -> bool:
         try:
             await self.get_libraries()
             return True
         except (httpx.HTTPError, ValueError):
             return False
 
-    async def get_system_status(self) -> dict[str, Any]:
-        """Get system status and version.
+    async def get_system_status(self) -> ServerStatus:  # type: ignore[override]
+        """Server version from the unauthenticated ``/status`` route."""
+        return ServerStatus.model_validate(await self._get("status"))
 
-        Returns:
-            System status information
-        """
-        # AudioBookshelf doesn't have a v3/system/status endpoint
-        # Use /api/me to validate authorization and get basic info
-        return await self._get("api/authorize")
+    async def get_libraries(self) -> list[Library]:
+        return _Libraries.model_validate(await self._get("api/libraries")).libraries
 
-    async def get_libraries(self) -> list[dict[str, Any]]:
-        """Get all accessible libraries.
+    async def _book_libraries(self) -> list[Library]:
+        return [library for library in await self.get_libraries() if library.media_type == "book"]
 
-        Returns:
-            List of libraries
-        """
-        result = await self._get("api/libraries")
-        return result.get("libraries", []) if isinstance(result, dict) else result
-
-    async def get_library(self, library_id: str) -> dict[str, Any]:
-        """Get specific library details.
-
-        Args:
-            library_id: Library ID
-
-        Returns:
-            Library details
-        """
-        return await self._get(f"api/libraries/{library_id}")
+    async def get_library(self, library_id: str) -> Library:
+        return Library.model_validate(await self._get(f"api/libraries/{library_id}"))
 
     async def get_library_items(
         self,
@@ -87,75 +194,38 @@ class AudioBookshelfClient(BaseMediaClient):
         page: int = 0,
         sort: str | None = None,
         filter: str | None = None,
-    ) -> dict[str, Any]:
-        """Get items from a library.
-
-        Args:
-            library_id: Library ID
-            limit: Number of items per page
-            page: Page number
-            sort: Sort field (e.g., "media.metadata.title")
-            filter: Filter string
-
-        Returns:
-            Paginated library items
-        """
+    ) -> LibraryItemsPage:
+        """One page of a library; ``sort`` is a field path such as ``media.metadata.title``."""
         params: dict[str, int | str] = {"limit": limit, "page": page}
         if sort:
             params["sort"] = sort
         if filter:
             params["filter"] = filter
+        items = await self._get(f"api/libraries/{library_id}/items", params=params)
+        return LibraryItemsPage.model_validate(items)
 
-        return await self._get(f"api/libraries/{library_id}/items", params=params)
+    async def search(self, query: str) -> list[LibraryItem]:  # type: ignore[override]
+        """Search every book library; AudioBookshelf only searches one library per call."""
+        found = [
+            _SearchResults.model_validate(
+                await self._get(f"api/libraries/{library.id}/search", params={"q": query})
+            )
+            for library in await self._book_libraries()
+        ]
+        return [match.library_item for results in found for match in results.book]
 
-    async def search(self, query: str) -> list[dict[str, Any]]:
-        """Search for audiobooks across all libraries.
-
-        Args:
-            query: Search query
-
-        Returns:
-            List of matching audiobooks
-        """
-        # AudioBookshelf search returns results grouped by type
-        result = await self._get("api/search/library", params={"q": query})
-        # Extract book results
-        if isinstance(result, dict):
-            return result.get("book", [])
-        return []
-
-    async def get_item(self, item_id: int | str) -> dict[str, Any]:
-        """Get audiobook details by ID.
-
-        Args:
-            item_id: Item ID
-
-        Returns:
-            Audiobook details
-        """
-        return await self._get(f"api/items/{item_id}")
+    async def get_item(self, item_id: int | str) -> LibraryItem:  # type: ignore[override]
+        return LibraryItem.model_validate(await self._get(f"api/items/{item_id}"))
 
     async def delete_item(self, item_id: int | str, delete_files: bool = False) -> bool:
-        """Delete an audiobook.
-
-        Args:
-            item_id: Item ID
-            delete_files: Whether to delete files (AudioBookshelf always deletes files)
-
-        Returns:
-            True if successful
-        """
+        """Remove an item from the library; ``delete_files`` is ignored by AudioBookshelf."""
         await self._delete(f"api/items/{item_id}")
         return True
 
-    async def get_progress(self) -> list[dict[str, Any]]:
-        """Get user's listening progress for all items.
-
-        Returns:
-            List of progress entries
-        """
-        result = await self._get("api/me/progress")
-        return result.get("libraryItems", []) if isinstance(result, dict) else result
+    async def get_progress(self) -> list[MediaProgress]:
+        """The token owner's listening progress for every item."""
+        progress = await self._get("api/me/progress")
+        return _MediaProgressList.model_validate(progress).media_progress
 
     async def update_progress(
         self,
@@ -163,146 +233,46 @@ class AudioBookshelfClient(BaseMediaClient):
         current_time: float,
         duration: float | None = None,
         is_finished: bool = False,
-    ) -> dict[str, Any]:
-        """Update playback progress for an audiobook.
+    ) -> None:
+        update = _ProgressUpdate(
+            current_time=current_time, is_finished=is_finished, duration=duration
+        )
+        await self._send("PATCH", f"api/me/progress/{item_id}", update)
 
-        Args:
-            item_id: Item ID
-            current_time: Current playback position in seconds
-            duration: Total duration in seconds
-            is_finished: Whether playback is complete
+    async def get_sessions(self) -> ListeningSessionsPage:
+        sessions = await self._get("api/me/listening-sessions")
+        return ListeningSessionsPage.model_validate(sessions)
 
-        Returns:
-            Updated progress
-        """
-        data = {
-            "currentTime": current_time,
-            "isFinished": is_finished,
-        }
-        if duration:
-            data["duration"] = duration
+    async def get_series(self, library_id: str) -> list[Series]:
+        return _SeriesPage.model_validate(
+            await self._get(f"api/libraries/{library_id}/series")
+        ).results
 
-        return await self._post(f"api/me/progress/{item_id}", data=data)
-
-    async def get_sessions(self) -> list[dict[str, Any]]:
-        """Get listening sessions.
-
-        Returns:
-            List of playback sessions
-        """
-        return await self._get("api/me/listening-sessions")
-
-    async def get_personalized(self, library_id: str) -> dict[str, Any]:
-        """Get personalized recommendations for a library.
-
-        Args:
-            library_id: Library ID
-
-        Returns:
-            Personalized shelves and recommendations
-        """
-        return await self._get(f"api/libraries/{library_id}/personalized")
-
-    async def get_series(self, library_id: str) -> list[dict[str, Any]]:
-        """Get series in a library.
-
-        Args:
-            library_id: Library ID
-
-        Returns:
-            List of series
-        """
-        result = await self._get(f"api/libraries/{library_id}/series")
-        return result.get("results", []) if isinstance(result, dict) else result
-
-    async def get_collections(self, library_id: str) -> list[dict[str, Any]]:
-        """Get collections in a library.
-
-        Args:
-            library_id: Library ID
-
-        Returns:
-            List of collections
-        """
-        result = await self._get(f"api/libraries/{library_id}/collections")
-        return result.get("collections", []) if isinstance(result, dict) else result
+    async def get_collections(self, library_id: str) -> list[Collection]:
+        return _Collections.model_validate(
+            await self._get(f"api/libraries/{library_id}/collections")
+        ).collections
 
     async def create_collection(
         self, library_id: str, name: str, book_ids: list[str]
-    ) -> dict[str, Any]:
-        """Create a new collection.
+    ) -> Collection:
+        request = _CreateCollection(library_id=library_id, name=name, books=book_ids)
+        created = await self._post(
+            "api/collections", data=request.model_dump(by_alias=True, exclude_none=True)
+        )
+        return Collection.model_validate(created)
 
-        Args:
-            library_id: Library ID
-            name: Collection name
-            book_ids: List of book IDs to include
+    async def scan_library(self, library_id: str) -> None:
+        await self._send("POST", f"api/libraries/{library_id}/scan")
 
-        Returns:
-            Created collection
-        """
-        data = {
-            "libraryId": library_id,
-            "name": name,
-            "books": book_ids,
-        }
-        return await self._post("api/collections", data=data)
+    async def match_audiobook(self, item_id: str) -> MatchResult:
+        """Quick-match an item against the library's metadata provider."""
+        return MatchResult.model_validate(await self._post(f"api/items/{item_id}/match"))
 
-    async def scan_library(self, library_id: str) -> dict[str, Any]:
-        """Trigger a library scan.
-
-        Args:
-            library_id: Library ID
-
-        Returns:
-            Scan command result
-        """
-        return await self._post(f"api/libraries/{library_id}/scan")
-
-    async def match_audiobook(self, item_id: str) -> dict[str, Any]:
-        """Match audiobook to metadata providers.
-
-        Args:
-            item_id: Item ID
-
-        Returns:
-            Match result
-        """
-        return await self._post(f"api/items/{item_id}/match")
-
-    # Implement abstract methods from BaseMediaClient
-    # These map AudioBookshelf-specific methods to the generic interface
-
-    async def get_all_series(self) -> list[dict[str, Any]]:
-        """Get all audiobooks across all libraries.
-
-        Returns:
-            List of all audiobooks
-        """
-        libraries = await self.get_libraries()
-        all_items = []
-        for library in libraries:
-            if library.get("mediaType") == "book":
-                result = await self.get_library_items(library["id"], limit=1000)
-                items = result.get("results", [])
-                all_items.extend(items)
-        return all_items
-
-    async def get_all_movies(self) -> list[dict[str, Any]]:
-        """Alias for get_all_series (AudioBookshelf doesn't have movies)."""
-        return await self.get_all_series()
-
-    async def get_quality_profiles(self) -> list[dict[str, Any]]:
-        """AudioBookshelf doesn't have quality profiles.
-
-        Returns:
-            Empty list
-        """
-        return []
-
-    async def get_root_folders(self) -> list[dict[str, Any]]:
-        """Get library folders.
-
-        Returns:
-            List of libraries as "root folders"
-        """
-        return await self.get_libraries()
+    async def get_all_books(self) -> list[LibraryItem]:
+        """Every item across the book libraries."""
+        pages = [
+            await self.get_library_items(library.id, limit=1000)
+            for library in await self._book_libraries()
+        ]
+        return [item for page in pages for item in page.results]

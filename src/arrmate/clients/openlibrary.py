@@ -4,16 +4,91 @@ Open Library is free and requires no API key.
 https://openlibrary.org/developers/api
 """
 
-from typing import Any
+from typing import Literal
 
 import httpx
+from pydantic import BaseModel
+
+COVER_BASE = "https://covers.openlibrary.org/b/id"
+
+
+class BookCard(BaseModel):
+    display_title: str
+    author: str
+    year: str
+    poster: str | None
+    overview: str
+    ol_key: str
+    media_type: Literal["book"] = "book"
+    in_library: bool = False
+
+
+class _TrendingWork(BaseModel):
+    key: str = ""
+    title: str = "Unknown"
+    author_name: list[str] = []
+    first_publish_year: int | None = None
+    cover_i: int | None = None
+    subject: list[str] = []
+
+
+class _SubjectAuthor(BaseModel):
+    name: str = ""
+
+
+class _SubjectWork(BaseModel):
+    key: str = ""
+    title: str = "Unknown"
+    authors: list[_SubjectAuthor] = []
+    first_publish_year: int | None = None
+    cover_id: int | None = None
+
+
+class _TrendingPage(BaseModel):
+    works: list[_TrendingWork] = []
+
+
+class _SubjectPage(BaseModel):
+    works: list[_SubjectWork] = []
+
+
+def cover_url(cover_id: int | None, size: str = "M") -> str | None:
+    """Full cover image URL for an Open Library cover ID."""
+    if not cover_id:
+        return None
+    return f"{COVER_BASE}/{cover_id}-{size}.jpg"
+
+
+def _year(first_publish_year: int | None) -> str:
+    return str(first_publish_year) if first_publish_year else ""
+
+
+def _trending_card(work: _TrendingWork) -> BookCard:
+    return BookCard(
+        display_title=work.title,
+        author=", ".join(work.author_name[:2]),
+        year=_year(work.first_publish_year),
+        poster=cover_url(work.cover_i),
+        overview=", ".join(work.subject[:3]),
+        ol_key=work.key,
+    )
+
+
+def _subject_card(work: _SubjectWork) -> BookCard:
+    return BookCard(
+        display_title=work.title,
+        author=", ".join(a.name for a in work.authors[:2]),
+        year=_year(work.first_publish_year),
+        poster=cover_url(work.cover_id),
+        overview="",
+        ol_key=work.key,
+    )
 
 
 class OpenLibraryClient:
     """Client for the Open Library REST API."""
 
     BASE_URL = "https://openlibrary.org"
-    COVER_BASE = "https://covers.openlibrary.org/b/id"
 
     def __init__(self) -> None:
         self._client: httpx.AsyncClient | None = None
@@ -32,61 +107,24 @@ class OpenLibraryClient:
             await self._client.aclose()
             self._client = None
 
-    async def _get(self, endpoint: str, params: dict[str, Any] | None = None) -> Any:
-        url = f"{self.BASE_URL}/{endpoint.lstrip('/')}"
-        resp = await self.client.get(url, params=params or {})
+    async def _get(self, endpoint: str) -> bytes:
+        resp = await self.client.get(f"{self.BASE_URL}/{endpoint}", params={"limit": 24})
         resp.raise_for_status()
-        return resp.json()
+        return resp.content
 
-    def cover_url(self, cover_id: int | None, size: str = "M") -> str | None:
-        """Return full cover image URL for a given Open Library cover ID."""
-        if not cover_id:
-            return None
-        return f"{self.COVER_BASE}/{cover_id}-{size}.jpg"
+    async def _trending(self, period: Literal["daily", "weekly"]) -> list[BookCard]:
+        page = _TrendingPage.model_validate_json(await self._get(f"trending/{period}.json"))
+        return [_trending_card(w) for w in page.works]
 
-    def _norm_trending(self, work: dict[str, Any]) -> dict[str, Any]:
-        """Normalise a trending/works entry into a common card dict."""
-        authors = work.get("author_name") or []
-        year = work.get("first_publish_year")
-        cover_id = work.get("cover_i")
-        subjects = work.get("subject", [])
-        return {
-            "display_title": work.get("title", "Unknown"),
-            "author": ", ".join(authors[:2]),
-            "year": str(year) if year else "",
-            "poster": self.cover_url(cover_id),
-            "overview": ", ".join(subjects[:3]) if subjects else "",
-            "ol_key": work.get("key", ""),
-            "media_type": "book",
-        }
-
-    def _norm_subject(self, work: dict[str, Any]) -> dict[str, Any]:
-        """Normalise a subject/works entry (slightly different schema)."""
-        authors = work.get("authors") or []
-        author_names = [a.get("name", "") for a in authors]
-        year = work.get("first_publish_year")
-        cover_id = work.get("cover_id")
-        return {
-            "display_title": work.get("title", "Unknown"),
-            "author": ", ".join(author_names[:2]),
-            "year": str(year) if year else "",
-            "poster": self.cover_url(cover_id),
-            "overview": "",
-            "ol_key": (work.get("key") or ""),
-            "media_type": "book",
-        }
-
-    async def get_trending_daily(self) -> list[dict[str, Any]]:
+    async def get_trending_daily(self) -> list[BookCard]:
         """Books trending today on Open Library."""
-        data = await self._get("trending/daily.json", {"limit": 24})
-        return [self._norm_trending(w) for w in data.get("works", [])]
+        return await self._trending("daily")
 
-    async def get_trending_weekly(self) -> list[dict[str, Any]]:
+    async def get_trending_weekly(self) -> list[BookCard]:
         """Books trending this week on Open Library."""
-        data = await self._get("trending/weekly.json", {"limit": 24})
-        return [self._norm_trending(w) for w in data.get("works", [])]
+        return await self._trending("weekly")
 
-    async def get_subject(self, subject: str) -> list[dict[str, Any]]:
+    async def get_subject(self, subject: str) -> list[BookCard]:
         """Top books for a genre/subject (e.g. 'fiction', 'mystery')."""
-        data = await self._get(f"subjects/{subject}.json", {"limit": 24})
-        return [self._norm_subject(w) for w in data.get("works", [])]
+        page = _SubjectPage.model_validate_json(await self._get(f"subjects/{subject}.json"))
+        return [_subject_card(w) for w in page.works]

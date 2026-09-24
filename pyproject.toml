@@ -105,7 +105,7 @@ files = ["src/arrmate"]
 [[tool.mypy.overrides]]
 # Service clients sit on dynamically-shaped JSON; each method documents the
 # expected shape in its signature and docstring.
-module = ["arrmate.clients.audiobookshelf", "arrmate.clients.bazarr", "arrmate.clients.lazylibrarian", "arrmate.clients.lidarr", "arrmate.clients.openlibrary", "arrmate.clients.radarr", "arrmate.clients.readarr", "arrmate.clients.readmeabook", "arrmate.clients.sonarr"]
+module = ["arrmate.clients.bazarr", "arrmate.clients.lidarr", "arrmate.clients.radarr", "arrmate.clients.readarr", "arrmate.clients.sonarr"]
 disable_error_code = ["no-any-return"]
 
 [[tool.mypy.overrides]]

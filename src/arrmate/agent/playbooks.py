@@ -16,6 +16,7 @@ from pydantic_ai import Agent, RunContext
 
 from arrmate.clients.cleanuparr import Event
 from arrmate.clients.qbittorrent import TorrentState
+from arrmate.clients.listenarr import Release
 from arrmate.config.settings import settings
 
 from .deps import AgentDeps
@@ -65,7 +66,7 @@ def _search_queries(title: str, author: str) -> list[str]:
     return seen
 
 
-def _rank_releases(results: list[dict], title: str) -> list[dict]:
+def _rank_releases(results: list[Release], title: str) -> list[Release]:
     """Plausible audiobook releases for a title, best first.
 
     Filters the lesson clips and sample files that dominate language-learning
@@ -73,17 +74,44 @@ def _rank_releases(results: list[dict], title: str) -> list[dict]:
     prefers seeders.
     """
     words = [w for w in re.split(r"\W+", _EDITION_NOISE.sub("", title or "").lower()) if len(w) > 3]
-    keep = []
-    for r in results:
-        name = (r.get("title") or "").lower()
-        if (r.get("size") or 0) < _MIN_AUDIOBOOK_BYTES:
-            continue
-        if words and not all(w in name for w in words):
-            continue
-        if not r.get("downloadReference"):
-            continue
-        keep.append(r)
-    return sorted(keep, key=lambda r: r.get("seeders") or 0, reverse=True)
+    keep = [
+        r
+        for r in results
+        if (r.size or 0) >= _MIN_AUDIOBOOK_BYTES
+        and all(w in r.title.lower() for w in words)
+        and r.download_reference
+    ]
+    return sorted(keep, key=lambda r: r.seeders or 0, reverse=True)
+
+
+FillOutcome = Literal["no-release-found", "candidate", "sent-to-download-client"]
+
+
+class QueryAttempt(BaseModel):
+    query: str
+    results: int
+    usable: int
+
+
+class ReleaseSummary(BaseModel):
+    title: str
+    size_mb: int
+    seeders: int | None
+    indexer: str | None
+
+
+class FillMissingItem(BaseModel):
+    id: int
+    title: str
+    tried: list[QueryAttempt] = []
+    outcome: FillOutcome = "no-release-found"
+    release: ReleaseSummary | None = None
+
+
+class FillMissingReport(BaseModel):
+    checked: int = 0
+    grabbed: int = 0
+    items: list[FillMissingItem] = []
 
 
 class PoisonedSwarm(BaseModel):
@@ -179,57 +207,46 @@ def register_playbook_tools(agent: Agent[AgentDeps, str]) -> None:
         download client.
         """
 
-        async def body() -> dict[str, Any]:
-            report: dict[str, Any] = {"checked": 0, "grabbed": 0, "items": []}
+        async def body() -> FillMissingReport:
+            report = FillMissingReport()
             if grab:
                 ctx.deps.require_write("listenarr_fill_missing")
 
             async with ctx.deps.listenarr() as client:
                 books = await client.get_all_items()
-                missing = [
-                    b
-                    for b in books
-                    if b.get("monitored") and (b.get("status") or "") in ("no-file", "missing")
-                ][:limit]
-                report["checked"] = len(missing)
+                missing = [b for b in books if b.monitored and b.status == "no-file"][:limit]
+                report.checked = len(missing)
 
                 for book in missing:
-                    title = book.get("title") or ""
-                    authors = book.get("authors") or []
-                    author = authors[0] if authors else (book.get("author") or "")
-                    item: dict[str, Any] = {"id": book.get("id"), "title": title, "tried": []}
+                    author = book.authors[0] if book.authors else ""
+                    item = FillMissingItem(id=book.id, title=book.title)
+                    report.items.append(item)
 
                     best = None
-                    for query in _search_queries(title, author):
+                    for query in _search_queries(book.title, author):
                         results = await client.search(query, limit=50)
-                        ranked = _rank_releases(results, title)
-                        item["tried"].append(
-                            {"query": query, "results": len(results), "usable": len(ranked)}
+                        ranked = _rank_releases(results, book.title)
+                        item.tried.append(
+                            QueryAttempt(query=query, results=len(results), usable=len(ranked))
                         )
                         if ranked:
                             best = ranked[0]
                             break
 
-                    if not best:
-                        item["outcome"] = "no-release-found"
-                        report["items"].append(item)
+                    if best is None or best.download_reference is None:
                         continue
 
-                    item["release"] = {
-                        "title": best.get("title"),
-                        "sizeMB": round((best.get("size") or 0) / 1_000_000),
-                        "seeders": best.get("seeders"),
-                        "indexer": best.get("indexer"),
-                    }
-                    if not grab:
-                        item["outcome"] = "candidate"
-                    else:
-                        await client.grab_release(
-                            best["downloadReference"], audiobook_id=book.get("id")
-                        )
-                        item["outcome"] = "sent-to-download-client"
-                        report["grabbed"] += 1
-                    report["items"].append(item)
+                    item.release = ReleaseSummary(
+                        title=best.title,
+                        size_mb=round((best.size or 0) / 1_000_000),
+                        seeders=best.seeders,
+                        indexer=best.indexer,
+                    )
+                    item.outcome = "candidate"
+                    if grab:
+                        await client.grab_release(best.download_reference, audiobook_id=book.id)
+                        item.outcome = "sent-to-download-client"
+                        report.grabbed += 1
 
             return report
 
